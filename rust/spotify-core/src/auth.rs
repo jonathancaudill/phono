@@ -28,16 +28,19 @@ pub(crate) fn http_client() -> &'static reqwest::Client {
         reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
+            .user_agent("Spotify/124200290 Linux/0 (librespot)")
             .build()
             .expect("reqwest client")
     })
 }
 
-/// Desktop-style UA retained for optional diagnostics only.
-pub(crate) const WEB_API_USER_AGENT: &str = "Spotify/8.8.98.1234 OSX/0 (LightPhone/0.1.0)";
-
 /// Hit a few Web API routes and log status — used to distinguish Login5 auth vs rate limits.
-pub(crate) async fn probe_web_api_bearer(label: &str, bearer: &str) {
+#[cfg(debug_assertions)]
+pub(crate) async fn probe_web_api_bearer(
+    label: &str,
+    bearer: &str,
+    client_token: Option<&str>,
+) {
     let client = http_client();
     let urls = [
         "https://api.spotify.com/v1/me",
@@ -46,13 +49,14 @@ pub(crate) async fn probe_web_api_bearer(label: &str, bearer: &str) {
         "https://api.spotify.com/v1/me/albums?limit=1&market=from_token&offset=0",
     ];
     for url in urls {
-        match client
+        let mut rb = client
             .get(url)
-            .header("Authorization", format!("Bearer {bearer}"))
-            .header("User-Agent", WEB_API_USER_AGENT)
-            .send()
-            .await
-        {
+            .header("Accept", "application/json")
+            .header("Authorization", format!("Bearer {bearer}"));
+        if let Some(ct) = client_token {
+            rb = rb.header("client-token", ct);
+        }
+        match rb.send().await {
             Ok(resp) => {
                 let status = resp.status();
                 let retry = resp
