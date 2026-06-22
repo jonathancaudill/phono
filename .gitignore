@@ -1,0 +1,51 @@
+# --- Rust ---
+target/
+**/*.rs.bk
+# Workspace-local toolchain (created only for local build validation)
+.cargo/
+.rustup/
+
+# --- Android / Gradle ---
+.gradle/
+.kotlin/
+build/
+app/build/
+local.properties
+*.iml
+*.ipr
+*.iws
+.idea/
+*.hprof
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Gradle wrapper (jar is committed; keep wrapper scripts tracked)
+!gradle/wrapper/gradle-wrapper.jar
+
+# --- Generated native artifacts and UniFFI bindings ---
+# Regenerate with: bash scripts/build-rust.sh
+app/src/main/jniLibs/
+app/src/main/java/com/lightphone/spotify/ffi/
+
+# --- Signing / secrets ---
+*.keystore
+*.jks
+*.p12
+*.pem
+.env
+.env.*
+!.env.example
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Editor / IDE ---
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- Cursor ---
+.cursor/

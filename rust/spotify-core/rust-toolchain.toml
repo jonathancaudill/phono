@@ -1,0 +1,7 @@
+[toolchain]
+# librespot 0.8.0's workspace uses edition 2024 (stabilized in Rust 1.85).
+channel = "stable"
+targets = [
+    "aarch64-linux-android",
+    "x86_64-linux-android",
+]

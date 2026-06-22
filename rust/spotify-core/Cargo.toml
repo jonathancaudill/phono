@@ -1,0 +1,68 @@
+[package]
+name = "spotify-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Rust backend (librespot wrapped behind a stable UniFFI surface) for the Light Phone III Spotify client"
+license = "MIT"
+
+[lib]
+name = "spotify_core"
+crate-type = ["cdylib", "staticlib", "lib"]
+
+# Binary used to generate the Kotlin bindings: `cargo run --bin uniffi-bindgen -- ...`
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi_bindgen.rs"
+
+[dependencies]
+# Pin librespot exactly. A bump should only ever touch this crate.
+librespot = { version = "=0.8.0", default-features = false, features = [
+    "rustls-tls-webpki-roots",
+    "rodio-backend",
+    "with-libmdns",
+] }
+
+uniffi = { version = "0.28.3", features = ["cli"] }
+
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }
+# OAuth (PKCE) + Web API token exchange, kept independent of librespot-oauth's
+# interactive (browser/stdin) flow so the WebView owns code capture.
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls-webpki-roots",
+    "json",
+] }
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+url = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+http = "1"
+bytes = "1"
+protobuf-json-mapping = "3.7"
+protobuf = "3.7"
+
+log = "0.4"
+thiserror = "2"
+
+# Android-only: JNI shim that bootstraps ndk_context for cpal/AAudio, plus logging.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+android_logger = "0.14"
+
+[build-dependencies]
+uniffi = { version = "0.28.3", features = ["build"] }
+
+[patch.crates-io]
+librespot-core = { path = "../librespot-core-patched" }
+
+# NOTE: do not set panic = "abort". UniFFI relies on unwinding (catch_unwind) at
+# the FFI boundary to turn Rust panics into Kotlin exceptions instead of killing
+# the whole app process.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
