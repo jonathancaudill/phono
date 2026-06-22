@@ -525,6 +525,7 @@ impl EngineShared {
         self.store_oauth(tokens);
         handle.block_on(self.clone().build_active(credentials, None))?;
         self.probe_login5_token();
+        self.probe_web_api_bearer_debug();
         Ok(())
     }
 
@@ -560,6 +561,7 @@ impl EngineShared {
         // Prime the OAuth fallback token for spclient/playback.
         let _ = self.access_token();
         self.probe_login5_token();
+        self.probe_web_api_bearer_debug();
         Ok(true)
     }
 
@@ -833,6 +835,30 @@ impl EngineShared {
             }
         }
     }
+
+    /// Temporary debug probe: exercises the real OAuth + client-token Web API path.
+    #[cfg(debug_assertions)]
+    fn probe_web_api_bearer_debug(&self) {
+        let Ok(oauth_token) = self.access_token() else {
+            return;
+        };
+        let Ok(session) = self.session_or_err() else {
+            return;
+        };
+        let handle = self.runtime.handle().clone();
+        handle.block_on(async move {
+            let client_token = session.spclient().client_token().await.ok();
+            auth::probe_web_api_bearer(
+                "post-connect",
+                &oauth_token,
+                client_token.as_deref(),
+            )
+            .await;
+        });
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn probe_web_api_bearer_debug(&self) {}
 
     /// Resolve a context URI via librespot spclient `context-resolve` (Login5).
     fn context_tracks(
