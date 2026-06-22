@@ -78,9 +78,21 @@ pub extern "system" fn Java_com_lightphone_spotify_NativeInit_initAndroidContext
     let _ = ANDROID_CONTEXT.set(global);
 
     if let Ok(sdk) = read_android_sdk_int(&mut env) {
-        librespot::core::config::set_os_version_override(sdk.to_string());
-        log::info!("Android SDK {sdk} set for librespot client-token/login5");
+        log::info!("Android SDK {sdk} (not used for wire identity)");
     }
+    // ASSUMPTION: the session client ID is forced to the Keymaster (desktop) ID in
+    // EngineShared::new (session_config.client_id = auth::CLIENT_ID). Because of that,
+    // we present as the Linux desktop client on the wire, so the reported OS version
+    // must be the desktop value "0", NOT the Android SDK int, and
+    // set_http_platform_override("linux") is set in EngineShared::new.
+    //
+    // IF FUTURE WORK switches Android to a native Android client ID (the android
+    // platform branch), this "0" becomes WRONG: that branch requires a real Android
+    // SDK version (>= 21) or client-token/login5 will reject it. In that case, set
+    // the real SDK int here and drop the "linux" platform override. Do not inherit
+    // "0" blindly into non-Keymaster identity work.
+    librespot::core::config::set_os_version_override("0");
+    log::info!("OS version override set to desktop \"0\" for Keymaster/Linux identity");
 
     log::info!("Android context initialized for ndk_context");
 }

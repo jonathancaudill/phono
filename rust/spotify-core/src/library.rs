@@ -75,26 +75,15 @@ impl super::EngineShared {
             }
         }
         let session = self.session_or_err()?;
+        let oauth_token = self.access_token()?;
         let limit = limit.clamp(1, 50);
         let handle = self.runtime.handle().clone();
         let session_for_fetch = session.clone();
         let items = handle
             .block_on(async move {
-                match web_client::fetch_saved_albums(&session_for_fetch, limit).await {
-                    Ok(items) => Ok(items),
-                    Err(e) => {
-                        log::warn!("web client saved albums failed ({e}); trying spclient");
-                        let items = fetch_saved_albums_spclient(&session_for_fetch, limit).await?;
-                        enrich_saved_albums(&session_for_fetch, items).await
-                    }
-                }
+                web_client::fetch_saved_albums(&session_for_fetch, &oauth_token, limit).await
             })
             .map_err(|e: librespot::core::Error| SpotifyError::Network { msg: e.to_string() })?;
-        if items.is_empty() {
-            return Err(SpotifyError::Network {
-                msg: "no saved albums found".into(),
-            });
-        }
         *self.library_cache.saved_albums.lock().unwrap() = Some((Instant::now(), items.clone()));
         Ok(items)
     }
@@ -246,6 +235,7 @@ impl super::EngineShared {
             }
         }
         let session = self.session_or_err()?;
+        let oauth_token = self.access_token()?;
         let search_uri = format!("spotify:search:{}", q.replace(' ', "+"));
         let limit = limit.clamp(1, 50);
         let limit_per_type = (limit / 4).clamp(1, 10);
@@ -253,25 +243,18 @@ impl super::EngineShared {
         let session_for_search = session.clone();
         let items = handle
             .block_on(async move {
-                match web_client::search_catalog_pathfinder(&session_for_search, q, limit_per_type)
-                    .await
+                match web_client::search_catalog_web(
+                    &session_for_search,
+                    &oauth_token,
+                    q,
+                    limit_per_type,
+                )
+                .await
                 {
                     Ok(items) => Ok(items),
                     Err(e) => {
-                        log::warn!("pathfinder search failed ({e}); trying web v1/search");
-                        match web_client::search_catalog_web(
-                            &session_for_search,
-                            q,
-                            limit_per_type,
-                        )
-                        .await
-                        {
-                            Ok(items) => Ok(items),
-                            Err(e2) => {
-                                log::warn!("web search failed ({e2}); trying context-resolve");
-                                parse_search_context(&session_for_search, &search_uri, limit).await
-                            }
-                        }
+                        log::warn!("web search failed ({e}); trying context-resolve");
+                        parse_search_context(&session_for_search, &search_uri, limit).await
                     }
                 }
             })
@@ -671,291 +654,6 @@ fn balance_search_results(by_type: HashMap<String, Vec<EntityInfo>>, limit: u32)
 
     items.truncate(limit);
     items
-}
-
-async fn enrich_saved_albums(
-    session: &Session,
-    mut items: Vec<SavedAlbumInfo>,
-) -> Result<Vec<SavedAlbumInfo>, librespot::core::Error> {
-    for saved in &mut items {
-        if !saved.album.name.is_empty() {
-            continue;
-        }
-        if let Ok(album) = Album::get(session, &SpotifyUri::from_uri(&saved.album.uri)?).await {
-            saved.album.name = album.name.clone();
-            saved.album.subtitle = album
-                .artists
-                .iter()
-                .map(|a| a.name.clone())
-                .collect::<Vec<_>>()
-                .join(", ");
-            saved.album.art_url = album_cover_url(&album.covers);
-        }
-    }
-    Ok(items)
-}
-
-async fn fetch_saved_albums_spclient(
-    session: &Session,
-    limit: u32,
-) -> Result<Vec<SavedAlbumInfo>, librespot::core::Error> {
-    if let Ok(items) = fetch_saved_albums_your_library(session, limit).await {
-        return Ok(items);
-    }
-
-    if let Ok(items) = fetch_saved_albums_cosmos(session, limit).await {
-        return Ok(items);
-    }
-
-    // Fallback: some clients expose saved albums as a browse context URI.
-    let username = session.username();
-    for uri in [
-        format!("spotify:user:{username}:saved-albums"),
-        format!("spotify:user:{username}:collection:album"),
-        format!("spotify:user:{username}:collection:albums"),
-    ] {
-        if let Ok(ctx) = session.spclient().get_context(&uri).await {
-            let items = context_to_saved_albums(&ctx);
-            if !items.is_empty() {
-                return Ok(items);
-            }
-        }
-    }
-
-    Err(librespot::core::Error::unavailable(
-        "spclient saved albums unavailable",
-    ))
-}
-
-async fn fetch_saved_albums_your_library(
-    session: &Session,
-    limit: u32,
-) -> Result<Vec<SavedAlbumInfo>, librespot::core::Error> {
-    let json_body = serde_json::json!({
-        "header": {
-            "length": limit,
-            "filters": { "filter": ["ALBUM"] },
-            "sortOrder": { "sortOrder": "RECENTLY_ADDED" }
-        }
-    })
-    .to_string();
-    let proto_body = encode_your_library_album_request(limit);
-
-    let endpoints = [
-        "/your-library/v1/get",
-        "/your-library/v1/yourlibrary",
-        "/your-library/v1/root",
-        "/your-library-esperanto/v1/yourlibrary",
-    ];
-
-    for endpoint in endpoints {
-        if let Ok(items) =
-            spclient_post_your_library(session, endpoint, &proto_body, &json_body).await
-        {
-            return Ok(items);
-        }
-    }
-
-    Err(librespot::core::Error::unavailable(
-        "your-library saved albums unavailable",
-    ))
-}
-
-async fn fetch_saved_albums_cosmos(
-    session: &Session,
-    limit: u32,
-) -> Result<Vec<SavedAlbumInfo>, librespot::core::Error> {
-    let endpoints = [
-        "/collection-cosmos/v1/album/list",
-        "/collection-cosmos/v1/albums",
-        "/collection/v1/albums",
-        "/cosmos/v1/collection/album/list",
-    ];
-    for endpoint in endpoints {
-        if let Ok(bytes) = spclient_post_protobuf(session, endpoint, &[]).await {
-            let items = parse_cosmos_album_list_bytes(&bytes, limit);
-            if !items.is_empty() {
-                return Ok(items);
-            }
-        }
-    }
-    Err(librespot::core::Error::unavailable(
-        "collection cosmos saved albums unavailable",
-    ))
-}
-
-fn encode_your_library_album_request(limit: u32) -> Vec<u8> {
-    // YourLibraryRequest { header { length=12, filters { filter=ALBUM(0) } } }
-    let filters = vec![0x08u8, 0x00];
-    let mut header = Vec::new();
-    header.push(0x60);
-    encode_varint(limit as u64, &mut header);
-    header.push(0x72);
-    encode_varint(filters.len() as u64, &mut header);
-    header.extend_from_slice(&filters);
-
-    let mut out = Vec::new();
-    out.push(0x0a);
-    encode_varint(header.len() as u64, &mut out);
-    out.extend_from_slice(&header);
-    out
-}
-
-async fn spclient_post_your_library(
-    session: &Session,
-    endpoint: &str,
-    proto_body: &[u8],
-    json_body: &str,
-) -> Result<Vec<SavedAlbumInfo>, librespot::core::Error> {
-    if let Ok(bytes) = spclient_post_protobuf(session, endpoint, proto_body).await {
-        if let Some(items) = parse_your_library_albums_bytes(&bytes) {
-            return Ok(items);
-        }
-    }
-    if let Ok(json) = spclient_post_json(session, endpoint, json_body).await {
-        return Ok(parse_your_library_albums_json(&json));
-    }
-    Err(librespot::core::Error::unavailable(
-        "your-library request failed",
-    ))
-}
-
-fn parse_your_library_albums_bytes(body: &[u8]) -> Option<Vec<SavedAlbumInfo>> {
-    let text = String::from_utf8(body.to_vec()).ok()?;
-    if text.trim_start().starts_with('{') {
-        return Some(parse_your_library_albums_json(
-            &serde_json::from_str(&text).ok()?,
-        ));
-    }
-    None
-}
-
-fn parse_cosmos_album_list_bytes(body: &[u8], limit: u32) -> Vec<SavedAlbumInfo> {
-    let text = match std::str::from_utf8(body) {
-        Ok(value) if value.trim_start().starts_with('{') => value.to_string(),
-        _ => String::from_utf8_lossy(body).into_owned(),
-    };
-    let mut out = Vec::new();
-    let mut seen = HashMap::new();
-    for uri in extract_spotify_album_uris(&text) {
-        if seen.insert(uri.clone(), ()).is_some() {
-            continue;
-        }
-        out.push(SavedAlbumInfo {
-            album: EntityInfo {
-                entity_type: "album".into(),
-                id: uri_id(&uri),
-                uri: uri.clone(),
-                name: String::new(),
-                subtitle: String::new(),
-                art_url: None,
-            },
-            added_at_ms: None,
-        });
-        if out.len() >= limit as usize {
-            break;
-        }
-    }
-    out
-}
-
-fn extract_spotify_album_uris(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    while let Some(idx) = text[start..].find("spotify:album:") {
-        let at = start + idx;
-        let rest = &text[at..];
-        let end = rest
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == ':'))
-            .unwrap_or(rest.len());
-        let uri = rest[..end].to_string();
-        if uri.len() > "spotify:album:".len() {
-            out.push(uri);
-        }
-        start = at + end;
-    }
-    out
-}
-
-fn context_to_saved_albums(
-    ctx: &librespot::protocol::context::Context,
-) -> Vec<SavedAlbumInfo> {
-    let mut out = Vec::new();
-    for page in &ctx.pages {
-        for track in &page.tracks {
-            let Some(uri) = track.uri.as_ref() else { continue };
-            if !uri.starts_with("spotify:album:") {
-                continue;
-            }
-            if let Ok(entity) = entity_from_context_track(track, &page.metadata) {
-                out.push(SavedAlbumInfo {
-                    album: entity,
-                    added_at_ms: None,
-                });
-            }
-        }
-    }
-    out
-}
-
-fn parse_your_library_albums_json(value: &serde_json::Value) -> Vec<SavedAlbumInfo> {
-    let mut out = Vec::new();
-    let entities = value
-        .get("entity")
-        .or_else(|| value.get("entities"))
-        .and_then(|v| v.as_array());
-    let Some(entities) = entities else {
-        return out;
-    };
-    for entity in entities {
-        let info = entity.get("entityInfo").or_else(|| entity.get("entity_info"));
-        let Some(info) = info else { continue };
-        let uri = info
-            .get("uri")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        if !uri.starts_with("spotify:album:") {
-            continue;
-        }
-        let name = info
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let subtitle = entity
-            .get("album")
-            .and_then(|a| a.get("artistName").or_else(|| a.get("artist_name")))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let image_uri = info
-            .get("imageUri")
-            .or_else(|| info.get("image_uri"))
-            .and_then(|v| v.as_str());
-        let art_url = image_uri.filter(|s| !s.is_empty()).map(|id| {
-            if id.starts_with("http") {
-                id.to_string()
-            } else {
-                format!("https://i.scdn.co/image/{id}")
-            }
-        });
-        let add_time = info
-            .get("addTime")
-            .or_else(|| info.get("add_time"))
-            .and_then(|v| v.as_i64());
-        out.push(SavedAlbumInfo {
-            album: EntityInfo {
-                entity_type: "album".into(),
-                id: uri_id(uri),
-                uri: uri.to_string(),
-                name,
-                subtitle,
-                art_url,
-            },
-            added_at_ms: add_time.map(|s| s * 1000),
-        });
-    }
-    out
 }
 
 async fn check_contains(

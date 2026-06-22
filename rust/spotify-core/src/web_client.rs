@@ -1,17 +1,8 @@
-//! Desktop / Web Player API (psst model): Login5 bearer on api.spotify.com and
-//! api-partner pathfinder — via reqwest, not librespot's rate-limited http_client.
+//! Desktop Web API (psst model): OAuth bearer on api.spotify.com via reqwest.
 
 use librespot::core::Session;
 
 use super::{EntityInfo, SavedAlbumInfo};
-
-const SPOTIFY_SEMVER: &str = "1.2.52.442";
-const USER_AGENT: &str = "Spotify/1.2.52.442 Linux/0 (LightPhone/0.1.0)";
-
-const SEARCH_DESKTOP_HASHES: &[&str] = &[
-    "75bbf6bfcfdf85b8fc828417bfad92b7cd66bf7f556d85670f4da8292373ebec",
-    "0dff51c99e552b992377a2a6f40d213dc42b62db86ca0bcf16cf3934aec1aae6",
-];
 
 fn encode_query(query: &str) -> String {
     url::form_urlencoded::byte_serialize(query.as_bytes()).collect()
@@ -21,28 +12,20 @@ fn http() -> &'static reqwest::Client {
     crate::auth::http_client()
 }
 
-async fn login5_bearer(session: &Session) -> Result<String, librespot::core::Error> {
-    let token = session.login5().auth_token().await?;
-    Ok(token.access_token)
-}
-
 async fn client_token(session: &Session) -> Option<String> {
     session.spclient().client_token().await.ok()
 }
 
 async fn web_api_get(
     session: &Session,
+    bearer: &str,
     path_query: &str,
 ) -> Result<serde_json::Value, librespot::core::Error> {
-    let bearer = login5_bearer(session).await?;
     let url = format!("https://api.spotify.com/{path_query}");
     let mut req = http()
         .get(&url)
         .header("Accept", "application/json")
-        .header("Authorization", format!("Bearer {bearer}"))
-        .header("User-Agent", USER_AGENT)
-        .header("app-platform", "WebPlayer")
-        .header("spotify-app-version", SPOTIFY_SEMVER);
+        .header("Authorization", format!("Bearer {bearer}"));
 
     if let Some(ct) = client_token(session).await {
         req = req.header("client-token", ct);
@@ -63,61 +46,6 @@ async fn web_api_get(
     serde_json::from_str(&body).map_err(|e| {
         librespot::core::Error::failed_precondition(format!("web api json: {e}"))
     })
-}
-
-async fn pathfinder_post(
-    session: &Session,
-    operation: &str,
-    variables: serde_json::Value,
-    hash: &str,
-) -> Result<serde_json::Value, librespot::core::Error> {
-    let bearer = login5_bearer(session).await?;
-    let body = serde_json::json!({
-        "operationName": operation,
-        "variables": variables,
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": hash,
-            }
-        }
-    });
-
-    let mut req = http()
-        .post("https://api-partner.spotify.com/pathfinder/v2/query")
-        .header("Accept", "application/json")
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {bearer}"))
-        .header("User-Agent", USER_AGENT)
-        .header("app-platform", "WebPlayer")
-        .header("spotify-app-version", SPOTIFY_SEMVER);
-
-    if let Some(ct) = client_token(session).await {
-        req = req.header("client-token", ct);
-    }
-
-    let resp = req.json(&body).send().await.map_err(|e| {
-        librespot::core::Error::unavailable(format!("pathfinder POST failed: {e}"))
-    })?;
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        let snippet: String = text.chars().take(200).collect();
-        log::warn!("pathfinder {operation} {status}: {snippet}");
-        return Err(librespot::core::Error::unavailable(format!(
-            "pathfinder {status}"
-        )));
-    }
-    let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
-        librespot::core::Error::failed_precondition(format!("pathfinder json: {e}"))
-    })?;
-    if json.get("errors").is_some() {
-        log::warn!("pathfinder {operation} errors: {json}");
-        return Err(librespot::core::Error::unavailable(
-            "pathfinder returned errors",
-        ));
-    }
-    Ok(json)
 }
 
 fn image_url(value: &serde_json::Value) -> Option<String> {
@@ -311,37 +239,10 @@ fn page_items<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a Vec<ser
     value.get(key)?.get("items")?.as_array()
 }
 
-fn parse_pathfinder_search(json: &serde_json::Value, limit_per_type: u32) -> Vec<EntityInfo> {
-    let search = json
-        .pointer("/data/search")
-        .or_else(|| json.pointer("/data/searchV2"))
-        .unwrap_or(json);
-    let limit = limit_per_type as usize;
-    let mut out = Vec::new();
-
-    let mut push_items = |key: &str, map: fn(&serde_json::Value) -> Option<EntityInfo>| {
-        if let Some(items) = search.get(key).and_then(|v| v.get("items")).and_then(|i| i.as_array())
-        {
-            for item in items.iter().take(limit) {
-                if let Some(entity) = map(item) {
-                    if !entity.name.is_empty() {
-                        out.push(entity);
-                    }
-                }
-            }
-        }
-    };
-
-    push_items("artists", artist_entity);
-    push_items("albums", album_entity);
-    push_items("tracks", track_entity);
-    push_items("playlists", playlist_entity);
-    out
-}
-
-/// psst: GET v1/me/albums?market=from_token (Login5 bearer via reqwest).
+/// psst: GET v1/me/albums?market=from_token (OAuth bearer via reqwest).
 pub async fn fetch_saved_albums(
     session: &Session,
+    bearer: &str,
     limit: u32,
 ) -> Result<Vec<SavedAlbumInfo>, librespot::core::Error> {
     let limit = limit.clamp(1, 500);
@@ -352,7 +253,7 @@ pub async fn fetch_saved_albums(
     while out.len() < limit as usize {
         let take = page_size.min(limit - out.len() as u32);
         let path = format!("v1/me/albums?limit={take}&offset={offset}&market=from_token");
-        let json = web_api_get(session, &path).await?;
+        let json = web_api_get(session, bearer, &path).await?;
         let Some(items) = json.get("items").and_then(|v| v.as_array()) else {
             break;
         };
@@ -378,60 +279,14 @@ pub async fn fetch_saved_albums(
         offset += take;
     }
 
-    if out.is_empty() {
-        Err(librespot::core::Error::unavailable(
-            "web client saved albums empty",
-        ))
-    } else {
-        log::info!("web client saved albums: {} item(s)", out.len());
-        Ok(out)
-    }
+    log::info!("web client saved albums: {} item(s)", out.len());
+    Ok(out)
 }
 
-pub async fn search_catalog_pathfinder(
-    session: &Session,
-    query: &str,
-    limit_per_type: u32,
-) -> Result<Vec<EntityInfo>, librespot::core::Error> {
-    let trimmed = query.trim();
-    if trimmed.is_empty() {
-        return Ok(vec![]);
-    }
-    let limit = limit_per_type.clamp(1, 10);
-    let variables = serde_json::json!({
-        "searchTerm": trimmed,
-        "offset": 0,
-        "limit": limit,
-        "numberOfTopResults": limit,
-        "includeAudiobooks": false,
-    });
-
-    for hash in SEARCH_DESKTOP_HASHES {
-        match pathfinder_post(session, "searchDesktop", variables.clone(), hash).await {
-            Ok(json) => {
-                let items = parse_pathfinder_search(&json, limit);
-                if !items.is_empty() {
-                    log::info!(
-                        "pathfinder search {:?}: {} result(s) (hash {})",
-                        trimmed,
-                        items.len(),
-                        &hash[..8]
-                    );
-                    return Ok(items);
-                }
-            }
-            Err(e) => log::warn!("pathfinder searchDesktop hash {} failed: {e}", &hash[..8]),
-        }
-    }
-
-    Err(librespot::core::Error::unavailable(
-        "pathfinder search unavailable",
-    ))
-}
-
-/// psst: GET v1/search?type=artist,album,track,playlist&marker=from_token
+/// psst: GET v1/search?type=artist,album,track,playlist&market=from_token
 pub async fn search_catalog_web(
     session: &Session,
+    bearer: &str,
     query: &str,
     limit_per_type: u32,
 ) -> Result<Vec<EntityInfo>, librespot::core::Error> {
@@ -441,9 +296,9 @@ pub async fn search_catalog_web(
     }
     let limit = limit_per_type.clamp(1, 10);
     let path = format!(
-        "v1/search?q={q}&type=artist,album,track,playlist&limit={limit}&marker=from_token"
+        "v1/search?q={q}&type=artist,album,track,playlist&limit={limit}&market=from_token"
     );
-    let json = web_api_get(session, &path).await?;
+    let json = web_api_get(session, bearer, &path).await?;
 
     let mut out = Vec::new();
     if let Some(items) = page_items(&json, "artists") {
@@ -483,12 +338,6 @@ pub async fn search_catalog_web(
         }
     }
 
-    if out.is_empty() {
-        Err(librespot::core::Error::unavailable(
-            "web client search empty",
-        ))
-    } else {
-        log::info!("web client search {:?}: {} result(s)", query, out.len());
-        Ok(out)
-    }
+    log::info!("web client search {:?}: {} result(s)", query, out.len());
+    Ok(out)
 }

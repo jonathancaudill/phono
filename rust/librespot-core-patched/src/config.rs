@@ -39,6 +39,24 @@ pub fn http_platform_label() -> &'static str {
     }
 }
 
+/// The OS librespot should *present* as on the wire. Respects the HTTP platform
+/// override so a Keymaster session on Android presents as Linux consistently
+/// across User-Agent, version, and client-token platform data. Differs from
+/// `OS`, which is the real compile-time target.
+pub fn effective_os() -> &'static str {
+    if let Some(p) = HTTP_PLATFORM_OVERRIDE.get() {
+        return match p.as_str() {
+            "linux" => "linux",
+            "android" => "android",
+            "ios" => "ios",
+            "macos" | "osx" => "macos",
+            "windows" | "win32" => "windows",
+            _ => OS,
+        };
+    }
+    OS
+}
+
 /// True when the session uses the Keymaster (desktop OAuth) client id.
 pub fn session_uses_keymaster_identity(session_client_id: &str) -> bool {
     session_client_id == KEYMASTER_CLIENT_ID
