@@ -61,6 +61,7 @@ data class SearchUiState(
 data class PlayingExtrasState(
     val isTrackSaved: Boolean = false,
     val savePending: Boolean = false,
+    val saveError: String? = null,
 )
 
 data class SettingsUiState(
@@ -119,6 +120,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         controller.completeLogin(code) { result ->
             if (result.isSuccess) onLoggedIn()
         }
+    }
+
+    fun saveWebApiCredentials(clientId: String, clientSecret: String) {
+        controller.saveWebApiCredentials(clientId, clientSecret)
+    }
+
+    fun buildWebApiAuthorizeUrl(): String = controller.buildWebApiAuthorizeUrl()
+
+    fun completeWebApiAuth(code: String, onResult: (Result<Unit>) -> Unit) {
+        controller.completeWebApiAuth(code, onResult)
     }
 
     fun onLoggedIn() {
@@ -295,10 +306,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         playTracks(tracks, index)
     }
 
-    fun refreshPlayingSaveState() {
+    fun refreshPlayingScreen() {
         val uri = playback.value.currentUri ?: return
+        controller.refreshNowPlayingFromWebApi()
         viewModelScope.launch {
-            val saved = runCatching { controller.isTrackSaved(uri) }.getOrDefault(false)
+            _playingExtras.value = _playingExtras.value.copy(saveError = null)
+            val saved = runCatching { controller.isTrackSaved(uri) }
+                .getOrElse { e ->
+                    _playingExtras.value = _playingExtras.value.copy(
+                        saveError = e.message ?: "Could not check liked status",
+                    )
+                    return@launch
+                }
             _playingExtras.value = _playingExtras.value.copy(isTrackSaved = saved)
         }
     }
@@ -308,7 +327,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val current = _playingExtras.value
             if (current.savePending) return@launch
-            _playingExtras.value = current.copy(savePending = true)
+            _playingExtras.value = current.copy(savePending = true, saveError = null)
             val wasSaved = current.isTrackSaved
             val result = runCatching {
                 if (wasSaved) controller.removeTrack(uri) else controller.saveTrack(uri)
@@ -316,6 +335,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _playingExtras.value = PlayingExtrasState(
                 isTrackSaved = if (result.isSuccess) !wasSaved else wasSaved,
                 savePending = false,
+                saveError = result.exceptionOrNull()?.message,
             )
             if (result.isSuccess && !wasSaved) loadLikedSongs(refresh = true)
         }

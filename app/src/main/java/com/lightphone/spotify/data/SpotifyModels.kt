@@ -48,6 +48,12 @@ data class SpotifySavedAlbum(
 )
 
 @Serializable
+data class SpotifySavedTrack(
+    @SerialName("added_at") val addedAt: String? = null,
+    val track: SpotifyTrack,
+)
+
+@Serializable
 data class PagedResponse<T>(
     val items: List<T> = emptyList(),
     val next: String? = null,

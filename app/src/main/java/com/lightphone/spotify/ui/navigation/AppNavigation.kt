@@ -6,13 +6,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -21,38 +19,43 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.lightphone.spotify.ui.AppViewModel
-import com.lightphone.spotify.ui.components.DefaultEchoTabs
-import com.lightphone.spotify.ui.components.EchoNavbar
-import com.lightphone.spotify.ui.components.EchoTab
+import com.lightphone.spotify.ui.components.DefaultMonoTabs
+import com.lightphone.spotify.ui.components.MonoNavbar
+import com.lightphone.spotify.ui.components.MonoTab
+import com.lightphone.spotify.ui.components.StyledText
+import com.lightphone.spotify.ui.theme.n
 import com.lightphone.spotify.ui.screens.AlbumDetailScreen
 import com.lightphone.spotify.ui.screens.AlbumsScreen
 import com.lightphone.spotify.ui.screens.ArtistDetailScreen
 import com.lightphone.spotify.ui.screens.LikedSongsScreen
 import com.lightphone.spotify.ui.screens.LoginScreen
+import com.lightphone.spotify.ui.screens.WebApiSetupScreen
 import com.lightphone.spotify.ui.screens.PlayingScreen
 import com.lightphone.spotify.ui.screens.SearchResultsScreen
 import com.lightphone.spotify.ui.screens.SearchScreen
 import com.lightphone.spotify.ui.screens.SettingsScreen
-import com.lightphone.spotify.ui.theme.EchoColors
-import com.lightphone.spotify.ui.theme.EchoTheme
+import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.MonoTheme
 import java.net.URLDecoder
 
 private val TabRoutes = setOf(
-    EchoTab.Liked.route,
-    EchoTab.Albums.route,
-    EchoTab.Search.route,
-    EchoTab.Settings.route,
+    MonoTab.Liked.route,
+    MonoTab.Albums.route,
+    MonoTab.Search.route,
+    MonoTab.Settings.route,
 )
 
 @Composable
 fun SpotifyApp(vm: AppViewModel = viewModel()) {
     val playback by vm.playback.collectAsState()
-    EchoTheme {
-        if (!playback.loggedIn) {
-            LoginScreen(vm)
-        } else {
-            LaunchedEffect(Unit) { vm.onLoggedIn() }
-            MainNavigation(vm)
+    MonoTheme {
+        when {
+            !playback.loggedIn -> LoginScreen(vm)
+            !playback.webApiReady -> WebApiSetupScreen(vm)
+            else -> {
+                LaunchedEffect(Unit) { vm.onLoggedIn() }
+                MainNavigation(vm)
+            }
         }
     }
 }
@@ -64,31 +67,33 @@ private fun MainNavigation(vm: AppViewModel) {
     val currentRoute = backStackEntry?.destination?.route?.substringBefore('?')
     val playback by vm.playback.collectAsState()
 
-    val currentTab = DefaultEchoTabs.firstOrNull { it.route == currentRoute } ?: EchoTab.Liked
+    val currentTab = DefaultMonoTabs.firstOrNull { it.route == currentRoute } ?: MonoTab.Liked
     val showNavbar = currentRoute in TabRoutes
 
     Column(
         Modifier
             .fillMaxSize()
-            .background(EchoColors.Background),
+            .background(MonoColors.Background),
     ) {
         playback.statusMessage?.let { msg ->
-            Text(
+            StyledText(
                 msg,
-                color = EchoColors.Warning,
+                size = 14,
+                color = MonoColors.Warning,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                    .padding(horizontal = n(12), vertical = n(4)),
             )
         }
         playback.error?.let { err ->
             if (playback.statusMessage == null) {
-                Text(
+                StyledText(
                     err,
-                    color = EchoColors.Error,
+                    size = 14,
+                    color = MonoColors.Error,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                        .padding(horizontal = n(12), vertical = n(4)),
                 )
             }
         }
@@ -96,10 +101,10 @@ private fun MainNavigation(vm: AppViewModel) {
         Box(Modifier.weight(1f)) {
             NavHost(
                 navController = navController,
-                startDestination = EchoTab.Liked.route,
+                startDestination = MonoTab.Liked.route,
                 modifier = Modifier.fillMaxSize(),
             ) {
-                composable(EchoTab.Liked.route) {
+                composable(MonoTab.Liked.route) {
                     LikedSongsScreen(
                         vm = vm,
                         onOpenPlaying = { navController.navigate(Routes.Playing) },
@@ -109,7 +114,7 @@ private fun MainNavigation(vm: AppViewModel) {
                         },
                     )
                 }
-                composable(EchoTab.Albums.route) {
+                composable(MonoTab.Albums.route) {
                     AlbumsScreen(
                         vm = vm,
                         onOpenPlaying = { navController.navigate(Routes.Playing) },
@@ -118,7 +123,7 @@ private fun MainNavigation(vm: AppViewModel) {
                         },
                     )
                 }
-                composable(EchoTab.Search.route) {
+                composable(MonoTab.Search.route) {
                     SearchScreen(
                         vm = vm,
                         onSubmit = { query ->
@@ -126,7 +131,7 @@ private fun MainNavigation(vm: AppViewModel) {
                         },
                     )
                 }
-                composable(EchoTab.Settings.route) {
+                composable(MonoTab.Settings.route) {
                     SettingsScreen(
                         vm = vm,
                         onLogout = { vm.logout() },
@@ -206,12 +211,12 @@ private fun MainNavigation(vm: AppViewModel) {
         }
 
         if (showNavbar) {
-            EchoNavbar(
-                tabs = DefaultEchoTabs,
+            MonoNavbar(
+                tabs = DefaultMonoTabs,
                 currentTab = currentTab,
                 onTabSelected = { tab ->
                     navController.navigate(tab.route) {
-                        popUpTo(EchoTab.Liked.route) { saveState = true }
+                        popUpTo(MonoTab.Liked.route) { saveState = true }
                         launchSingleTop = true
                         restoreState = true
                     }

@@ -1,31 +1,69 @@
 # Spotify Client for Light Phone III
 
 An independent, minimal Spotify Premium client. No official Spotify SDK and no
-dependency on the Spotify app: streaming is handled entirely in-process by
-[`librespot`](https://github.com/librespot-org/librespot) (Rust), wrapped behind
-a stable UniFFI surface and driven by a Kotlin + Jetpack Compose host.
+dependency on the Spotify app: **playback** is handled in-process by
+[`librespot`](https://github.com/librespot-org/librespot) (Rust). **Metadata**
+(search, library, albums, artists) uses the official Spotify Web API with your
+own developer-app credentials.
 
 > Requires a Spotify **Premium** account. This is a protocol-level requirement of
 > librespot, not something that can be worked around.
 
+## Setup (required before first use)
+
+The app uses **dual authentication**:
+
+1. **Step 1 — Playback (librespot):** WebView login with Spotify's first-party
+   client for audio streaming. No developer dashboard setup needed.
+2. **Step 2 — Web API:** You must create your own app at
+   [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) and
+   enter the **Client ID** and **Client Secret** in the app.
+
+### Create your Spotify Developer app
+
+1. Go to [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
+2. Click **Create App**
+3. Fill in app name and description
+4. Set **Redirect URI** to `http://127.0.0.1:43821/callback` (must match exactly — no trailing slash)
+5. Select **Web API** under "Which API/SDKs are you planning to use?"
+6. Accept terms and click **Save**
+7. Open **Settings** and copy your **Client ID** and **Client Secret**
+8. Under **Android package**, add:
+   - **Package name:** `com.lightphone.spotify`
+   - **SHA1 fingerprint:** (from your signing key — run `keytool` on your keystore)
+9. Click **Save**
+
+### Configure the app
+
+1. Complete **Step 1** (playback login) in the app
+2. On **Step 2**, paste your Client ID and Client Secret
+3. Tap **Connect Web API** and authorize when prompted
+
+**Notes:**
+
+- Development Mode apps require the **app owner** to have Spotify Premium
+- Each dev app allows up to **5 authorized users** (add yourself in the dashboard)
+- Refresh tokens expire after **6 months** — re-run Step 2 if metadata stops working
+
 ## Layout
 
 ```
-rust/spotify-core/   # Rust backend: librespot (=0.8.0) behind a UniFFI API
-app/                 # Android app (Kotlin + Jetpack Compose, Media3)
+rust/spotify-core/   # Rust backend: librespot playback + daily-mix native discovery
+app/                 # Android app (Kotlin Web API client + Jetpack Compose UI)
 scripts/build-rust.sh# Cross-compile + generate Kotlin bindings
 ```
 
-## Architecture (one paragraph)
+## Architecture
 
-`rust/spotify-core` owns a tokio runtime, a librespot `Session`, a `Player`
-(audio via `rodio` → `cpal` → AAudio), and a manual queue. It exposes a small
-`LibrespotEngine` object plus a `PlayerEventListener` callback over UniFFI. On
-Android the app calls `NativeInit.initAndroidContext(applicationContext)` once at
-startup so cpal can reach the JVM/`Context` via `ndk_context`. `PlaybackController`
-(Kotlin) owns the engine, handles audio focus, and exposes a `StateFlow` to the
-Compose UI; `PlaybackService` hosts a Media3 `MediaSession` for lock-screen
-controls. Web API metadata uses the login5-derived token (no developer client ID).
+- **Playback:** `LibrespotEngine` (UniFFI) owns session, player, queue. Keymaster
+  OAuth via WebView (`http://127.0.0.1:8898/login`).
+- **Metadata:** Kotlin `SpotifyWebApi` (OkHttp + kotlinx.serialization) calls
+  `api.spotify.com` with tokens from your dev-app OAuth (`http://127.0.0.1:43821/callback`).
+- **Daily mixes:** Hybrid — native librespot context-resolve when possible;
+  fallback to Daily Mix playlists in your library via Web API.
+
+`PlaybackController` handles audio focus and exposes `StateFlow` to Compose;
+`PlaybackService` hosts Media3 for lock-screen controls.
 
 ## Build
 
@@ -34,46 +72,30 @@ Prerequisites:
 - Rust (rustup) with Android targets: `rustup target add aarch64-linux-android x86_64-linux-android`
 - `cargo install cargo-ndk`
 - Android NDK installed; export `ANDROID_NDK_HOME`
-- JDK 17, Android SDK (compileSdk 35), `gradle` (or generate the wrapper: `gradle wrapper`)
+- JDK 17, Android SDK (compileSdk 35), Gradle
 
 Then:
 
 ```bash
-# 1) Cross-compile the Rust backend and generate the Kotlin bindings.
+# 1) Cross-compile the Rust backend and generate Kotlin bindings.
 bash scripts/build-rust.sh
 
 # 2) Build the app (also runs step 1 via the cargoBuild Gradle task).
-gradle :app:assembleDebug
+./gradlew :app:assembleDebug
 ```
 
-The Rust feature set is pinned in `rust/spotify-core/Cargo.toml`:
-`--no-default-features --features "rustls-tls-webpki-roots,rodio-backend,with-libmdns"`.
+## Key gotchas
 
-## Key gotchas (read before debugging)
-
-- **`librespot` breaks when Spotify changes their backend.** Before assuming a
-  local bug, check the [librespot issues tracker](https://github.com/librespot-org/librespot/issues).
-  We pin `=0.8.0`; bumping it should only ever touch `rust/spotify-core`.
-- **`ndk_context` must be initialized.** Without `NativeInit.initAndroidContext`,
-  the first audio call panics with "android context was not initialized".
-- **Audio focus is handled in Kotlin** (`PlaybackController`), because cpal/rodio
-  does not participate in Android audio focus. Headphone-unplug / output-route
-  changes are the most likely cause of rodio glitches; if they prove unreliable
-  on device, the escalation is a custom `librespot::audio_backend::Sink` backed
-  by a Kotlin `AudioTrack` (see the plan).
+- **`ndk_context` must be initialized** via `NativeInit.initAndroidContext` before
+  constructing the engine.
+- **Audio focus** is handled in Kotlin (`PlaybackController`).
 - **minSdk is 26** (AAudio requirement).
-- **Web API scope:** search, `/me/tracks`, albums work with the login5 token;
-  some personalized home/browse sections return 403. Treat such failures as
-  "section unavailable" rather than errors.
-- **Non-premium accounts:** librespot's `check_catalogue` calls `exit()` on a
-  non-premium account. Premium is required by design.
+- **Artist top tracks, recommendations, new releases** are not available on new
+  dev-mode Web API apps (Spotify Feb 2026 restrictions).
+- **Non-premium accounts:** librespot requires Premium for playback.
 
-## Reliability features
+## Reliability
 
-- Auto-reconnect with exponential backoff using cached credentials (librespot
-  sessions can't be reused once invalidated, so a fresh `Session`/`Player` is
-  rebuilt and the queue/position restored).
-- login5 access token is cached and refreshed on expiry; Web API retries once on
-  401.
-- A typed FFI error taxonomy (`SpotifyError`) distinguishes auth / premium /
-  network / track-unavailable / internal failures.
+- Auto-reconnect with cached librespot credentials and queue restore
+- Web API token refresh with `invalid_grant` handling (6-month refresh token expiry)
+- HTTP 429 honored via `Retry-After` with capped retries

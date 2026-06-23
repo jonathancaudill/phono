@@ -26,7 +26,7 @@ mod settings;
 #[cfg(target_os = "android")]
 mod android_ctx;
 
-pub use library::{AlbumDetailInfo, ArtistDetailInfo, EntityInfo, SavedAlbumInfo};
+pub use library::EntityInfo;
 pub use settings::{NormalizationType, StreamingQuality};
 
 uniffi::setup_scaffolding!();
@@ -170,7 +170,6 @@ struct EngineShared {
     active: Mutex<Option<Active>>,
     oauth: Mutex<Option<OAuthState>>,
     refresh_mutex: Mutex<()>,
-    library_cache: library::LibraryCache,
 }
 
 /// The UniFFI object handed to Kotlin.
@@ -216,69 +215,20 @@ impl LibrespotEngine {
         self.shared.is_logged_in()
     }
 
-    /// OAuth access token for api.spotify.com metadata and spclient fallback.
+    /// OAuth access token (PKCE bootstrap / spclient fallback when Login5 is unavailable).
     pub fn access_token(&self) -> Result<String, SpotifyError> {
         self.shared.access_token()
     }
 
-    /// Web API token: Login5 stored-credential refresh first (psst path), OAuth fallback.
-    pub fn web_api_access_token(&self) -> Result<String, SpotifyError> {
-        self.shared.web_api_access_token()
+    /// Resolve a context/playlist URI to tracks via spclient context-resolve.
+    pub fn context_tracks(&self, context_uri: String, limit: u32) -> Result<Vec<TrackInfo>, SpotifyError> {
+        let session = self.shared.session_or_err()?;
+        self.shared.context_tracks(&session, &context_uri, limit)
     }
 
-    /// Search the catalog via spclient `context-resolve` (`spotify:search:…`), as
-    /// documented in librespot-core's `SpClient::get_context`.
-    pub fn search_tracks(&self, query: String, limit: u32) -> Result<Vec<TrackInfo>, SpotifyError> {
-        self.shared.search_tracks(&query, limit)
-    }
-
-    /// Liked songs via spclient `context-resolve` (`spotify:user:<id>:collection`).
-    pub fn liked_tracks(&self, limit: u32) -> Result<Vec<TrackInfo>, SpotifyError> {
-        self.shared.liked_tracks(limit)
-    }
-
-    /// Saved albums via spclient Your Library (protobuf).
-    pub fn saved_albums(&self, limit: u32) -> Result<Vec<SavedAlbumInfo>, SpotifyError> {
-        self.shared.saved_albums(limit)
-    }
-
-    /// Album metadata + track list via context-resolve and extended-metadata.
-    pub fn album_detail(&self, album_id: String) -> Result<AlbumDetailInfo, SpotifyError> {
-        self.shared.album_detail(&album_id)
-    }
-
-    pub fn is_album_saved(&self, album_id: String) -> Result<bool, SpotifyError> {
-        self.shared.is_album_saved(&album_id)
-    }
-
-    pub fn save_album(&self, album_id: String) -> Result<(), SpotifyError> {
-        self.shared.save_album(&album_id)
-    }
-
-    pub fn remove_album(&self, album_id: String) -> Result<(), SpotifyError> {
-        self.shared.remove_album(&album_id)
-    }
-
-    /// Artist profile, top tracks, and albums via context-resolve + metadata.
-    pub fn artist_detail(&self, artist_id: String) -> Result<ArtistDetailInfo, SpotifyError> {
-        self.shared.artist_detail(&artist_id)
-    }
-
-    /// Catalog search (tracks, albums, artists, playlists) via context-resolve.
-    pub fn search_catalog(&self, query: String, limit: u32) -> Result<Vec<EntityInfo>, SpotifyError> {
-        self.shared.search_catalog(&query, limit)
-    }
-
-    pub fn is_track_saved(&self, uri: String) -> Result<bool, SpotifyError> {
-        self.shared.is_track_saved(&uri)
-    }
-
-    pub fn save_track(&self, uri: String) -> Result<(), SpotifyError> {
-        self.shared.save_track(&uri)
-    }
-
-    pub fn remove_track(&self, uri: String) -> Result<(), SpotifyError> {
-        self.shared.remove_track(&uri)
+    /// Discover Daily Mix / Made-For-You playlists via native context-resolve.
+    pub fn daily_mixes(&self) -> Result<Vec<EntityInfo>, SpotifyError> {
+        self.shared.daily_mixes()
     }
 
     /// Replace the queue with `uris` and start playing at `start_index`.
@@ -466,7 +416,6 @@ impl EngineShared {
             active: Mutex::new(None),
             oauth: Mutex::new(None),
             refresh_mutex: Mutex::new(()),
-            library_cache: library::LibraryCache::new(),
         }))
     }
 
@@ -525,7 +474,6 @@ impl EngineShared {
         self.store_oauth(tokens);
         handle.block_on(self.clone().build_active(credentials, None))?;
         self.probe_login5_token();
-        self.probe_web_api_bearer_debug();
         Ok(())
     }
 
@@ -561,7 +509,6 @@ impl EngineShared {
         // Prime the OAuth fallback token for spclient/playback.
         let _ = self.access_token();
         self.probe_login5_token();
-        self.probe_web_api_bearer_debug();
         Ok(true)
     }
 
@@ -757,20 +704,6 @@ impl EngineShared {
         }
     }
 
-    fn search_tracks(&self, query: &str, limit: u32) -> Result<Vec<TrackInfo>, SpotifyError> {
-        let session = self.session_or_err()?;
-        let q = query.trim().replace(' ', "+");
-        let uri = format!("spotify:search:{q}");
-        self.context_tracks(&session, &uri, limit)
-    }
-
-    fn liked_tracks(&self, limit: u32) -> Result<Vec<TrackInfo>, SpotifyError> {
-        let session = self.session_or_err()?;
-        let username = session.username();
-        let uri = format!("spotify:user:{username}:collection");
-        self.context_tracks(&session, &uri, limit)
-    }
-
     pub(crate) fn session_or_err(&self) -> Result<Session, SpotifyError> {
         self.active
             .lock()
@@ -780,26 +713,7 @@ impl EngineShared {
             .ok_or(SpotifyError::NotLoggedIn)
     }
 
-    /// Web API bearer: Login5 stored-credential refresh (psst), then OAuth PKCE fallback.
-    fn web_api_access_token(&self) -> Result<String, SpotifyError> {
-        let session = self.session_or_err()?;
-        let handle = self.runtime.handle().clone();
-        match handle.block_on(async move { session.login5().auth_token().await }) {
-            Ok(token) => {
-                log::info!(
-                    "web_api_access_token: Login5 bearer ({} chars)",
-                    token.access_token.len()
-                );
-                Ok(token.access_token)
-            }
-            Err(e) => {
-                log::warn!("Login5 web API token unavailable ({e}); using OAuth fallback");
-                self.access_token()
-            }
-        }
-    }
-
-    /// Diagnostic: log whether Login5 can mint a Web API token (psst path).
+    /// Diagnostic: log whether Login5 and client-token mint succeed after connect.
     fn probe_login5_token(&self) {
         let Ok(session) = self.session_or_err() else {
             return;
@@ -823,42 +737,16 @@ impl EngineShared {
         match login5_result {
             Ok(token) => {
                 log::info!(
-                    "Login5 probe OK ({}s TTL, {} char bearer) — metadata uses Login5",
+                    "Login5 probe OK ({}s TTL, {} char bearer)",
                     token.expires_in.as_secs(),
                     token.access_token.len()
                 );
             }
             Err(e) => {
-                log::warn!(
-                    "Login5 probe failed ({e}) — metadata falls back to OAuth Bearer"
-                );
+                log::warn!("Login5 probe failed ({e}) — spclient may use OAuth fallback");
             }
         }
     }
-
-    /// Temporary debug probe: exercises the real OAuth + client-token Web API path.
-    #[cfg(debug_assertions)]
-    fn probe_web_api_bearer_debug(&self) {
-        let Ok(oauth_token) = self.access_token() else {
-            return;
-        };
-        let Ok(session) = self.session_or_err() else {
-            return;
-        };
-        let handle = self.runtime.handle().clone();
-        handle.block_on(async move {
-            let client_token = session.spclient().client_token().await.ok();
-            auth::probe_web_api_bearer(
-                "post-connect",
-                &oauth_token,
-                client_token.as_deref(),
-            )
-            .await;
-        });
-    }
-
-    #[cfg(not(debug_assertions))]
-    fn probe_web_api_bearer_debug(&self) {}
 
     /// Resolve a context URI via librespot spclient `context-resolve` (Login5).
     fn context_tracks(
