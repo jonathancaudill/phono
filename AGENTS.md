@@ -1,23 +1,24 @@
 # AGENTS.md — mono: Unofficial Spotify Client for Light Phone III
 
 Read this entire file before changing anything. This project touches Spotify's internal
-protocols, a patched fork of librespot, and a subtle multi-identity authentication scheme.
-Most of the hard-won knowledge here is NOT discoverable from the code alone, and several
-"obvious" changes will silently break playback or trigger rate-limiting. When in doubt, do less.
+protocols, a patched fork of librespot, and a **dual authentication** scheme (Keymaster for
+playback, BYO dev-app OAuth for metadata). Most of the hard-won knowledge here is NOT
+discoverable from the code alone, and several "obvious" changes will silently break playback
+or metadata. When in doubt, do less.
 
 ---
 
 ## What This Is
 
-A minimal, self-contained Spotify client for the Light Phone III (an Android-based minimalist
-phone running LightOS). It plays Spotify Premium audio and browses the user's library WITHOUT
-requiring the official Spotify app to be installed. It is built around a patched fork of
-librespot (Rust) with a Kotlin/Android UI layer.
+A minimal, self-contained Spotify client for the Light Phone III (LightOS). It plays Spotify
+Premium audio **without** the official Spotify app and browses the user's library via the
+public Web API. Built on a patched fork of **librespot** (Rust playback) plus a Kotlin/Jetpack
+Compose UI layer.
 
-Reference implementation: **Jetispot** (https://github.com/iTaysonLab/jetispot) for native library
-reads (collection v2 paging, Mercury pub/sub). **psst** (https://github.com/jpochyla/psst) remains
-useful for playback/session patterns. We deliberately do NOT use `api.spotify.com` for metadata
-reads — Spotify rate-limits Login5 tokens on that surface (429) as of late 2025.
+**Lineage:** UI and Light Phone product patterns descend from
+**[Echo](https://github.com/vandamd/echo)** and
+**[Light Template](https://github.com/vandamd/light-template)** (Vandam Dinh). Playback/session
+patterns also draw on **psst** and **librespot** itself.
 
 Spotify Premium is REQUIRED. Free accounts are not and will never be supported (librespot
 limitation). This is not a bug to fix.
@@ -29,223 +30,172 @@ limitation). This is not a bug to fix.
 ```
 /
 ├── rust/
-│   ├── spotify-core/              # Our Rust core: session, playback, library metadata
+│   ├── spotify-core/              # Rust core: librespot playback + daily-mix discovery
 │   │   └── src/
-│   │       ├── lib.rs             # EngineShared, JNI exports, session build, identity init
-│   │       ├── auth.rs            # OAuth/PKCE flow, reqwest http_client(), CLIENT_ID, scopes
-│   │       ├── library.rs         # Library reads (spclient/Mercury) + writes (Mercury)
-│   │       └── android_ctx.rs     # JNI native init (called from Kotlin), identity overrides
+│   │       ├── lib.rs             # EngineShared, UniFFI exports, session build, identity init
+│   │       ├── auth.rs            # Keymaster OAuth/PKCE (playback bootstrap only)
+│   │       ├── library.rs         # Daily Mix discovery via spclient context-resolve only
+│   │       └── android_ctx.rs     # Native init (called from Kotlin), identity overrides
 │   └── librespot-core-patched/    # PATCHED fork of librespot-core 0.8.0 (see "The Patch")
 │       └── src/{config.rs, version.rs, spclient.rs, login5.rs, ...}
 ├── app/                           # Android app (Kotlin + Jetpack Compose)
+│   └── src/main/java/.../data/
+│       ├── webapi/                # SpotifyWebApi, WebApiAuth (dev-app OAuth + api.spotify.com)
+│       ├── SpotifyRepository.kt   # UI-facing metadata + search cache + ranking
+│       └── SearchRanking.kt       # Client-side search relevance + interleave
 └── README.md
 ```
 
-librespot is pinned to `=0.8.0` and patched via `[patch.crates-io]` pointing at
-`librespot-core-patched`. DO NOT bump the version — the patch is written against 0.8.0's exact
-internal structure and a bump will silently invalidate it.
+librespot is pinned to `=0.8.0` and patched via `[patch.crates-io]`. **DO NOT bump** — the
+patch is written against 0.8.0's exact internal structure.
 
 ---
 
-## The Single Most Important Concept: Three Client Identities Must Agree
+## Dual Authentication (do not conflate)
 
-Spotify decides how to treat a request based on WHICH CLIENT it appears to come from. Our entire
-auth architecture exists to make every request look like Spotify's own **first-party desktop
-client** (the "Keymaster" client, ID `65b708073fc0480ea92a077233ca87bd`).
+| Step | Purpose | Client | Redirect URI | Token used for |
+|------|---------|--------|--------------|----------------|
+| **1 — Playback** | librespot session | Keymaster (`65b708073fc0480ea92a077233ca87bd`) | `http://127.0.0.1:8898/login` | Streaming only |
+| **2 — Web API** | Metadata/library | User's dev-app Client ID | `http://127.0.0.1:43821/callback` | `api.spotify.com/v1/*` only |
 
-There are THREE identity surfaces, and they must all present as Keymaster/desktop or
-authentication fails with opaque errors (`InvalidCredentials`, `FaultyRequest`). Metadata reads
-use spclient/Mercury (not the public Web API), which is unaffected by the Login5 429 lockdown:
+**Critical:** Never send the Keymaster/Login5 token to `api.spotify.com` — Spotify rate-limits
+and locks down that surface for first-party tokens. Metadata **must** use the dev-app OAuth
+bearer from `WebApiAuth` (`app/.../webapi/WebApiAuth.kt`).
 
-1. **Session client ID** — set in `lib.rs`: `session_config.client_id = auth::CLIENT_ID`
-   (Keymaster). This is also the client ID our OAuth flow in `auth.rs` uses.
+Username/password auth is dead (Spotify disabled it mid-2024). OAuth WebView flows only.
 
-2. **Stored-credential scope** — when we connect with an OAuth token, librespot does the access-
-   point handshake and caches a reusable credentials blob ("auth_data"). That blob is implicitly
-   tied to the client ID the OAuth token was for — Keymaster, because `auth.rs` uses CLIENT_ID.
+---
 
-3. **Client-token client ID** — the `client-token` (from `clienttoken.spotify.com`) is a
-   required header on spclient/Login5 traffic. Stock librespot picks this client ID based on the
-   compile-time OS. On Android, stock librespot would use ANDROID_CLIENT_ID
-   (`9a8d2f0ce77a4e248bb71fefcb557637`) — a DIFFERENT client. THE PATCH fixes this to use the
-   session (Keymaster) client ID instead. See "The Patch."
+## Playback Identity: Three Surfaces Must Agree (Keymaster)
 
-If these three ever disagree, Login5 fails. This is the bug that consumed an enormous amount of
-debugging. Do not reintroduce it by changing client IDs, OS detection, or the patch.
+Spotify decides how to treat librespot traffic based on client identity. For **playback**
+(session, spclient, Login5, client-token), all three surfaces must present as Keymaster/desktop:
 
-### Why "android" is the enemy here
+1. **Session client ID** — `session_config.client_id = auth::CLIENT_ID` (Keymaster). Same ID
+   used in Step 1 OAuth (`auth.rs`).
 
-`std::env::consts::OS` is `"android"` at compile time. Stock librespot routes off this value in
-THREE places — the client-token client ID, the User-Agent platform string, and the Spotify
-version number — and each Android branch produces a value that contradicts our Keymaster/desktop
-identity. We force everything to present as Linux desktop via runtime overrides + the patch.
+2. **Stored-credential scope** — cached `auth_data` from OAuth is tied to Keymaster.
+
+3. **Client-token client ID** — stock librespot would use `ANDROID_CLIENT_ID` on Android; **the
+   patch** forces session (Keymaster) client ID instead.
+
+If these disagree, Login5 fails with opaque errors (`InvalidCredentials`, `FaultyRequest`).
+
+### Why "android" is the enemy
+
+Stock librespot routes off `std::env::consts::OS == "android"` for client-token ID, UA
+platform, and Spotify version — each contradicts Keymaster/desktop. We force Linux desktop via
+runtime overrides + the patch.
+
+### Runtime overrides (FIRST WRITE WINS — ordering matters)
+
+- `android_ctx.rs`: `set_os_version_override("0")` — Kotlin must call
+  `NativeInit.initAndroidContext` after `System.loadLibrary()`, before engine construction.
+- `lib.rs` `EngineShared::new()`: `set_http_platform_override("linux")`.
+- **DO NOT** add a second `set_os_version_override` in `lib.rs` (OnceLock no-op).
 
 ---
 
 ## The Patch (`librespot-core-patched`)
 
-We patch librespot-core 0.8.0 because the identity logic we need is keyed off compile-time
-constants we cannot otherwise change. The patch is intentionally minimal. Key changes:
+Minimal patch against librespot-core 0.8.0:
 
-- **`config.rs`**: adds `HTTP_PLATFORM_OVERRIDE` and `OS_VERSION_OVERRIDE` (`OnceLock`s) and an
-  `effective_os()` helper. `effective_os()` returns the *presented* OS (respects the override),
-  as opposed to `OS` (the real compile-time target). Also `http_platform_label()` for the UA
-  platform string.
-- **`spclient.rs`**: the client-token request uses the session (Keymaster) client ID on Android
-  instead of ANDROID_CLIENT_ID (via a `use_keymaster_desktop` check), and sends `desktop_linux`
-  platform data. This is what aligns identity surface #3.
-- **`version.rs`**: `spotify_version()` / `spotify_semantic_version()` use `effective_os()` so
-  that when we present as Linux, the version number is the DESKTOP version, not the mobile one.
-  (Stock returns the mobile version on Android, producing an impossible "mobile version + Linux
-  platform" User-Agent.)
-- **`login5.rs`**: UNCHANGED from upstream. Its StoredCredential path already uses the session
-  client ID (Keymaster), which is correct. Do not "fix" it.
-
-### Runtime overrides (set in Rust, BEFORE the session/HTTP client is built)
-
-These are `OnceLock`s — FIRST WRITE WINS; later writes silently no-op. Ordering matters.
-
-- `android_ctx.rs` sets `set_os_version_override("0")` (the value a real Linux desktop reports).
-  This runs FIRST because it is a `#[no_mangle]` native method
-  (`Java_..._NativeInit_initAndroidContext`) that **Kotlin calls explicitly** right after
-  `System.loadLibrary()` and before constructing the engine. NOTE: it is NOT `JNI_OnLoad`; it
-  does not auto-fire at library load — Kotlin must call it.
-- `lib.rs` `EngineShared::new()` sets `set_http_platform_override("linux")`.
-- DO NOT add a second `set_os_version_override(...)` in `lib.rs` — it will no-op because
-  `android_ctx` already set it. (An early draft of a plan suggested this; it was wrong.)
-
-The `os_version = "0"` choice is COUPLED to the Keymaster/Linux identity. If future work ever
-switches to a native Android client ID (the android platform branch), `"0"` becomes WRONG —
-that branch needs a real Android SDK int (>= 21). Documented in `android_ctx.rs`; respect it.
+- **`config.rs`**: `HTTP_PLATFORM_OVERRIDE`, `OS_VERSION_OVERRIDE`, `effective_os()`
+- **`spclient.rs`**: client-token uses session (Keymaster) ID on Android; `desktop_linux` platform
+- **`version.rs`**: desktop version numbers when presenting as Linux
+- **`login5.rs`**: UNCHANGED — do not "fix" it
 
 ---
 
-## Authentication Flow (one-time, then cached)
+## Metadata — Kotlin Web API (`SpotifyWebApi.kt`)
 
-1. First launch: a WebView opens Spotify's `accounts.spotify.com/authorize` page (OAuth 2.0 with
-   PKCE), using `CLIENT_ID` (Keymaster) and `REDIRECT_URI = http://127.0.0.1:8898/login`.
-   - The redirect URI MUST be `127.0.0.1` (not `localhost`) and must match what is registered for
-     the Keymaster client, or Spotify returns "redirect_uri: Not matching configuration".
-   - The WebView intercepts navigation to the redirect URI (`shouldOverrideUrlLoading`), extracts
-     `?code=`, and never actually loads the loopback URL. There is no local server.
-2. The code is exchanged (PKCE verifier) for an OAuth token. We connect the librespot session
-   with it; librespot caches a reusable stored-credentials blob.
-3. After that, the session is the source of truth. The OAuth token is essentially a bootstrap.
+All library/search/browse reads and writes go through `https://api.spotify.com/v1/...` with the
+**dev-app bearer** from `WebApiAuth.currentBearer()`.
 
-### Username/password auth is DEAD
+| Feature | Implementation |
+|---------|----------------|
+| Search | Single `GET /search?type=artist,album,track,playlist&market=from_token`; client ranking in `SearchRanking.kt` |
+| Liked songs | `GET /me/tracks` (paginated) |
+| Saved albums | `GET /me/albums` (paginated, limit up to 500) |
+| Album/artist detail | `GET /albums/{id}`, `GET /artists/{id}`, artist albums |
+| Save/remove | `PUT`/`DELETE /me/library` |
+| is_saved | `GET /me/library/contains` |
+| Playlist play | `GET /playlists/{id}/items` |
 
-Spotify disabled it in mid-2024 and contacted the librespot maintainers directly. Do not attempt
-to implement or suggest password login. OAuth (as above) is the only path.
+### Web API request rules
 
----
+- Headers: `Authorization: Bearer {dev_app_token}`, `Accept: application/json` only.
+- **DO NOT** send `client-token`, `app-platform`, or per-request User-Agent to `api.spotify.com`.
+- Honor `Retry-After` on HTTP 429 (capped retries in `SpotifyWebApi.executeWithRetry`).
+- Use `market=from_token` on search (not `marker`).
+- Search responses may contain **null slots** in `items` arrays — use `SearchPagedResponse<T?>` and
+  `filterNotNull()`; never treat empty as error.
+- Paginate library endpoints in 50-item pages; saved albums caller clamp is `clamp(1, 500)`.
 
-## Metadata Reads — Native Channels (NO api.spotify.com)
+### Search ranking (client-side)
 
-We do **NOT** call `https://api.spotify.com/v1/...` for library/search/browse metadata. Spotify
-started returning 429 on that surface for Login5/Keymaster tokens in late 2025. All reads go
-through Spotify's internal channels authenticated by the librespot session (Login5 + client-token):
-
-| Feature | Channel | Implementation |
-|---------|---------|----------------|
-| Search | spclient `context-resolve` | `spotify:search:…` → `get_context` (`library.rs`) |
-| Liked songs | spclient `context-resolve` | `spotify:user:<id>:collection` |
-| Saved albums | context-resolve → collection v2 → Mercury | fallback chain in `fetch_saved_albums_native` |
-| Album/artist detail | spclient context-resolve + extended-metadata | `Album::get`, `Artist::get`, `Track::get` |
-| is_saved checks | spclient `/your-library/v1/contains` | `check_contains` |
-| Save/remove | Mercury `hm://collection/...` + spclient `/collection/...` | `collection_mutate` |
-
-### Saved albums fallback chain (Jetispot model)
-
-1. Try `get_context` on `spotify:user:{username}:collection:albums`
-2. Fall back to spclient **collection v2** POST `/collection/v2/paging` (protobuf `PageRequest` /
-   `PageResponse`, content-type `application/vnd.collection-v2.spotify.proto`) — filter URIs
-   starting with `spotify:album:`, enrich via `Album::get`
-3. Fall back to Mercury GET `hm://collection/collection/{username}` and parse album URIs from
-   the protobuf payload
-
-### OAuth token retention
-
-`auth.rs` OAuth/PKCE machinery is kept for session bootstrap and as a **future BYO-client-id
-fallback** if native reads prove unreliable. It is NOT used for metadata reads today.
-
-### DO NOT reintroduce
-
-- `api.spotify.com/v1/*` metadata calls (429 lockdown)
-- pathfinder (`api-partner.spotify.com/pathfinder`) — brittle persisted-query hashes
-- spclient saved-album fallback chains (the 12-endpoint guess cascade)
+Spotify returns per-type buckets, not a cross-type SERP. `SearchRanking.rank()` picks a top
+result (text match + popularity + API rank), then round-robin interleaves the remainder for
+variety. Filter chips (All/Songs/Artists/Albums/Playlists) filter cached data — **zero extra
+API calls**.
 
 ---
 
-## OAuth / reqwest client (`auth.rs`)
+## Rust Native Path (playback + daily mixes only)
 
-The reqwest `http_client()` with desktop UA is used only for OAuth token exchange
-(`accounts.spotify.com/api/token`), not for metadata. Keep exactly ONE `.user_agent(...)`
-definition in the tree.
+`library.rs` is **not** the general metadata layer anymore. It only implements Daily Mix /
+Made-For-You playlist discovery via `spotify:search:…` context-resolve, with Web API fallback
+in `SpotifyRepository.dailyMixes()`.
 
----
-
-## Library — Mercury Reads and Writes
-
-**Writes** (save/remove albums and tracks) go over Mercury via `collection_mutate` / `mercury_send`.
-These work and must not be casually refactored.
-
-**Reads** also use Mercury (GET) and spclient collection v2 where needed — see "Metadata Reads"
-above. `mercury_get` (read) is separate from `mercury_send` (fire-and-forget write).
+Do not move general search/library reads back into Rust spclient unless you have a compelling
+reason — dev-app Web API is the supported metadata path today.
 
 ---
 
 ## Playback
 
-librespot handles playback over its proprietary TCP protocol to `ap-*.spotify.com`. Audio output
-on Android uses the `oboe` backend (NOT rodio/ALSA — those do not work on Android). Playback is
-exposed to Kotlin via JNI. A `MediaSession` is registered for OS lock-screen controls and audio
-focus. This layer is separate from metadata fetching.
+librespot streams over TCP to `ap-*.spotify.com`. Android audio uses the **oboe** backend.
+Exposed via UniFFI to Kotlin. `MediaSession` / Media3 for lock-screen controls and audio focus.
+`PlaybackController` owns audio focus in Kotlin.
 
 ---
 
 ## Hard Rules — Violating These Breaks The App
 
 - DO NOT bump librespot off `=0.8.0`.
-- DO NOT reintroduce `api.spotify.com/v1/*` metadata reads (Login5 tokens are 429'd).
-- DO NOT use a Spotify developer-app client ID/registration for metadata (future BYO fallback only).
-- DO NOT reintroduce pathfinder (`api-partner.spotify.com`) or spclient saved-album guess cascades.
-- DO NOT change the three identity surfaces out of agreement: session client ID, stored-credential
-  scope, and client-token client ID must all be Keymaster.
-- DO NOT add a second `set_os_version_override` in `lib.rs` (OnceLock no-op).
+- DO NOT use Keymaster/Login5 token for `api.spotify.com` metadata — dev-app OAuth only.
+- DO NOT use Keymaster client ID for the Web API dev-app registration — users bring their own.
+- DO NOT mix Step 1 and Step 2 redirect URIs (`8898/login` vs `43821/callback`).
+- DO NOT change the three playback identity surfaces out of agreement (Keymaster everywhere).
+- DO NOT add a second `set_os_version_override` in `lib.rs`.
+- DO NOT reintroduce pathfinder (`api-partner.spotify.com/pathfinder`).
 - DO NOT implement username/password auth.
-- DO NOT treat empty results as errors.
-- DO NOT touch Mercury write code (`collection_mutate`, `mercury_send`) unless that is the task.
-- DO NOT cross-contaminate the redirect URI: it is `http://127.0.0.1:8898/login`, `127.0.0.1`
-  (never `localhost`), matching the Keymaster registration.
+- DO NOT treat empty search/library results as errors.
+- DO NOT cross-contaminate redirect URI host: use `127.0.0.1`, never `localhost`.
 
 ---
 
 ## When Things Break: Diagnostic Map
 
-- **Login5 returns `InvalidCredentials` / `NoStoredCredentials`** → identity surface disagreement
-  or overrides ran in wrong order. Check Keymaster client ID, `set_http_platform_override("linux")`,
-  `set_os_version_override("0")`, patch client-token alignment.
-- **Saved albums empty** → check logcat for which fallback succeeded (context-resolve, collection
-  v2, mercury). Collection v2 protobuf parse may need updating if Spotify changed the schema.
-- **Search returns nothing** → spclient `context-resolve` on `spotify:search:…` failed; check
-  session/login5. NOT a Web API issue.
-- **Saved albums truncated at 50** → caller clamp must be `clamp(1, 500)` for saved albums.
-- **User-Agent looks wrong in logs** → `version.rs` not using `effective_os()`, or stray UA constant.
+- **Login5 / playback auth fails** → identity surface disagreement or overrides ran wrong order.
+  Check Keymaster client ID, `set_http_platform_override("linux")`, `set_os_version_override("0")`,
+  patch client-token alignment.
+- **Web API 401/403** → wrong token (Keymaster token on api.spotify.com?) or Step 2 not completed.
+- **Web API 429** → missing Retry-After handling or too many sequential requests; search should
+  be **one** combined call per query.
+- **Search JSON parse error on playlists** → null items in response; ensure nullable list parsing.
+- **Search results screen crash** → never force-unwrap `results` inside LazyColumn scope; keep
+  stale results while reloading.
+- **Saved albums truncated at 50** → caller clamp must be `clamp(1, 500)`.
+- **User-Agent wrong in playback logs** → `version.rs` not using `effective_os()`.
 
 ---
 
-## Debug Probe
+## Reference Clients
 
-`probe_login5_token` in `lib.rs` logs whether Login5 and client-token mint succeed after connect.
-It does NOT hit `api.spotify.com`.
-
----
-
-## Reference Clients (for comparison when designing fetch behavior)
-
-- **Jetispot** (Android, librespot-java) — collection v2 paging, Mercury pub/sub for library sync.
-  Our saved-albums implementation follows this model.
-- **psst** (Rust, desktop) — playback/session gold standard; Web API metadata path is now broken
-  (429) so do not restore psst's `api.spotify.com` reads here.
-- **librespot** itself — spclient `get_context`, Mercury, extended-metadata; read v0.8.0 source
-  when reasoning about session, Login5, spclient, or Mercury behavior.
+- **[Echo](https://github.com/vandamd/echo)** (Vandam Dinh) — Light Phone Spotify UX, Web API
+  metadata patterns, dev-app setup flow. mono's UI descends from Light Template.
+- **psst** — librespot playback/session reference; search API structure (single combined `/search`).
+- **librespot** — protocol source of truth for session, Login5, spclient, oboe playback.
+- **Jetispot** — informative for native Mercury/collection-v2 approaches we deliberately do **not**
+  use for metadata today.
