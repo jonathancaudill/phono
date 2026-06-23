@@ -75,9 +75,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
-    // psst-style api.spotify.com metadata (OAuth Bearer; Login5 later).
+  // Spotify Web API metadata (user dev-app OAuth).
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     // Album art loading.
     implementation("io.coil-kt:coil-compose:2.7.0")
