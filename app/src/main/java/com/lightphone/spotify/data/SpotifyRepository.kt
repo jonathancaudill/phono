@@ -83,7 +83,7 @@ class SpotifyRepository(
         )
     }
 
-    fun search(query: String, limitPerType: Int = 5): SearchResults {
+    fun search(query: String, limitPerType: Int = 8): SearchResults {
         val key = query.trim()
         if (key.isEmpty()) return SearchResults(query = "")
         val now = System.currentTimeMillis()
@@ -95,6 +95,9 @@ class SpotifyRepository(
         searchCache[key] = now to items
         return items
     }
+
+    fun playlistTracks(playlistId: String, limit: Int = 100): List<TrackMetadata> =
+        webApi.playlistItems(playlistId, limit).map { it.toMetadata() }
 
     fun isTrackSaved(uri: String): Boolean =
         runCatching {
@@ -170,13 +173,20 @@ data class ArtistDetailResult(
     val albums: List<SpotifyAlbumSimple>,
 )
 
-private fun SpotifySearchResults.toSearchResults(query: String): SearchResults = SearchResults(
-    query = query,
-    artists = artists?.items.orEmpty(),
-    albums = albums?.items.orEmpty(),
-    tracks = tracks?.items.orEmpty(),
-    playlists = playlists?.items.orEmpty(),
-)
+private fun SpotifySearchResults.toSearchResults(query: String): SearchResults {
+    val base = SearchResults(
+        query = query,
+        artists = artists?.items.orEmpty().filterNotNull(),
+        albums = albums?.items.orEmpty().filterNotNull(),
+        tracks = tracks?.items.orEmpty().filterNotNull(),
+        playlists = playlists?.items.orEmpty().filterNotNull(),
+    )
+    val ranked = SearchRanking.rank(query, base)
+    return base.copy(
+        topResult = ranked.topResult,
+        rankedItems = ranked.rankedItems,
+    )
+}
 
 fun mapWebApiError(e: Throwable): String = when (e) {
     is WebApiAuthException -> e.message ?: "Web API session expired — re-authorize Step 2"

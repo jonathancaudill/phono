@@ -31,7 +31,7 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
     companion object {
         private const val BASE_URL = "https://api.spotify.com/v1"
         private const val MAX_429_RETRIES = 4
-        private const val SEARCH_PAGE_LIMIT = 10
+        private const val DEFAULT_SEARCH_LIMIT = 8
         private const val LIBRARY_PAGE_LIMIT = 50
     }
 
@@ -86,35 +86,15 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
 
     fun track(trackId: String): SpotifyTrack = get("/tracks/$trackId")
 
-    fun search(query: String, limitPerType: Int = 5): SpotifySearchResults {
-        val perType = limitPerType.coerceIn(1, 10)
-        val types = "track,album,artist,playlist"
-        val tracks = paginateSearch<SpotifyTrack>(
-            query = query,
-            type = "track",
-            limit = perType * 2,
-        )
-        val albums = paginateSearch<SpotifyAlbumSimple>(
-            query = query,
-            type = "album",
-            limit = perType,
-        )
-        val artists = paginateSearch<SpotifyArtist>(
-            query = query,
-            type = "artist",
-            limit = perType,
-        )
-        val playlists = paginateSearch<SpotifyPlaylistSimple>(
-            query = query,
-            type = "playlist",
-            limit = perType,
-        )
-        return SpotifySearchResults(
-            tracks = PagedResponse(items = tracks),
-            albums = PagedResponse(items = albums),
-            artists = PagedResponse(items = artists),
-            playlists = PagedResponse(items = playlists),
-        )
+    fun search(query: String, limitPerType: Int = DEFAULT_SEARCH_LIMIT): SpotifySearchResults {
+        val limit = limitPerType.coerceIn(1, 10)
+        val path = buildString {
+            append("/search?q=").append(urlEncode(query))
+            append("&type=artist,album,track,playlist")
+            append("&limit=").append(limit)
+            append("&market=from_token")
+        }
+        return get(path)
     }
 
     fun saveLibrary(uris: List<String>) {
@@ -146,38 +126,6 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
             limit = limit.coerceIn(1, 500),
         )
         return items.mapNotNull { it.item }
-    }
-
-    private inline fun <reified T> paginateSearch(
-        query: String,
-        type: String,
-        limit: Int,
-    ): List<T> {
-        val results = mutableListOf<T>()
-        var offset = 0
-        while (results.size < limit) {
-            val pageLimit = minOf(SEARCH_PAGE_LIMIT, limit - results.size)
-            val path = buildString {
-                append("/search?q=").append(urlEncode(query))
-                append("&type=").append(type)
-                append("&limit=").append(pageLimit)
-                append("&offset=").append(offset)
-            }
-            val page = get<SpotifySearchResults>(path)
-            val chunk = when (type) {
-                "track" -> page.tracks?.items.orEmpty()
-                "album" -> page.albums?.items.orEmpty()
-                "artist" -> page.artists?.items.orEmpty()
-                "playlist" -> page.playlists?.items.orEmpty()
-                else -> emptyList()
-            }
-            if (chunk.isEmpty()) break
-            @Suppress("UNCHECKED_CAST")
-            results.addAll(chunk as List<T>)
-            offset += chunk.size
-            if (chunk.size < pageLimit) break
-        }
-        return results.take(limit)
     }
 
     private fun paginateTracks(path: String, limit: Int): List<SpotifyTrack> {

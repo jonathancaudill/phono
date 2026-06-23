@@ -413,12 +413,22 @@ class PlaybackController private constructor(
             }
         }
 
-    suspend fun search(query: String, limitPerType: Int = 5): SearchResults =
+    suspend fun search(query: String, limitPerType: Int = 8): SearchResults =
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.search(query, limitPerType)
             } catch (e: Throwable) {
                 android.util.Log.e("Search", "search failed", e)
+                throw Exception(mapWebApiError(e))
+            }
+        }
+
+    suspend fun playlistTracks(playlistId: String, limit: Int = 100): List<TrackMetadata> =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            try {
+                repository.playlistTracks(playlistId, limit)
+            } catch (e: Throwable) {
+                android.util.Log.e("Search", "playlistTracks failed", e)
                 throw Exception(mapWebApiError(e))
             }
         }

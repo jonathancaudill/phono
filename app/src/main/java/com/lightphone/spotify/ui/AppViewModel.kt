@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.lightphone.spotify.App
+import com.lightphone.spotify.data.SearchFilter
 import com.lightphone.spotify.data.SearchResults
 import com.lightphone.spotify.data.SearchResultItem
 import com.lightphone.spotify.data.SpotifyAlbumDetail
@@ -56,6 +57,7 @@ data class SearchUiState(
     val results: SearchResults? = null,
     val loading: Boolean = false,
     val error: String? = null,
+    val filter: SearchFilter = SearchFilter.All,
 )
 
 data class PlayingExtrasState(
@@ -249,16 +251,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val trimmed = query.trim()
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
-            _search.value = SearchUiState(loading = true, query = trimmed, error = null, results = null)
+            _search.value = _search.value.copy(
+                loading = true,
+                query = trimmed,
+                error = null,
+                filter = SearchFilter.All,
+            )
             runCatching {
                 withTimeout(SEARCH_TIMEOUT_MS) { controller.search(trimmed) }
             }
                 .onSuccess { results ->
-                    _search.value = SearchUiState(
+                    _search.value = _search.value.copy(
                         query = trimmed,
                         results = results,
                         loading = false,
                         error = if (results.isEmpty()) "No results" else null,
+                        filter = SearchFilter.All,
                     )
                 }
                 .onFailure { e ->
@@ -266,14 +274,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         is TimeoutCancellationException -> "Search timed out — try again."
                         else -> e.message ?: "Search failed"
                     }
-                    _search.value = SearchUiState(
+                    _search.value = _search.value.copy(
                         query = trimmed,
                         loading = false,
                         error = message,
-                        results = null,
                     )
                 }
         }
+    }
+
+    fun setSearchFilter(filter: SearchFilter) {
+        _search.value = _search.value.copy(filter = filter)
     }
 
     fun playTracks(tracks: List<TrackMetadata>, startIndex: Int) {
@@ -299,6 +310,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun playSearchTrack(item: SearchResultItem.Track) {
         playTracks(listOf(item.track.toMetadata()), 0)
+    }
+
+    fun playSearchPlaylist(playlistId: String, onStarted: () -> Unit = {}) {
+        viewModelScope.launch {
+            val tracks = runCatching { controller.playlistTracks(playlistId) }.getOrNull()
+            if (!tracks.isNullOrEmpty()) {
+                playTracks(tracks, 0)
+                onStarted()
+            }
+        }
+    }
+
+    fun openSearchResult(
+        item: SearchResultItem,
+        onOpenAlbum: (String, String) -> Unit,
+        onOpenArtist: (String) -> Unit,
+        onPlayTrack: (SearchResultItem.Track) -> Unit,
+        onPlayPlaylist: (String) -> Unit,
+    ) {
+        when (item) {
+            is SearchResultItem.Track -> onPlayTrack(item)
+            is SearchResultItem.Album -> onOpenAlbum(item.album.id, item.album.name)
+            is SearchResultItem.Artist -> onOpenArtist(item.artist.id)
+            is SearchResultItem.Playlist -> onPlayPlaylist(item.playlist.id)
+        }
     }
 
     fun playArtistTopTrack(index: Int) {

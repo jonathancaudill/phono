@@ -16,6 +16,7 @@ data class SpotifyArtist(
     val name: String = "",
     val uri: String = "",
     val images: List<SpotifyImage> = emptyList(),
+    val popularity: Int = 0,
 )
 
 @Serializable
@@ -27,6 +28,7 @@ data class SpotifyAlbumSimple(
     val artists: List<SpotifyArtist> = emptyList(),
     @SerialName("album_type") val albumType: String? = null,
     @SerialName("release_date") val releaseDate: String? = null,
+    val popularity: Int = 0,
 )
 
 @Serializable
@@ -39,6 +41,7 @@ data class SpotifyTrack(
     @SerialName("duration_ms") val durationMs: Long = 0,
     @SerialName("track_number") val trackNumber: Int = 0,
     @SerialName("disc_number") val discNumber: Int = 1,
+    val popularity: Int = 0,
 )
 
 @Serializable
@@ -56,6 +59,14 @@ data class SpotifySavedTrack(
 @Serializable
 data class PagedResponse<T>(
     val items: List<T> = emptyList(),
+    val next: String? = null,
+    val total: Int = 0,
+)
+
+/** Search API pages may contain null slots for unavailable results. */
+@Serializable
+data class SearchPagedResponse<T>(
+    val items: List<T?> = emptyList(),
     val next: String? = null,
     val total: Int = 0,
 )
@@ -92,10 +103,10 @@ data class TopTracksResponse(
 
 @Serializable
 data class SpotifySearchResults(
-    val tracks: PagedResponse<SpotifyTrack>? = null,
-    val albums: PagedResponse<SpotifyAlbumSimple>? = null,
-    val artists: PagedResponse<SpotifyArtist>? = null,
-    val playlists: PagedResponse<SpotifyPlaylistSimple>? = null,
+    val tracks: SearchPagedResponse<SpotifyTrack>? = null,
+    val albums: SearchPagedResponse<SpotifyAlbumSimple>? = null,
+    val artists: SearchPagedResponse<SpotifyArtist>? = null,
+    val playlists: SearchPagedResponse<SpotifyPlaylistSimple>? = null,
 )
 
 @Serializable
@@ -153,22 +164,45 @@ sealed class SearchResultItem {
     }
 }
 
+enum class SearchFilter(val label: String) {
+    All("All"),
+    Tracks("Songs"),
+    Artists("Artists"),
+    Albums("Albums"),
+    Playlists("Playlists"),
+}
+
 data class SearchResults(
     val query: String,
     val artists: List<SpotifyArtist> = emptyList(),
     val albums: List<SpotifyAlbumSimple> = emptyList(),
     val tracks: List<SpotifyTrack> = emptyList(),
     val playlists: List<SpotifyPlaylistSimple> = emptyList(),
+    val topResult: SearchResultItem? = null,
+    val rankedItems: List<SearchResultItem> = emptyList(),
 ) {
     fun isEmpty(): Boolean =
-        artists.isEmpty() && albums.isEmpty() && tracks.isEmpty() && playlists.isEmpty()
+        topResult == null &&
+            rankedItems.isEmpty() &&
+            artists.isEmpty() &&
+            albums.isEmpty() &&
+            tracks.isEmpty() &&
+            playlists.isEmpty()
 
-    fun toResultItems(): List<SearchResultItem> = buildList {
-        artists.forEach { add(SearchResultItem.Artist(it)) }
-        albums.forEach { add(SearchResultItem.Album(it)) }
-        tracks.forEach { add(SearchResultItem.Track(it)) }
-        playlists.forEach { add(SearchResultItem.Playlist(it)) }
+    /** Top result + interleaved remainder for the All filter. */
+    fun allItems(): List<SearchResultItem> = buildList {
+        topResult?.let { add(it) }
+        addAll(rankedItems)
     }
+
+    fun itemsForFilter(filter: SearchFilter): Pair<SearchResultItem?, List<SearchResultItem>> =
+        when (filter) {
+            SearchFilter.All -> topResult to rankedItems
+            SearchFilter.Tracks -> null to tracks.take(10).map { SearchResultItem.Track(it) }
+            SearchFilter.Artists -> null to artists.take(10).map { SearchResultItem.Artist(it) }
+            SearchFilter.Albums -> null to albums.take(10).map { SearchResultItem.Album(it) }
+            SearchFilter.Playlists -> null to playlists.take(10).map { SearchResultItem.Playlist(it) }
+        }
 }
 
 fun SpotifyTrack.toMetadata(): TrackMetadata = TrackMetadata(

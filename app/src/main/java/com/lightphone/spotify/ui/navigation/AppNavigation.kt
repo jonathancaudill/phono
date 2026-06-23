@@ -163,6 +163,11 @@ private fun MainNavigation(vm: AppViewModel) {
                             vm.playSearchTrack(track)
                             navController.navigate(Routes.Playing)
                         },
+                        onPlayPlaylist = { playlistId ->
+                            vm.playSearchPlaylist(playlistId) {
+                                navController.navigate(Routes.Playing)
+                            }
+                        },
                     )
                 }
                 composable(
