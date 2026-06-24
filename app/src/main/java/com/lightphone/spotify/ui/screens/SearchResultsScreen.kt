@@ -1,7 +1,6 @@
 package com.lightphone.spotify.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,14 +13,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import com.lightphone.spotify.data.SearchFilter
 import com.lightphone.spotify.data.SearchResultItem
 import com.lightphone.spotify.data.SearchResults
@@ -33,6 +34,8 @@ import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.tap
 import com.lightphone.spotify.ui.theme.MonoColors
 import com.lightphone.spotify.ui.theme.n
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 @Composable
 fun SearchResultsScreen(
@@ -113,28 +116,55 @@ private fun SearchFilterChips(
     selected: SearchFilter,
     onSelect: (SearchFilter) -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(n(8)),
-    ) {
-        SearchFilter.entries.forEach { filter ->
-            val active = filter == selected
-            Box(
-                modifier = Modifier
-                    .background(if (active) MonoColors.Foreground else MonoColors.PlaceholderBg)
-                    .tap { onSelect(filter) }
-                    .padding(horizontal = n(14), vertical = n(8)),
-            ) {
-                StyledText(
-                    filter.label,
-                    size = 16,
-                    lineHeight = 18,
-                    color = if (active) MonoColors.Background else MonoColors.Foreground,
-                )
+    val chipGap = n(8)
+
+    SubcomposeLayout(modifier = Modifier.fillMaxWidth()) { constraints ->
+        val rowPlaceable = subcompose("chips") {
+            Row(horizontalArrangement = Arrangement.spacedBy(chipGap)) {
+                SearchFilter.entries.forEach { filter ->
+                    SearchFilterChip(
+                        filter = filter,
+                        active = filter == selected,
+                        onSelect = onSelect,
+                    )
+                }
+            }
+        }.first().measure(Constraints())
+
+        val scale = min(1f, constraints.maxWidth.toFloat() / rowPlaceable.width)
+        val scaledWidth = (rowPlaceable.width * scale).roundToInt()
+        val scaledHeight = (rowPlaceable.height * scale).roundToInt()
+        val offsetX = ((constraints.maxWidth - scaledWidth) / 2f).roundToInt()
+
+        layout(constraints.maxWidth, scaledHeight) {
+            rowPlaceable.placeRelativeWithLayer(offsetX, 0) {
+                scaleX = scale
+                scaleY = scale
+                transformOrigin = TransformOrigin(0f, 0f)
             }
         }
+    }
+}
+
+@Composable
+private fun SearchFilterChip(
+    filter: SearchFilter,
+    active: Boolean,
+    onSelect: (SearchFilter) -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .background(if (active) MonoColors.Foreground else MonoColors.PlaceholderBg)
+            .tap { onSelect(filter) }
+            .padding(horizontal = n(14), vertical = n(8)),
+    ) {
+        StyledText(
+            filter.label,
+            size = 16,
+            lineHeight = 18,
+            color = if (active) MonoColors.Background else MonoColors.Foreground,
+            maxLines = 1,
+        )
     }
 }
 
