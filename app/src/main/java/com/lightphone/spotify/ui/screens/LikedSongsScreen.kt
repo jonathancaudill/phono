@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
@@ -21,6 +22,7 @@ import com.lightphone.spotify.ui.components.LibraryInfiniteList
 import com.lightphone.spotify.ui.components.MonoContentContainer
 import com.lightphone.spotify.ui.components.MonoMediaListItem
 import com.lightphone.spotify.ui.components.StyledText
+import com.lightphone.spotify.ui.components.buildLibraryDateIndex
 import com.lightphone.spotify.ui.theme.MonoColors
 import com.lightphone.spotify.ui.theme.n
 
@@ -35,6 +37,9 @@ fun LikedSongsScreen(
 
     val state by vm.likedTracks.collectAsState()
     val listState = rememberLazyListState()
+    val dateIndex = remember(state.items) {
+        buildLibraryDateIndex(state.items) { it.added_at }
+    }
 
     MonoContentContainer(
         title = "Liked Songs",
@@ -67,6 +72,8 @@ fun LikedSongsScreen(
                     canLoadMore = state.canLoadMore,
                     itemKey = { it.uri },
                     onEnsureBufferAhead = vm::ensureLikedTracksBufferAhead,
+                    dateIndex = dateIndex.takeUnless { it.isEmpty },
+                    onScrubToIndex = { index -> vm.scrollLikedTracksToIndex(listState, index) },
                     modifier = Modifier.fillMaxSize(),
                 ) { index, track ->
                     MonoMediaListItem(

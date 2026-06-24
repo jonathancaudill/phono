@@ -12,7 +12,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import com.lightphone.spotify.ui.components.buildLibraryDateIndex
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.LibraryInfiniteList
 import com.lightphone.spotify.ui.components.MonoContentContainer
@@ -30,6 +32,9 @@ fun AlbumsScreen(
 
     val state by vm.savedAlbums.collectAsState()
     val listState = rememberLazyListState()
+    val dateIndex = remember(state.items) {
+        buildLibraryDateIndex(state.items) { it.added_at }
+    }
 
     MonoContentContainer(
         title = "Albums",
@@ -62,6 +67,8 @@ fun AlbumsScreen(
                     canLoadMore = state.canLoadMore,
                     itemKey = { it.album_id },
                     onEnsureBufferAhead = vm::ensureSavedAlbumsBufferAhead,
+                    dateIndex = dateIndex.takeUnless { it.isEmpty },
+                    onScrubToIndex = { index -> vm.scrollSavedAlbumsToIndex(listState, index) },
                     modifier = Modifier.fillMaxSize(),
                 ) { _, saved ->
                     MonoMediaListItem(

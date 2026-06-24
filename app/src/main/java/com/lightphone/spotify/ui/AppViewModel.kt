@@ -3,6 +3,7 @@ package com.lightphone.spotify.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.compose.foundation.lazy.LazyListState
 import com.lightphone.spotify.App
 import com.lightphone.spotify.data.SearchFilter
 import com.lightphone.spotify.data.SearchResults
@@ -262,6 +263,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (!hasMore) break
             }
         }
+    }
+
+    suspend fun scrollLikedTracksToIndex(listState: LazyListState, targetIndex: Int) {
+        while (_likedTracks.value.items.size <= targetIndex && _likedTracks.value.hasMore) {
+            val hasMore = runCatching { controller.appendLikedTracks() }
+                .onFailure { e ->
+                    android.util.Log.e("Library", "append liked tracks failed", e)
+                }
+                .getOrDefault(false)
+            if (!hasMore) break
+        }
+        val items = _likedTracks.value.items
+        if (items.isEmpty()) return
+        val index = targetIndex.coerceIn(0, items.lastIndex)
+        listState.scrollToItem(index)
+    }
+
+    suspend fun scrollSavedAlbumsToIndex(listState: LazyListState, targetIndex: Int) {
+        while (_savedAlbums.value.items.size <= targetIndex && _savedAlbums.value.hasMore) {
+            val hasMore = runCatching { controller.appendSavedAlbums() }
+                .onFailure { e ->
+                    android.util.Log.e("Library", "append saved albums failed", e)
+                }
+                .getOrDefault(false)
+            if (!hasMore) break
+        }
+        val items = _savedAlbums.value.items
+        if (items.isEmpty()) return
+        val index = targetIndex.coerceIn(0, items.lastIndex)
+        listState.scrollToItem(index)
     }
 
     private fun startSavedAlbumsFill() {
