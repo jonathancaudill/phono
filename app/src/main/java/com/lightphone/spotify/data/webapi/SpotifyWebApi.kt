@@ -3,13 +3,15 @@ package com.lightphone.spotify.data.webapi
 import com.lightphone.spotify.data.PagedResponse
 import com.lightphone.spotify.data.SpotifyAlbumDetail
 import com.lightphone.spotify.data.SpotifyAlbumSimple
-import com.lightphone.spotify.data.SpotifyArtist
 import com.lightphone.spotify.data.SpotifyArtistDetail
 import com.lightphone.spotify.data.SpotifyPlaylistSimple
 import com.lightphone.spotify.data.SpotifySavedAlbum
 import com.lightphone.spotify.data.SpotifySavedTrack
 import com.lightphone.spotify.data.SpotifySearchResults
 import com.lightphone.spotify.data.SpotifyTrack
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.Authenticator
@@ -32,7 +34,7 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
         private const val BASE_URL = "https://api.spotify.com/v1"
         private const val MAX_429_RETRIES = 4
         private const val DEFAULT_SEARCH_LIMIT = 8
-        private const val LIBRARY_PAGE_LIMIT = 50
+        const val LIBRARY_PAGE_LIMIT = 50
     }
 
     private val json = Json {
@@ -57,13 +59,35 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
         })
         .build()
 
-    fun likedTracks(limit: Int = 500): List<SpotifyTrack> {
-        val saved = paginateSavedTracks(limit.coerceIn(1, 500))
-        return saved.map { it.track }
+    suspend fun savedTracksPage(
+        offset: Int,
+        limit: Int = LIBRARY_PAGE_LIMIT,
+    ): LibraryPage<SpotifySavedTrack> {
+        val pageLimit = limit.coerceIn(1, LIBRARY_PAGE_LIMIT)
+        val safeOffset = offset.coerceAtLeast(0)
+        val path = "/me/tracks?limit=$pageLimit&offset=$safeOffset&market=from_token"
+        val page = getSuspend<PagedResponse<SpotifySavedTrack?>>(path)
+        return LibraryPage(
+            items = page.items.filterNotNull().filter { it.track != null },
+            total = page.total,
+            offset = safeOffset,
+        )
     }
 
-    fun savedAlbums(limit: Int = 500): List<SpotifySavedAlbum> =
-        paginateSavedAlbums(limit.coerceIn(1, 500))
+    suspend fun savedAlbumsPage(
+        offset: Int,
+        limit: Int = LIBRARY_PAGE_LIMIT,
+    ): LibraryPage<SpotifySavedAlbum> {
+        val pageLimit = limit.coerceIn(1, LIBRARY_PAGE_LIMIT)
+        val safeOffset = offset.coerceAtLeast(0)
+        val path = "/me/albums?limit=$pageLimit&offset=$safeOffset&market=from_token"
+        val page = getSuspend<PagedResponse<SpotifySavedAlbum?>>(path)
+        return LibraryPage(
+            items = page.items.filterNotNull().filter { it.album != null },
+            total = page.total,
+            offset = safeOffset,
+        )
+    }
 
     fun album(albumId: String): SpotifyAlbumDetail {
         val detail = get<SpotifyAlbumDetail>("/albums/$albumId")
@@ -131,46 +155,16 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
     private fun paginateTracks(path: String, limit: Int): List<SpotifyTrack> {
         val results = mutableListOf<SpotifyTrack>()
         var offset = 0
-        while (results.size < limit) {
-            val pageLimit = minOf(50, limit - results.size)
+        var total = Int.MAX_VALUE
+        while (results.size < limit && offset < total) {
+            val pageLimit = minOf(LIBRARY_PAGE_LIMIT, limit - results.size)
             val fullPath = "$path?limit=$pageLimit&offset=$offset"
             val page = get<PagedResponse<SpotifyTrack>>(fullPath)
+            total = page.total
             if (page.items.isEmpty()) break
             results.addAll(page.items)
             offset += page.items.size
-            if (page.next == null || page.items.size < pageLimit) break
-        }
-        return results.take(limit)
-    }
-
-    private fun paginateSavedTracks(limit: Int): List<SpotifySavedTrack> {
-        val results = mutableListOf<SpotifySavedTrack>()
-        var offset = 0
-        while (results.size < limit) {
-            val pageLimit = minOf(LIBRARY_PAGE_LIMIT, limit - results.size)
-            val page = get<PagedResponse<SpotifySavedTrack>>(
-                "/me/tracks?limit=$pageLimit&offset=$offset",
-            )
-            if (page.items.isEmpty()) break
-            results.addAll(page.items)
-            offset += page.items.size
-            if (page.next == null || page.items.size < pageLimit) break
-        }
-        return results.take(limit)
-    }
-
-    private fun paginateSavedAlbums(limit: Int): List<SpotifySavedAlbum> {
-        val results = mutableListOf<SpotifySavedAlbum>()
-        var offset = 0
-        while (results.size < limit) {
-            val pageLimit = minOf(LIBRARY_PAGE_LIMIT, limit - results.size)
-            val page = get<PagedResponse<SpotifySavedAlbum>>(
-                "/me/albums?limit=$pageLimit&offset=$offset",
-            )
-            if (page.items.isEmpty()) break
-            results.addAll(page.items)
-            offset += page.items.size
-            if (page.next == null || page.items.size < pageLimit) break
+            if (offset >= total || page.items.size < pageLimit) break
         }
         return results.take(limit)
     }
@@ -182,8 +176,9 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
     ): List<SpotifyAlbumSimple> {
         val results = mutableListOf<SpotifyAlbumSimple>()
         var offset = 0
-        while (results.size < limit) {
-            val pageLimit = minOf(50, limit - results.size)
+        var total = Int.MAX_VALUE
+        while (results.size < limit && offset < total) {
+            val pageLimit = minOf(LIBRARY_PAGE_LIMIT, limit - results.size)
             val query = buildString {
                 append("?limit=").append(pageLimit)
                 append("&offset=").append(offset)
@@ -192,10 +187,11 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
                 }
             }
             val page = get<PagedResponse<SpotifyAlbumSimple>>("$path$query")
+            total = page.total
             if (page.items.isEmpty()) break
             results.addAll(page.items)
             offset += page.items.size
-            if (page.next == null || page.items.size < pageLimit) break
+            if (offset >= total || page.items.size < pageLimit) break
         }
         return results.take(limit)
     }
@@ -203,15 +199,17 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
     private fun paginatePlaylists(limit: Int): List<SpotifyPlaylistSimple> {
         val results = mutableListOf<SpotifyPlaylistSimple>()
         var offset = 0
-        while (results.size < limit) {
-            val pageLimit = minOf(50, limit - results.size)
+        var total = Int.MAX_VALUE
+        while (results.size < limit && offset < total) {
+            val pageLimit = minOf(LIBRARY_PAGE_LIMIT, limit - results.size)
             val page = get<PagedResponse<SpotifyPlaylistSimple>>(
                 "/me/playlists?limit=$pageLimit&offset=$offset",
             )
+            total = page.total
             if (page.items.isEmpty()) break
             results.addAll(page.items)
             offset += page.items.size
-            if (page.next == null || page.items.size < pageLimit) break
+            if (offset >= total || page.items.size < pageLimit) break
         }
         return results.take(limit)
     }
@@ -219,15 +217,17 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
     private fun paginatePlaylistItems(playlistId: String, limit: Int): List<PlaylistTrackItem> {
         val results = mutableListOf<PlaylistTrackItem>()
         var offset = 0
-        while (results.size < limit) {
-            val pageLimit = minOf(50, limit - results.size)
+        var total = Int.MAX_VALUE
+        while (results.size < limit && offset < total) {
+            val pageLimit = minOf(LIBRARY_PAGE_LIMIT, limit - results.size)
             val page = get<PagedResponse<PlaylistTrackItem>>(
                 "/playlists/$playlistId/items?limit=$pageLimit&offset=$offset",
             )
+            total = page.total
             if (page.items.isEmpty()) break
             results.addAll(page.items)
             offset += page.items.size
-            if (page.next == null || page.items.size < pageLimit) break
+            if (offset >= total || page.items.size < pageLimit) break
         }
         return results.take(limit)
     }
@@ -237,23 +237,33 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
         return json.decodeFromString(body)
     }
 
+    private suspend inline fun <reified T> getSuspend(path: String): T {
+        val body = getRawSuspend(path)
+        return json.decodeFromString(body)
+    }
+
     private fun getRaw(path: String): String {
         val request = authorizedRequest(path).build()
-        return executeWithRetry(request)
+        return kotlinx.coroutines.runBlocking { executeWithRetry(request) }
+    }
+
+    private suspend fun getRawSuspend(path: String): String = withContext(Dispatchers.IO) {
+        val request = authorizedRequest(path).build()
+        executeWithRetry(request)
     }
 
     private fun put(path: String, jsonBody: String) {
         val request = authorizedRequest(path)
             .put(jsonBody.toRequestBody(jsonMediaType))
             .build()
-        executeWithRetry(request)
+        kotlinx.coroutines.runBlocking { executeWithRetry(request) }
     }
 
     private fun delete(path: String, jsonBody: String) {
         val request = authorizedRequest(path)
             .delete(jsonBody.toRequestBody(jsonMediaType))
             .build()
-        executeWithRetry(request)
+        kotlinx.coroutines.runBlocking { executeWithRetry(request) }
     }
 
     private fun authorizedRequest(path: String): Request.Builder {
@@ -264,7 +274,7 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
             .header("Accept", "application/json")
     }
 
-    private fun executeWithRetry(request: Request): String {
+    private suspend fun executeWithRetry(request: Request): String {
         var lastResponse: Response? = null
         for (attempt in 0 until MAX_429_RETRIES) {
             lastResponse?.close()
@@ -274,7 +284,7 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
             when {
                 response.code == 429 -> {
                     val retryAfter = response.header("Retry-After")?.toLongOrNull() ?: 2L
-                    Thread.sleep(retryAfter.coerceIn(1, 30) * 1000)
+                    delay(retryAfter.coerceIn(1, 30) * 1000)
                     continue
                 }
                 response.isSuccessful -> {

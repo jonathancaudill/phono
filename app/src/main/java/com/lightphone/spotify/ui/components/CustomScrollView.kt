@@ -45,6 +45,10 @@ fun CustomScrollView(
     state: LazyListState = rememberLazyListState(),
     contentPadding: PaddingValues = PaddingValues(0.dp),
     verticalArrangement: Arrangement.Vertical = Arrangement.Top,
+    /** Loaded row count (excludes footer). Caps scrollbar position mapping. */
+    loadedItemCount: Int? = null,
+    /** When set, scrollbar thumb size reflects this total instead of loaded item count. */
+    virtualItemCount: Int? = null,
     content: LazyListScope.() -> Unit,
 ) {
     Box(modifier.fillMaxSize()) {
@@ -59,6 +63,8 @@ fun CustomScrollView(
         }
         MonoScrollbar(
             state = state,
+            loadedItemCount = loadedItemCount,
+            virtualItemCount = virtualItemCount,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .fillMaxHeight()
@@ -70,27 +76,37 @@ fun CustomScrollView(
 private data class ScrollbarMetrics(val thumbFraction: Float, val positionFraction: Float)
 
 @Composable
-private fun MonoScrollbar(state: LazyListState, modifier: Modifier = Modifier) {
+private fun MonoScrollbar(
+    state: LazyListState,
+    loadedItemCount: Int? = null,
+    virtualItemCount: Int? = null,
+    modifier: Modifier = Modifier,
+) {
     val metrics by remember {
         derivedStateOf {
             val info = state.layoutInfo
             val visible = info.visibleItemsInfo
             if (visible.isEmpty()) return@derivedStateOf null
 
-            val total = info.totalItemsCount
+            val layoutTotal = info.totalItemsCount
+            val loaded = loadedItemCount ?: layoutTotal
+            val virtualTotal = max(virtualItemCount ?: loaded, loaded)
             val spacing = info.mainAxisItemSpacing
             val avgItem = visible.sumOf { it.size } / visible.size
             val itemStride = avgItem + spacing
             val viewport = (info.viewportEndOffset - info.viewportStartOffset).toFloat()
-            val estContent = (itemStride * total - spacing).toFloat()
-            if (estContent <= viewport || viewport <= 0f) return@derivedStateOf null
+            val estVirtualContent = (itemStride * virtualTotal - spacing).toFloat()
+            if (estVirtualContent <= viewport || viewport <= 0f) return@derivedStateOf null
 
+            // Map physical scroll to virtual library position; cap at last loaded row
+            // so the footer runway does not skew the thumb.
+            val cappedIndex = minOf(state.firstVisibleItemIndex, max(loaded - 1, 0))
             val scrolled =
-                (state.firstVisibleItemIndex * itemStride + state.firstVisibleItemScrollOffset).toFloat()
-            val maxScroll = estContent - viewport
+                (cappedIndex * itemStride + state.firstVisibleItemScrollOffset).toFloat()
+            val maxVirtualScroll = estVirtualContent - viewport
             ScrollbarMetrics(
-                thumbFraction = (viewport / estContent).coerceIn(0f, 1f),
-                positionFraction = (scrolled / maxScroll).coerceIn(0f, 1f),
+                thumbFraction = (viewport / estVirtualContent).coerceIn(0f, 1f),
+                positionFraction = (scrolled / maxVirtualScroll).coerceIn(0f, 1f),
             )
         }
     }

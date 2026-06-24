@@ -7,21 +7,17 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
 import com.lightphone.spotify.ui.components.MonoContentContainer
-import com.lightphone.spotify.ui.components.MonoDetailCover
 import com.lightphone.spotify.ui.components.MonoMediaListItem
 import com.lightphone.spotify.ui.components.MonoTrackListItem
 import com.lightphone.spotify.ui.components.StyledText
@@ -59,29 +55,15 @@ fun ArtistDetailScreen(
             when {
                 state.error != null && artist == null -> EmptyListMessage(state.error!!)
                 else -> CustomScrollView {
-                    item("cover") {
-                        Column {
-                            Box(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(bottom = n(20)),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                MonoDetailCover(
-                                    imageUrl = artist?.images?.firstOrNull()?.url,
-                                    modifier = Modifier.size(n(200)),
-                                    placeholderIcon = Icons.Default.Person,
-                                )
-                            }
-                            val followers = artist?.followers?.total
-                            if (followers != null && followers > 0) {
-                                StyledText(
-                                    "${followers / 1000}K followers",
-                                    size = 16,
-                                    color = MonoColors.Placeholder,
-                                    modifier = Modifier.padding(bottom = n(16)),
-                                )
-                            }
+                    item("meta") {
+                        val followers = artist?.followers?.total
+                        if (followers != null && followers > 0) {
+                            StyledText(
+                                "${followers / 1000}K followers",
+                                size = 16,
+                                color = MonoColors.Placeholder,
+                                modifier = Modifier.padding(bottom = n(16)),
+                            )
                         }
                     }
                     if (state.topTracks.isNotEmpty()) {
@@ -120,7 +102,7 @@ fun ArtistDetailScreen(
                                 MonoMediaListItem(
                                     primaryText = album.name,
                                     secondaryText = album.artists.joinToString { it.name },
-                                    imageUrl = album.images.firstOrNull()?.url,
+                                    showImage = false,
                                     placeholderIcon = Icons.Default.Album,
                                     onClick = { onOpenAlbum(album.id, album.name) },
                                 )

@@ -47,13 +47,15 @@ data class SpotifyTrack(
 @Serializable
 data class SpotifySavedAlbum(
     @SerialName("added_at") val addedAt: String? = null,
-    val album: SpotifyAlbumSimple,
+    /** Null when the album is unavailable in the user's market. */
+    val album: SpotifyAlbumSimple? = null,
 )
 
 @Serializable
 data class SpotifySavedTrack(
     @SerialName("added_at") val addedAt: String? = null,
-    val track: SpotifyTrack,
+    /** Null when the track is unavailable in the user's market. */
+    val track: SpotifyTrack? = null,
 )
 
 @Serializable

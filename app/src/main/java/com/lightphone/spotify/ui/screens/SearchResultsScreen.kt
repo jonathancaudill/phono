@@ -29,7 +29,6 @@ import com.lightphone.spotify.data.SearchResults
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
 import com.lightphone.spotify.ui.components.MonoContentContainer
-import com.lightphone.spotify.ui.components.MonoFallbackImage
 import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.tap
 import com.lightphone.spotify.ui.theme.MonoColors
@@ -177,16 +176,9 @@ private fun SearchResultRow(item: SearchResultItem, onClick: () -> Unit) {
             .tap(onClick = onClick),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        MonoFallbackImage(
-            imageUrl = item.imageUrl,
-            placeholderText = "?",
-            placeholderIconSize = n(24),
-            modifier = Modifier.size(n(50)),
-        )
-        Spacer(Modifier.width(n(15)))
         Column(
             Modifier
-                .weight(1f)
+                .fillMaxWidth()
                 .padding(end = n(10)),
         ) {
             StyledText(

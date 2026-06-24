@@ -1,9 +1,11 @@
 package com.lightphone.spotify.data
 
+import com.lightphone.spotify.data.local.LibraryRepository
 import com.lightphone.spotify.data.webapi.SpotifyWebApi
 import com.lightphone.spotify.data.webapi.WebApiAuthException
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ffi.TrackInfo
+import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -32,39 +34,10 @@ fun TrackInfo.toMetadata(): TrackMetadata = TrackMetadata(
 /** Metadata via Spotify Web API. */
 class SpotifyRepository(
     private val webApi: SpotifyWebApi,
+    private val libraryRepository: LibraryRepository,
 ) {
     private val searchCache = ConcurrentHashMap<String, Pair<Long, SearchResults>>()
-    private var savedAlbumsCache: Pair<Long, List<SpotifySavedAlbum>>? = null
-    private var likedTracksCache: Pair<Long, List<TrackMetadata>>? = null
     private var dailyMixesCache: Pair<Long, List<SpotifyPlaylistSimple>>? = null
-
-    fun invalidateSavedAlbums() {
-        savedAlbumsCache = null
-    }
-
-    fun invalidateLikedTracks() {
-        likedTracksCache = null
-    }
-
-    fun savedAlbums(limit: Int = 500): List<SpotifySavedAlbum> {
-        val now = System.currentTimeMillis()
-        savedAlbumsCache?.let { (at, items) ->
-            if (now - at < CACHE_TTL_MS) return items
-        }
-        val items = webApi.savedAlbums(limit)
-        savedAlbumsCache = now to items
-        return items
-    }
-
-    fun likedTracks(limit: Int = 500): List<TrackMetadata> {
-        val now = System.currentTimeMillis()
-        likedTracksCache?.let { (at, items) ->
-            if (now - at < CACHE_TTL_MS) return items
-        }
-        val items = webApi.likedTracks(limit).map { it.toMetadata() }
-        likedTracksCache = now to items
-        return items
-    }
 
     fun albumDetail(albumId: String): AlbumDetailResult {
         val album = webApi.album(albumId)
@@ -104,24 +77,40 @@ class SpotifyRepository(
             webApi.libraryContains(listOf(normalizeUri(uri))).firstOrNull() ?: false
         }.getOrDefault(false)
 
-    fun saveTrack(uri: String) {
-        webApi.saveLibrary(listOf(normalizeUri(uri)))
-        invalidateLikedTracks()
+    suspend fun saveTrack(uri: String) {
+        val normalized = normalizeUri(uri)
+        webApi.saveLibrary(listOf(normalized))
+        val meta = trackMetadataForUri(normalized)
+            ?: throw IllegalStateException("Could not load track metadata after save")
+        libraryRepository.prependLikedTrack(meta)
     }
 
-    fun removeTrack(uri: String) {
-        webApi.removeLibrary(listOf(normalizeUri(uri)))
-        invalidateLikedTracks()
+    suspend fun removeTrack(uri: String) {
+        val normalized = normalizeUri(uri)
+        webApi.removeLibrary(listOf(normalized))
+        libraryRepository.removeLikedTrack(normalized)
     }
 
-    fun saveAlbum(albumId: String) {
+    suspend fun saveAlbum(albumId: String) {
         webApi.saveLibrary(listOf("spotify:album:$albumId"))
-        invalidateSavedAlbums()
+        val detail = webApi.album(albumId)
+        libraryRepository.prependSavedAlbum(
+            SpotifySavedAlbum(
+                addedAt = Instant.now().toString(),
+                album = SpotifyAlbumSimple(
+                    id = detail.id,
+                    name = detail.name,
+                    uri = detail.uri.ifBlank { "spotify:album:$albumId" },
+                    images = detail.images,
+                    artists = detail.artists,
+                ),
+            ),
+        )
     }
 
-    fun removeAlbum(albumId: String) {
+    suspend fun removeAlbum(albumId: String) {
         webApi.removeLibrary(listOf("spotify:album:$albumId"))
-        invalidateSavedAlbums()
+        libraryRepository.removeSavedAlbum(albumId)
     }
 
     fun albumTracks(albumId: String): List<TrackMetadata> =
@@ -150,6 +139,10 @@ class SpotifyRepository(
         }
         dailyMixesCache = now to items
         return items
+    }
+
+    suspend fun clearLibraryCache() {
+        libraryRepository.clearAll()
     }
 
     companion object {
@@ -190,6 +183,8 @@ private fun SpotifySearchResults.toSearchResults(query: String): SearchResults {
 
 fun mapWebApiError(e: Throwable): String = when (e) {
     is WebApiAuthException -> e.message ?: "Web API session expired — re-authorize Step 2"
+    is android.os.NetworkOnMainThreadException ->
+        "Network call on main thread — try again."
     else -> {
         val msg = e.message.orEmpty()
         when {
@@ -197,7 +192,8 @@ fun mapWebApiError(e: Throwable): String = when (e) {
             msg.startsWith("HTTP 401") || msg.startsWith("HTTP 403") ->
                 "Web API session expired — re-authorize Step 2."
             msg.startsWith("HTTP") -> "Can't reach Spotify right now. Try again."
-            else -> e.message ?: "Something went wrong. Try again."
+            else -> e.message?.takeIf { it.isNotBlank() }
+                ?: "${e::class.simpleName ?: "Error"} — try again."
         }
     }
 }

@@ -224,6 +224,8 @@ fun MonoMediaListItem(
     placeholderIcon: ImageVector = Icons.Default.MusicNote,
     showImage: Boolean = true,
     disabled: Boolean = false,
+    /** False for library rows — avoids crossfade jank during fast scroll. */
+    crossfadeImage: Boolean = true,
     onClick: () -> Unit,
 ) {
     Row(
@@ -240,6 +242,8 @@ fun MonoMediaListItem(
                 placeholderIconSize = n(24),
                 modifier = Modifier.size(n(50)),
                 disabled = disabled,
+                crossfade = crossfadeImage,
+                decodeSize = if (crossfadeImage) null else n(50),
             )
             Spacer(Modifier.width(n(15)))
         }

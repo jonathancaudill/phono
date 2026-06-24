@@ -1,9 +1,8 @@
 package com.lightphone.spotify.ui.screens
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.GraphicEq
@@ -15,7 +14,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import com.lightphone.spotify.ui.AppViewModel
-import com.lightphone.spotify.ui.components.CustomScrollView
+import com.lightphone.spotify.ui.components.LibraryInfiniteList
 import com.lightphone.spotify.ui.components.MonoContentContainer
 import com.lightphone.spotify.ui.components.MonoMediaListItem
 import com.lightphone.spotify.ui.theme.n
@@ -27,13 +26,10 @@ fun AlbumsScreen(
     onOpenPlaying: () -> Unit,
     onOpenAlbum: (String, String) -> Unit,
 ) {
-    val state by vm.albums.collectAsState()
+    LaunchedEffect(Unit) { vm.ensureSavedAlbumsLoaded() }
 
-    LaunchedEffect(Unit) {
-        if (state.items.isEmpty() && !state.loading) {
-            vm.loadAlbums(refresh = false)
-        }
-    }
+    val state by vm.savedAlbums.collectAsState()
+    val listState = rememberLazyListState()
 
     MonoContentContainer(
         title = "Albums",
@@ -45,7 +41,7 @@ fun AlbumsScreen(
     ) {
         PullToRefreshBox(
             isRefreshing = state.refreshing,
-            onRefresh = { vm.loadAlbums(refresh = true) },
+            onRefresh = { vm.refreshSavedAlbums() },
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
@@ -53,18 +49,28 @@ fun AlbumsScreen(
             when {
                 state.error != null && state.items.isEmpty() ->
                     EmptyListMessage(state.error!!)
-                !state.loading && state.items.isEmpty() ->
+                state.initialLoading && state.items.isEmpty() ->
+                    EmptyListMessage("Loading albums…")
+                state.isEmpty ->
                     EmptyListMessage("No saved albums found.")
-                else -> CustomScrollView(verticalArrangement = Arrangement.spacedBy(n(8))) {
-                    items(state.items, key = { it.album.id }) { saved ->
-                        MonoMediaListItem(
-                            primaryText = saved.album.name,
-                            secondaryText = saved.album.artists.joinToString { it.name },
-                            imageUrl = saved.album.images.firstOrNull()?.url,
-                            placeholderIcon = Icons.Default.Album,
-                            onClick = { onOpenAlbum(saved.album.id, saved.album.name) },
-                        )
-                    }
+                else -> LibraryInfiniteList(
+                    listState = listState,
+                    items = state.items,
+                    remoteTotal = state.remoteTotal,
+                    hasMore = state.hasMore,
+                    appending = state.appending,
+                    canLoadMore = state.canLoadMore,
+                    itemKey = { it.album_id },
+                    onEnsureBufferAhead = vm::ensureSavedAlbumsBufferAhead,
+                    modifier = Modifier.fillMaxSize(),
+                ) { _, saved ->
+                    MonoMediaListItem(
+                        primaryText = saved.name,
+                        secondaryText = saved.artist_names,
+                        showImage = false,
+                        placeholderIcon = Icons.Default.Album,
+                        onClick = { onOpenAlbum(saved.album_id, saved.name) },
+                    )
                 }
             }
         }

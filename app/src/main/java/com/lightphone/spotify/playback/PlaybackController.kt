@@ -15,8 +15,11 @@ import com.lightphone.spotify.data.AlbumDetailResult
 import com.lightphone.spotify.data.ArtistDetailResult
 import com.lightphone.spotify.data.SearchResultItem
 import com.lightphone.spotify.data.mapWebApiError
+import com.lightphone.spotify.data.local.LibraryRepository
+import com.lightphone.spotify.data.local.LikedTrackEntity
+import com.lightphone.spotify.data.local.MonoDatabase
+import com.lightphone.spotify.data.local.SavedAlbumEntity
 import com.lightphone.spotify.data.SpotifyRepository
-import com.lightphone.spotify.data.SpotifySavedAlbum
 import com.lightphone.spotify.data.SearchResults
 import com.lightphone.spotify.data.TrackMetadata
 import com.lightphone.spotify.data.toMetadata
@@ -34,6 +37,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.io.File
@@ -73,7 +77,9 @@ class PlaybackController private constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val webApi = SpotifyWebApi(webApiAuth)
-    private val repository = SpotifyRepository(webApi)
+    private val database = MonoDatabase.get(appContext)
+    val libraryRepository = LibraryRepository(database, webApi)
+    private val repository = SpotifyRepository(webApi, libraryRepository)
 
     /** uri -> metadata, populated when a list is played so the now-playing bar
      *  and MediaSession have title/artist/art without any extra network call. */
@@ -205,6 +211,7 @@ class PlaybackController private constructor(
         scope.launch {
             engine.logout()
             webApiAuth.clearAll()
+            repository.clearLibraryCache()
             abandonFocus()
             _state.value = recomputeStatusMessage(
                 PlaybackUiState(
@@ -372,25 +379,55 @@ class PlaybackController private constructor(
             }
         }
 
-    /** Liked songs via Web API GET /me/tracks. */
-    suspend fun likedTracks(limit: Int = 200): Result<List<TrackMetadata>> =
+    fun likedTracksUiFlow(): Flow<Triple<List<LikedTrackEntity>, Int, Boolean>> =
+        libraryRepository.likedTracksUiFlow()
+
+    fun savedAlbumsUiFlow(): Flow<Triple<List<SavedAlbumEntity>, Int, Boolean>> =
+        libraryRepository.savedAlbumsUiFlow()
+
+    suspend fun refreshLikedTracks(): Boolean =
         kotlinx.coroutines.withContext(Dispatchers.IO) {
-            try {
-                Result.success(repository.likedTracks(limit))
-            } catch (e: Throwable) {
-                android.util.Log.e("Library", "likedTracks failed", e)
-                Result.failure(Exception(mapWebApiError(e)))
-            }
+            libraryRepository.refreshLikedTracks()
         }
 
-    suspend fun savedAlbums(limit: Int = 50): List<SpotifySavedAlbum> =
+    suspend fun likedTracksNeedsFill(): Boolean =
         kotlinx.coroutines.withContext(Dispatchers.IO) {
-            try {
-                repository.savedAlbums(limit)
-            } catch (e: Throwable) {
-                android.util.Log.e("Library", "savedAlbums failed", e)
-                throw Exception(mapWebApiError(e))
-            }
+            libraryRepository.likedTracksNeedsFill()
+        }
+
+    suspend fun appendLikedTracks(): Boolean =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            libraryRepository.appendLikedTracks()
+        }
+
+    suspend fun refreshSavedAlbums(): Boolean =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            libraryRepository.refreshSavedAlbums()
+        }
+
+    suspend fun savedAlbumsNeedsFill(): Boolean =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            libraryRepository.savedAlbumsNeedsFill()
+        }
+
+    suspend fun appendSavedAlbums(): Boolean =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            libraryRepository.appendSavedAlbums()
+        }
+
+    suspend fun fillRemainingLikedTracks(): Int =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            libraryRepository.fillRemainingLikedTracks()
+        }
+
+    suspend fun fillRemainingSavedAlbums(): Int =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            libraryRepository.fillRemainingSavedAlbums()
+        }
+
+    suspend fun likedTracksForPlayback(fromIndex: Int): List<TrackMetadata> =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            libraryRepository.likedTracksForPlayback(fromIndex)
         }
 
     suspend fun albumDetail(albumId: String): AlbumDetailResult =
@@ -450,22 +487,42 @@ class PlaybackController private constructor(
 
     suspend fun saveTrack(uri: String) =
         kotlinx.coroutines.withContext(Dispatchers.IO) {
-            repository.saveTrack(uri)
+            try {
+                repository.saveTrack(uri)
+            } catch (e: Throwable) {
+                android.util.Log.e("Library", "saveTrack failed", e)
+                throw Exception(mapWebApiError(e))
+            }
         }
 
     suspend fun removeTrack(uri: String) =
         kotlinx.coroutines.withContext(Dispatchers.IO) {
-            repository.removeTrack(uri)
+            try {
+                repository.removeTrack(uri)
+            } catch (e: Throwable) {
+                android.util.Log.e("Library", "removeTrack failed", e)
+                throw Exception(mapWebApiError(e))
+            }
         }
 
     suspend fun saveAlbum(albumId: String) =
         kotlinx.coroutines.withContext(Dispatchers.IO) {
-            repository.saveAlbum(albumId)
+            try {
+                repository.saveAlbum(albumId)
+            } catch (e: Throwable) {
+                android.util.Log.e("Library", "saveAlbum failed", e)
+                throw Exception(mapWebApiError(e))
+            }
         }
 
     suspend fun removeAlbum(albumId: String) =
         kotlinx.coroutines.withContext(Dispatchers.IO) {
-            repository.removeAlbum(albumId)
+            try {
+                repository.removeAlbum(albumId)
+            } catch (e: Throwable) {
+                android.util.Log.e("Library", "removeAlbum failed", e)
+                throw Exception(mapWebApiError(e))
+            }
         }
 
     /** Fetch track metadata (art, title, duration) from the Web API for now-playing. */

@@ -3,6 +3,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
+    id("com.google.devtools.ksp")
 }
 
 android {
@@ -82,6 +83,11 @@ dependencies {
 
     // Album art loading.
     implementation("io.coil-kt:coil-compose:2.7.0")
+
+    // Library disk cache.
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    ksp("androidx.room:room-compiler:2.6.1")
 }
 
 // --- Rust cross-compile + UniFFI binding generation -------------------------

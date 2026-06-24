@@ -1,10 +1,9 @@
 package com.lightphone.spotify.ui.screens
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.MusicNote
@@ -18,7 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import com.lightphone.spotify.ui.AppViewModel
-import com.lightphone.spotify.ui.components.CustomScrollView
+import com.lightphone.spotify.ui.components.LibraryInfiniteList
 import com.lightphone.spotify.ui.components.MonoContentContainer
 import com.lightphone.spotify.ui.components.MonoMediaListItem
 import com.lightphone.spotify.ui.components.StyledText
@@ -32,11 +31,10 @@ fun LikedSongsScreen(
     onOpenPlaying: () -> Unit,
     onPlayTrack: (Int) -> Unit,
 ) {
-    val state by vm.likedSongs.collectAsState()
+    LaunchedEffect(Unit) { vm.ensureLikedTracksLoaded() }
 
-    LaunchedEffect(Unit) {
-        vm.loadLikedSongs(refresh = false)
-    }
+    val state by vm.likedTracks.collectAsState()
+    val listState = rememberLazyListState()
 
     MonoContentContainer(
         title = "Liked Songs",
@@ -48,7 +46,7 @@ fun LikedSongsScreen(
     ) {
         PullToRefreshBox(
             isRefreshing = state.refreshing,
-            onRefresh = { vm.loadLikedSongs(refresh = true) },
+            onRefresh = { vm.refreshLikedTracks() },
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
@@ -56,18 +54,28 @@ fun LikedSongsScreen(
             when {
                 state.error != null && state.items.isEmpty() ->
                     EmptyListMessage(state.error!!)
-                !state.loading && state.items.isEmpty() ->
+                state.initialLoading && state.items.isEmpty() ->
+                    EmptyListMessage("Loading liked songs…")
+                state.isEmpty ->
                     EmptyListMessage("No saved tracks found.")
-                else -> CustomScrollView(verticalArrangement = Arrangement.spacedBy(n(8))) {
-                    itemsIndexed(state.items, key = { index, t -> "${t.uri}-$index" }) { index, track ->
-                        MonoMediaListItem(
-                            primaryText = track.title,
-                            secondaryText = track.artists,
-                            imageUrl = track.artUrl,
-                            placeholderIcon = Icons.Default.MusicNote,
-                            onClick = { onPlayTrack(index) },
-                        )
-                    }
+                else -> LibraryInfiniteList(
+                    listState = listState,
+                    items = state.items,
+                    remoteTotal = state.remoteTotal,
+                    hasMore = state.hasMore,
+                    appending = state.appending,
+                    canLoadMore = state.canLoadMore,
+                    itemKey = { it.uri },
+                    onEnsureBufferAhead = vm::ensureLikedTracksBufferAhead,
+                    modifier = Modifier.fillMaxSize(),
+                ) { index, track ->
+                    MonoMediaListItem(
+                        primaryText = track.title,
+                        secondaryText = track.artists,
+                        showImage = false,
+                        placeholderIcon = Icons.Default.MusicNote,
+                        onClick = { onPlayTrack(index) },
+                    )
                 }
             }
         }
