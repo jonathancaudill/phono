@@ -22,12 +22,14 @@ use tokio::runtime::Runtime;
 
 mod auth;
 mod library;
+mod queue;
 mod settings;
 #[cfg(target_os = "android")]
 mod android_ctx;
 
 pub use library::EntityInfo;
-pub use settings::{NormalizationType, StreamingQuality};
+pub use queue::RepeatMode;
+pub use settings::{NetworkBufferPreset, NormalizationType, StreamingQuality};
 
 uniffi::setup_scaffolding!();
 
@@ -90,12 +92,7 @@ pub trait PlayerEventListener: Send + Sync {
 
 type SharedListener = Arc<Mutex<Option<Box<dyn PlayerEventListener>>>>;
 
-#[derive(Default)]
-struct QueueState {
-    uris: Vec<SpotifyUri>,
-    index: usize,
-    position_ms: u32,
-}
+use queue::QueueState;
 
 /// A live, connected session and everything bound to its lifetime. A new
 /// `Active` is built on every (re)connect because librespot sessions cannot be
@@ -164,6 +161,7 @@ struct EngineShared {
     cache: Cache,
     cred_dir: PathBuf,
     audio_dir: PathBuf,
+    tmp_dir: PathBuf,
     settings: settings::SettingsStore,
     listener: SharedListener,
     pkce_verifier: Mutex<Option<String>>,
@@ -261,6 +259,22 @@ impl LibrespotEngine {
         self.shared.transport_seek(position_ms);
     }
 
+    pub fn get_shuffle(&self) -> bool {
+        self.shared.queue_shuffle()
+    }
+
+    pub fn toggle_shuffle(&self) -> bool {
+        self.shared.toggle_shuffle()
+    }
+
+    pub fn get_repeat_mode(&self) -> RepeatMode {
+        self.shared.queue_repeat_mode()
+    }
+
+    pub fn toggle_repeat(&self) -> RepeatMode {
+        self.shared.toggle_repeat()
+    }
+
     /// Volume as a percentage 0..=100.
     pub fn get_volume(&self) -> u8 {
         self.shared.get_volume()
@@ -326,6 +340,17 @@ impl LibrespotEngine {
         self.rebuild_player_if_active();
     }
 
+    /// Network buffer preset (read-ahead tuning). Persists only; takes effect on next app launch.
+    pub fn get_network_buffer_preset(&self) -> NetworkBufferPreset {
+        self.shared.settings.get().network_buffer_preset
+    }
+
+    pub fn set_network_buffer_preset(&self, preset: NetworkBufferPreset) {
+        self.shared
+            .settings
+            .update(|s| s.network_buffer_preset = preset);
+    }
+
     /// Delete downloaded audio cache files (credentials are untouched).
     pub fn clear_audio_cache(&self) {
         self.shared.clear_audio_cache();
@@ -363,8 +388,14 @@ impl EngineShared {
         let base = PathBuf::from(&cache_dir);
         let cred_dir = base.join("creds");
         let audio_dir = base.join("audio");
+        let tmp_dir = base.join("streaming-tmp");
         let _ = std::fs::create_dir_all(&cred_dir);
         let _ = std::fs::create_dir_all(&audio_dir);
+        let _ = std::fs::create_dir_all(&tmp_dir);
+
+        let settings = settings::SettingsStore::new(&base);
+        let buffer_preset = settings.get().network_buffer_preset;
+        settings::apply_audio_fetch_params(buffer_preset);
 
         let cache = Cache::new(
             Some(&cred_dir),
@@ -396,8 +427,8 @@ impl EngineShared {
         let mut session_config = SessionConfig::default();
         session_config.client_id = auth::CLIENT_ID.to_string();
         session_config.device_id = load_or_create_device_id(&base);
+        session_config.tmp_dir = tmp_dir.clone();
 
-        let settings = settings::SettingsStore::new(&base);
         if let Some(ref proxy) = settings.get().proxy {
             if let Ok(url) = proxy.parse() {
                 session_config.proxy = Some(url);
@@ -410,6 +441,7 @@ impl EngineShared {
             cache,
             cred_dir,
             audio_dir,
+            tmp_dir,
             settings,
             listener: Arc::new(Mutex::new(None)),
             pkce_verifier: Mutex::new(None),
@@ -444,10 +476,12 @@ impl EngineShared {
     }
 
     fn clear_audio_cache(&self) {
-        if self.audio_dir.is_dir() {
-            let _ = std::fs::remove_dir_all(&self.audio_dir);
+        for dir in [&self.audio_dir, &self.tmp_dir] {
+            if dir.is_dir() {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+            let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::create_dir_all(&self.audio_dir);
     }
 
     fn begin_login(&self) -> String {
@@ -794,17 +828,13 @@ impl EngineShared {
             let active = guard.as_ref().ok_or(SpotifyError::NotLoggedIn)?;
             {
                 let mut q = active.queue.lock().unwrap();
-                q.uris = parsed;
-                q.index = start_index as usize;
-                q.position_ms = 0;
+                q.set_queue(parsed, start_index as usize);
             }
             let uri = active
                 .queue
                 .lock()
                 .unwrap()
-                .uris
-                .get(start_index as usize)
-                .cloned()
+                .current_uri()
                 .ok_or(SpotifyError::InvalidUri {
                     uri: format!("index {start_index} out of range"),
                 })?;
@@ -830,21 +860,21 @@ impl EngineShared {
     }
 
     fn transport_next(&self) {
-        self.skip(1);
+        self.skip(1, true);
     }
 
     fn transport_previous(&self) {
-        self.skip(-1);
+        self.skip(-1, true);
     }
 
     fn transport_seek(&self, position_ms: u32) {
         self.with_active(|a| {
             a.player.seek(position_ms);
-            a.queue.lock().unwrap().position_ms = position_ms;
+            a.queue.lock().unwrap().set_position_ms(position_ms);
         });
     }
 
-    fn skip(&self, delta: i64) {
+    fn skip(&self, delta: i64, user_initiated: bool) {
         let resolved = {
             let guard = self.active.lock().unwrap();
             let active = match guard.as_ref() {
@@ -853,19 +883,51 @@ impl EngineShared {
             };
             let next = {
                 let mut q = active.queue.lock().unwrap();
-                let new_index = q.index as i64 + delta;
-                if new_index < 0 || new_index as usize >= q.uris.len() {
-                    None
+                if delta > 0 {
+                    q.skip_next(user_initiated)
                 } else {
-                    q.index = new_index as usize;
-                    q.position_ms = 0;
-                    q.uris.get(q.index).cloned()
+                    q.skip_prev(user_initiated)
                 }
             };
             next.map(|uri| (active.player.clone(), uri))
         };
         if let Some((player, uri)) = resolved {
             player.load(uri, true, 0);
+        }
+    }
+
+    fn queue_shuffle(&self) -> bool {
+        self.with_active_queue(|q| q.shuffle())
+    }
+
+    fn toggle_shuffle(&self) -> bool {
+        let mut out = false;
+        self.with_active_queue_mut(|q| out = q.toggle_shuffle());
+        out
+    }
+
+    fn queue_repeat_mode(&self) -> RepeatMode {
+        self.with_active_queue(|q| q.repeat_mode())
+    }
+
+    fn toggle_repeat(&self) -> RepeatMode {
+        let mut out = RepeatMode::Off;
+        self.with_active_queue_mut(|q| out = q.toggle_repeat());
+        out
+    }
+
+    fn with_active_queue<F: FnOnce(&QueueState) -> R, R>(&self, f: F) -> R {
+        let guard = self.active.lock().unwrap();
+        if let Some(active) = guard.as_ref() {
+            f(&active.queue.lock().unwrap())
+        } else {
+            f(&QueueState::default())
+        }
+    }
+
+    fn with_active_queue_mut<F: FnOnce(&mut QueueState)>(&self, f: F) {
+        if let Some(active) = self.active.lock().unwrap().as_ref() {
+            f(&mut active.queue.lock().unwrap());
         }
     }
 
@@ -919,11 +981,8 @@ impl EngineShared {
         }
 
         let queue = Arc::new(Mutex::new(QueueState::default()));
-        if let Some((uris, index, position_ms)) = resume {
-            let mut q = queue.lock().unwrap();
-            q.uris = uris;
-            q.index = index;
-            q.position_ms = position_ms;
+        if let Some((uris, uri_index, position_ms)) = resume {
+            queue.lock().unwrap().restore_linear(uris, uri_index, position_ms);
         }
 
         let rx = player.get_player_event_channel();
@@ -942,9 +1001,9 @@ impl EngineShared {
 
         if let Some(uri) = {
             let q = queue.lock().unwrap();
-            q.uris.get(q.index).cloned()
+            q.current_uri()
         } {
-            let pos = queue.lock().unwrap().position_ms;
+            let pos = queue.lock().unwrap().position_ms();
             player.load(uri, true, pos);
         }
 
@@ -959,14 +1018,11 @@ impl EngineShared {
     }
 
     fn snapshot_resume(&self) -> Option<(Vec<SpotifyUri>, usize, u32)> {
-        self.active.lock().unwrap().as_ref().and_then(|a| {
-            let q = a.queue.lock().unwrap();
-            if q.uris.is_empty() {
-                None
-            } else {
-                Some((q.uris.clone(), q.index, q.position_ms))
-            }
-        })
+        self.active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|a| a.queue.lock().unwrap().snapshot_resume())
     }
 }
 
@@ -1020,6 +1076,36 @@ fn spawn_monitor(
         });
 }
 
+/// Caps rapid auto-skip when many consecutive tracks fail to load.
+struct UnavailableGuard {
+    count: u32,
+    window_start: Instant,
+}
+
+impl UnavailableGuard {
+    fn new() -> Self {
+        Self {
+            count: 0,
+            window_start: Instant::now(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.count = 0;
+        self.window_start = Instant::now();
+    }
+
+    /// Returns true when playback should stop (too many failures in a short window).
+    fn record(&mut self) -> bool {
+        let now = Instant::now();
+        if now.duration_since(self.window_start) > Duration::from_secs(10) {
+            self.reset();
+        }
+        self.count += 1;
+        self.count >= 5
+    }
+}
+
 /// Forward librespot player events to the Kotlin listener. Queue advancement and
 /// gapless preload are handled here for local playback.
 async fn forward_events(
@@ -1028,13 +1114,16 @@ async fn forward_events(
     queue: Arc<Mutex<QueueState>>,
     listener: SharedListener,
 ) {
+    let mut unavailable_guard = UnavailableGuard::new();
     while let Some(event) = rx.recv().await {
         match event {
             PlayerEvent::Loading { track_id, .. } => {
+                unavailable_guard.reset();
                 notify(&listener, |l| l.on_loading());
                 notify(&listener, |l| l.on_track_changed(uri_to_string(&track_id)));
             }
             PlayerEvent::Playing { track_id, position_ms, .. } => {
+                unavailable_guard.reset();
                 notify(&listener, |l| l.on_playing(position_ms as i64));
                 notify(&listener, |l| l.on_track_changed(uri_to_string(&track_id)));
             }
@@ -1051,34 +1140,30 @@ async fn forward_events(
                     &listener,
                     |l| l.on_unavailable(uri_to_string(&track_id)),
                 );
+                // Advance past dead tracks (skip_next, not end_of_track — repeat-one must not retry unavailable URI).
+                if unavailable_guard.record() {
+                    log::warn!("too many consecutive unavailable tracks; stopping playback");
+                    unavailable_guard.reset();
+                    notify(&listener, |l| l.on_end_of_track());
+                } else {
+                    let next = queue.lock().unwrap().skip_next(false);
+                    if let Some(uri) = next {
+                        player.load(uri, true, 0);
+                    } else {
+                        notify(&listener, |l| l.on_end_of_track());
+                    }
+                }
             }
             PlayerEvent::Stopped { track_id, .. } => {
                 log::warn!("playback stopped for {}", uri_to_string(&track_id));
             }
             PlayerEvent::TimeToPreloadNextTrack { .. } => {
-                let next = {
-                    let q = queue.lock().unwrap();
-                    if q.index + 1 < q.uris.len() {
-                        q.uris.get(q.index + 1).cloned()
-                    } else {
-                        None
-                    }
-                };
-                if let Some(uri) = next {
+                if let Some(uri) = queue.lock().unwrap().next_preload_uri() {
                     player.preload(uri);
                 }
             }
             PlayerEvent::EndOfTrack { .. } => {
-                let next = {
-                    let mut q = queue.lock().unwrap();
-                    if q.index + 1 < q.uris.len() {
-                        q.index += 1;
-                        q.position_ms = 0;
-                        q.uris.get(q.index).cloned()
-                    } else {
-                        None
-                    }
-                };
+                let next = queue.lock().unwrap().end_of_track();
                 if let Some(uri) = next {
                     player.load(uri, true, 0);
                 } else {

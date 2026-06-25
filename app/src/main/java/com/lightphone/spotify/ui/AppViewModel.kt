@@ -91,6 +91,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var likedLookaheadJob: Job? = null
     private var savedFillJob: Job? = null
     private var savedLookaheadJob: Job? = null
+    private var likedFillRetries = 0
+    private var savedFillRetries = 0
+
+    @Volatile private var scrubResyncLocked = false
+    private var pendingLikedRefresh = false
+    private var pendingSavedRefresh = false
 
     private val _search = MutableStateFlow(SearchUiState())
     val search: StateFlow<SearchUiState> = _search.asStateFlow()
@@ -155,6 +161,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun refreshLikedTracks() {
+        if (scrubResyncLocked) { pendingLikedRefresh = true; return }
+        if (likedFillJob?.isActive == true) return
         likedFillJob?.cancel()
         likedFillJob = null
         likedLookaheadJob?.cancel()
@@ -203,13 +211,50 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _likedTracks.update { it.copy(appending = true) }
             try {
                 runCatching { controller.fillRemainingLikedTracks() }
+                    .onSuccess {
+                        if (!controller.likedTracksNeedsFill()) {
+                            likedFillRetries = 0
+                        }
+                    }
                     .onFailure { e ->
                         android.util.Log.e("Library", "fill liked tracks failed", e)
+                        _likedTracks.update {
+                            it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
+                        }
+                        if (likedFillRetries < 3 && controller.likedTracksNeedsFill()) {
+                            likedFillRetries++
+                            viewModelScope.launch {
+                                delay(2000L * likedFillRetries)
+                                startLikedTracksFill()
+                            }
+                        }
                     }
             } finally {
                 _likedTracks.update { it.copy(appending = false) }
             }
         }
+    }
+
+    fun resumeLikedTracksFillIfNeeded() {
+        if (likedFillJob?.isActive == true) return
+        viewModelScope.launch {
+            if (controller.likedTracksNeedsFill()) {
+                likedFillRetries = 0
+                startLikedTracksFill()
+            }
+        }
+    }
+
+    fun onScrubJumpStart() { scrubResyncLocked = true }
+
+    fun onScrubJumpEnd() {
+        scrubResyncLocked = false
+        runPendingLibraryRefresh()
+    }
+
+    private fun runPendingLibraryRefresh() {
+        if (pendingLikedRefresh) { pendingLikedRefresh = false; refreshLikedTracks() }
+        if (pendingSavedRefresh) { pendingSavedRefresh = false; refreshSavedAlbums() }
     }
 
     fun ensureSavedAlbumsLoaded() {
@@ -225,6 +270,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun refreshSavedAlbums() {
+        if (scrubResyncLocked) { pendingSavedRefresh = true; return }
+        if (savedFillJob?.isActive == true) return
         savedFillJob?.cancel()
         savedFillJob = null
         savedLookaheadJob?.cancel()
@@ -266,33 +313,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun scrollLikedTracksToIndex(listState: LazyListState, targetIndex: Int) {
-        while (_likedTracks.value.items.size <= targetIndex && _likedTracks.value.hasMore) {
-            val hasMore = runCatching { controller.appendLikedTracks() }
-                .onFailure { e ->
-                    android.util.Log.e("Library", "append liked tracks failed", e)
-                }
-                .getOrDefault(false)
-            if (!hasMore) break
-        }
         val items = _likedTracks.value.items
         if (items.isEmpty()) return
-        val index = targetIndex.coerceIn(0, items.lastIndex)
-        listState.scrollToItem(index)
+        if (targetIndex > items.lastIndex) {
+            android.util.Log.w("Library", "scrub target $targetIndex > lastIndex ${items.lastIndex}")
+            return
+        }
+        listState.scrollToItem(targetIndex)
     }
 
     suspend fun scrollSavedAlbumsToIndex(listState: LazyListState, targetIndex: Int) {
-        while (_savedAlbums.value.items.size <= targetIndex && _savedAlbums.value.hasMore) {
-            val hasMore = runCatching { controller.appendSavedAlbums() }
-                .onFailure { e ->
-                    android.util.Log.e("Library", "append saved albums failed", e)
-                }
-                .getOrDefault(false)
-            if (!hasMore) break
-        }
         val items = _savedAlbums.value.items
         if (items.isEmpty()) return
-        val index = targetIndex.coerceIn(0, items.lastIndex)
-        listState.scrollToItem(index)
+        if (targetIndex > items.lastIndex) {
+            android.util.Log.w("Library", "scrub target $targetIndex > lastIndex ${items.lastIndex}")
+            return
+        }
+        listState.scrollToItem(targetIndex)
     }
 
     private fun startSavedAlbumsFill() {
@@ -301,11 +338,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _savedAlbums.update { it.copy(appending = true) }
             try {
                 runCatching { controller.fillRemainingSavedAlbums() }
+                    .onSuccess {
+                        if (!controller.savedAlbumsNeedsFill()) {
+                            savedFillRetries = 0
+                        }
+                    }
                     .onFailure { e ->
                         android.util.Log.e("Library", "fill saved albums failed", e)
+                        _savedAlbums.update {
+                            it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
+                        }
+                        if (savedFillRetries < 3 && controller.savedAlbumsNeedsFill()) {
+                            savedFillRetries++
+                            viewModelScope.launch {
+                                delay(2000L * savedFillRetries)
+                                startSavedAlbumsFill()
+                            }
+                        }
                     }
             } finally {
                 _savedAlbums.update { it.copy(appending = false) }
+            }
+        }
+    }
+
+    fun resumeSavedAlbumsFillIfNeeded() {
+        if (savedFillJob?.isActive == true) return
+        viewModelScope.launch {
+            if (controller.savedAlbumsNeedsFill()) {
+                savedFillRetries = 0
+                startSavedAlbumsFill()
             }
         }
     }
@@ -504,6 +566,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun pause() = controller.pause()
     fun next() = controller.next()
     fun previous() = controller.previous()
+    fun toggleShuffle() = controller.toggleShuffle()
+    fun toggleRepeat() = controller.toggleRepeat()
     fun seek(positionMs: Long) = controller.seek(positionMs)
     fun logout() = controller.logout()
 

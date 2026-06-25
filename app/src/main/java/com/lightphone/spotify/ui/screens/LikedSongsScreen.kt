@@ -1,8 +1,10 @@
 package com.lightphone.spotify.ui.screens
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GraphicEq
@@ -33,7 +35,10 @@ fun LikedSongsScreen(
     onOpenPlaying: () -> Unit,
     onPlayTrack: (Int) -> Unit,
 ) {
-    LaunchedEffect(Unit) { vm.ensureLikedTracksLoaded() }
+    LaunchedEffect(Unit) {
+        vm.ensureLikedTracksLoaded()
+        vm.resumeLikedTracksFillIfNeeded()
+    }
 
     val state by vm.likedTracks.collectAsState()
     val listState = rememberLazyListState()
@@ -63,30 +68,54 @@ fun LikedSongsScreen(
                     EmptyListMessage("Loading liked songs…")
                 state.isEmpty ->
                     EmptyListMessage("No saved tracks found.")
-                else -> LibraryInfiniteList(
-                    listState = listState,
-                    items = state.items,
-                    remoteTotal = state.remoteTotal,
-                    hasMore = state.hasMore,
-                    appending = state.appending,
-                    canLoadMore = state.canLoadMore,
-                    itemKey = { it.uri },
-                    onEnsureBufferAhead = vm::ensureLikedTracksBufferAhead,
-                    dateIndex = dateIndex.takeUnless { it.isEmpty },
-                    onScrubToIndex = { index -> vm.scrollLikedTracksToIndex(listState, index) },
-                    modifier = Modifier.fillMaxSize(),
-                ) { index, track ->
-                    MonoMediaListItem(
-                        primaryText = track.title,
-                        secondaryText = track.artists,
-                        showImage = false,
-                        placeholderIcon = Icons.Default.MusicNote,
-                        onClick = { onPlayTrack(index) },
-                    )
+                else -> Column(Modifier.fillMaxSize()) {
+                    if (state.error != null && state.items.isNotEmpty()) {
+                        // TODO: wire styled banner in separate UI task
+                        LibraryPartialSyncBanner(state.error!!)
+                    }
+                    LibraryInfiniteList(
+                        listState = listState,
+                        items = state.items,
+                        remoteTotal = state.remoteTotal,
+                        hasMore = state.hasMore,
+                        appending = state.appending,
+                        canLoadMore = state.canLoadMore,
+                        itemKey = { it.uri },
+                        onEnsureBufferAhead = vm::ensureLikedTracksBufferAhead,
+                        dateIndex = dateIndex,
+                        onScrubToIndex = { index -> vm.scrollLikedTracksToIndex(listState, index) },
+                        onScrubJumpChange = { active ->
+                            if (active) vm.onScrubJumpStart() else vm.onScrubJumpEnd()
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                    ) { index, track ->
+                        MonoMediaListItem(
+                            primaryText = track.title,
+                            secondaryText = track.artists,
+                            showImage = false,
+                            placeholderIcon = Icons.Default.MusicNote,
+                            onClick = { onPlayTrack(index) },
+                        )
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+internal fun LibraryPartialSyncBanner(message: String) {
+    StyledText(
+        message,
+        size = 14,
+        color = MonoColors.Foreground,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = n(4)),
+    )
 }
 
 @Composable

@@ -29,6 +29,7 @@ import com.lightphone.spotify.data.webapi.WebApiAuth
 import com.lightphone.spotify.ffi.NormalizationType
 import com.lightphone.spotify.ffi.PlayerEventListener
 import com.lightphone.spotify.ffi.SpotifyException
+import com.lightphone.spotify.ffi.RepeatMode
 import com.lightphone.spotify.ffi.StreamingQuality
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -59,6 +60,8 @@ data class PlaybackUiState(
     val artUrl: String? = null,
     val albumId: String? = null,
     val durationMs: Long = 0,
+    val shuffleEnabled: Boolean = false,
+    val repeatMode: RepeatMode = RepeatMode.OFF,
     val error: String? = null,
 )
 
@@ -279,6 +282,8 @@ class PlaybackController private constructor(
                     isLoading = true,
                     isPlaying = true,
                     positionMs = 0,
+                    shuffleEnabled = false,
+                    repeatMode = RepeatMode.OFF,
                     error = null,
                 )
             }
@@ -332,9 +337,25 @@ class PlaybackController private constructor(
         }
     }
 
-    fun next() = scope.launch { engine.next() }
-    fun previous() = scope.launch { engine.previous() }
+    fun next() = scope.launch {
+        engine.next()
+        syncPlaybackModes()
+    }
+    fun previous() = scope.launch {
+        engine.previous()
+        syncPlaybackModes()
+    }
     fun seek(positionMs: Long) = scope.launch { engine.seek(positionMs.toUInt()) }
+    fun toggleShuffle() = scope.launch {
+        val enabled = engine.toggleShuffle()
+        _state.update { it.copy(shuffleEnabled = enabled) }
+        onStateChanged?.invoke()
+    }
+    fun toggleRepeat() = scope.launch {
+        val mode = engine.toggleRepeat()
+        _state.update { it.copy(repeatMode = mode) }
+        onStateChanged?.invoke()
+    }
     fun setVolume(percent: Int) = scope.launch { engine.setVolume(percent.coerceIn(0, 100).toUByte()) }
 
     fun loadSettings(): SettingsSnapshot = SettingsSnapshot(
@@ -574,6 +595,7 @@ class PlaybackController private constructor(
     override fun onTrackChanged(uri: String) {
         val normalized = normalizeUri(uri)
         _state.update { it.copy(currentUri = normalized, isLoading = false, error = null) }
+        syncPlaybackModes()
         fetchMetadata(normalized)
         onStateChanged?.invoke()
     }
@@ -604,7 +626,7 @@ class PlaybackController private constructor(
     }
 
     override fun onUnavailable(uri: String) {
-        _state.update { it.copy(error = "Track unavailable") }
+        // Rust auto-advances the queue; avoid sticky error state.
     }
 
     override fun onConnectionLost() {
@@ -661,6 +683,15 @@ class PlaybackController private constructor(
             )
         }
         onStateChanged?.invoke()
+    }
+
+    private fun syncPlaybackModes() {
+        _state.update {
+            it.copy(
+                shuffleEnabled = engine.getShuffle(),
+                repeatMode = engine.getRepeatMode(),
+            )
+        }
     }
 
     private fun normalizeUri(uri: String): String = uri.substringBefore('?').trim()

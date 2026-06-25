@@ -1,5 +1,6 @@
 package com.lightphone.spotify.ui.screens
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -28,7 +29,10 @@ fun AlbumsScreen(
     onOpenPlaying: () -> Unit,
     onOpenAlbum: (String, String) -> Unit,
 ) {
-    LaunchedEffect(Unit) { vm.ensureSavedAlbumsLoaded() }
+    LaunchedEffect(Unit) {
+        vm.ensureSavedAlbumsLoaded()
+        vm.resumeSavedAlbumsFillIfNeeded()
+    }
 
     val state by vm.savedAlbums.collectAsState()
     val listState = rememberLazyListState()
@@ -58,26 +62,37 @@ fun AlbumsScreen(
                     EmptyListMessage("Loading albums…")
                 state.isEmpty ->
                     EmptyListMessage("No saved albums found.")
-                else -> LibraryInfiniteList(
-                    listState = listState,
-                    items = state.items,
-                    remoteTotal = state.remoteTotal,
-                    hasMore = state.hasMore,
-                    appending = state.appending,
-                    canLoadMore = state.canLoadMore,
-                    itemKey = { it.album_id },
-                    onEnsureBufferAhead = vm::ensureSavedAlbumsBufferAhead,
-                    dateIndex = dateIndex.takeUnless { it.isEmpty },
-                    onScrubToIndex = { index -> vm.scrollSavedAlbumsToIndex(listState, index) },
-                    modifier = Modifier.fillMaxSize(),
-                ) { _, saved ->
-                    MonoMediaListItem(
-                        primaryText = saved.name,
-                        secondaryText = saved.artist_names,
-                        showImage = false,
-                        placeholderIcon = Icons.Default.Album,
-                        onClick = { onOpenAlbum(saved.album_id, saved.name) },
-                    )
+                else -> Column(Modifier.fillMaxSize()) {
+                    if (state.error != null && state.items.isNotEmpty()) {
+                        // TODO: wire styled banner in separate UI task
+                        LibraryPartialSyncBanner(state.error!!)
+                    }
+                    LibraryInfiniteList(
+                        listState = listState,
+                        items = state.items,
+                        remoteTotal = state.remoteTotal,
+                        hasMore = state.hasMore,
+                        appending = state.appending,
+                        canLoadMore = state.canLoadMore,
+                        itemKey = { it.album_id },
+                        onEnsureBufferAhead = vm::ensureSavedAlbumsBufferAhead,
+                        dateIndex = dateIndex,
+                        onScrubToIndex = { index -> vm.scrollSavedAlbumsToIndex(listState, index) },
+                        onScrubJumpChange = { active ->
+                            if (active) vm.onScrubJumpStart() else vm.onScrubJumpEnd()
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                    ) { _, saved ->
+                        MonoMediaListItem(
+                            primaryText = saved.name,
+                            secondaryText = saved.artist_names,
+                            showImage = false,
+                            placeholderIcon = Icons.Default.Album,
+                            onClick = { onOpenAlbum(saved.album_id, saved.name) },
+                        )
+                    }
                 }
             }
         }

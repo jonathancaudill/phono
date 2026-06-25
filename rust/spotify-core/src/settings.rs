@@ -1,7 +1,9 @@
 //! Persisted playback/session preferences (settings.json under the cache dir).
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use librespot::audio::AudioFetchParams;
 use librespot::playback::config::{Bitrate, NormalisationType as LibrespotNormType, PlayerConfig};
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +60,79 @@ impl NormalizationType {
     }
 }
 
+/// Network read-ahead preset for librespot `AudioFetchParams` (applied once at engine init).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum, Default)]
+pub enum NetworkBufferPreset {
+    /// Near librespot defaults (1s / 5s read-ahead).
+    Low,
+    /// Mobile-friendly buffering (2s / 12s read-ahead).
+    #[default]
+    Normal,
+    /// Aggressive buffering for poor networks (3s / 15s read-ahead).
+    High,
+}
+
+impl NetworkBufferPreset {
+    pub fn to_audio_fetch_params(self) -> AudioFetchParams {
+        match self {
+            Self::Low => {
+                let minimum_download_size = 64 * 1024;
+                let minimum_throughput = 8 * 1024;
+                AudioFetchParams {
+                    minimum_download_size,
+                    minimum_throughput,
+                    initial_ping_time_estimate: Duration::from_millis(500),
+                    maximum_assumed_ping_time: Duration::from_millis(1500),
+                    read_ahead_before_playback: Duration::from_secs(1),
+                    read_ahead_during_playback: Duration::from_secs(5),
+                    prefetch_threshold_factor: 4.0,
+                    download_timeout: Duration::from_secs(
+                        (minimum_download_size / minimum_throughput) as u64,
+                    ),
+                }
+            }
+            Self::Normal => {
+                let minimum_download_size = 64 * 1024;
+                let minimum_throughput = 6 * 1024;
+                AudioFetchParams {
+                    minimum_download_size,
+                    minimum_throughput,
+                    initial_ping_time_estimate: Duration::from_millis(800),
+                    maximum_assumed_ping_time: Duration::from_millis(2000),
+                    read_ahead_before_playback: Duration::from_secs(2),
+                    read_ahead_during_playback: Duration::from_secs(12),
+                    prefetch_threshold_factor: 5.0,
+                    download_timeout: Duration::from_secs(15),
+                }
+            }
+            Self::High => {
+                let minimum_download_size = 64 * 1024;
+                let minimum_throughput = 4 * 1024;
+                AudioFetchParams {
+                    minimum_download_size,
+                    minimum_throughput,
+                    initial_ping_time_estimate: Duration::from_millis(1000),
+                    maximum_assumed_ping_time: Duration::from_millis(2500),
+                    read_ahead_before_playback: Duration::from_secs(3),
+                    read_ahead_during_playback: Duration::from_secs(15),
+                    prefetch_threshold_factor: 6.0,
+                    download_timeout: Duration::from_secs(20),
+                }
+            }
+        }
+    }
+}
+
+/// Apply librespot network buffering. Must run once per process before any playback.
+pub fn apply_audio_fetch_params(preset: NetworkBufferPreset) {
+    let params = preset.to_audio_fetch_params();
+    if let Err(_already) = AudioFetchParams::set(params) {
+        log::warn!("AudioFetchParams already set; ignoring preset {preset:?}");
+    } else {
+        log::info!("AudioFetchParams applied: {preset:?}");
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(default)]
@@ -70,6 +145,8 @@ pub struct AppSettings {
     pub normalization_type: NormalizationType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,
+    #[serde(default)]
+    pub network_buffer_preset: NetworkBufferPreset,
 }
 
 fn default_true() -> bool {
@@ -84,6 +161,7 @@ impl Default for AppSettings {
             normalization_enabled: false,
             normalization_type: NormalizationType::default(),
             proxy: None,
+            network_buffer_preset: NetworkBufferPreset::default(),
         }
     }
 }

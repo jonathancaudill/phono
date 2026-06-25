@@ -19,25 +19,28 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import com.lightphone.spotify.ui.theme.MonoColors
 import com.lightphone.spotify.ui.theme.n
 import kotlin.math.max
-import kotlinx.coroutines.flow.first as flowFirst
+import kotlinx.coroutines.launch
 
 /**
  * The standard scroll surface, ported from mono's CustomScrollView:
@@ -47,7 +50,7 @@ import kotlinx.coroutines.flow.first as flowFirst
  *    behavior the brief explicitly calls out. This is the equivalent of React
  *    Native's `overScrollMode="never"`.
  *  - A thin custom scroll indicator is drawn on the right edge instead of the
- *    platform scrollbar.
+ *    platform scrollbar (visual spec from light-template: 1px track, 5px thumb).
  *  - Optional library date scrubber: hold the scrollbar, drag left into years,
  *    then months, release to jump.
  */
@@ -67,88 +70,83 @@ fun CustomScrollView(
     /** When set, holding the scrollbar opens the year/month jump overlay. */
     dateIndex: LibraryDateIndex? = null,
     onScrubToIndex: suspend (Int) -> Unit = {},
+    onScrubJumpChange: (Boolean) -> Unit = {},
     content: LazyListScope.() -> Unit,
 ) {
-    var scrubActive by remember { mutableStateOf(false) }
-    var scrubSelection by remember { mutableStateOf<ScrubSelectionState?>(null) }
-    var pendingScrubTarget by remember { mutableIntStateOf(-1) }
-    var scrollbarAnchorIndex by remember { mutableIntStateOf(-1) }
+    val scrubIndex = dateIndex?.takeIf { !it.isEmpty }
+    val scrubController = remember(scrubIndex) { ScrubController() }
 
-    val scrubEnabled = dateIndex != null && !dateIndex.isEmpty
+    Box(modifier = modifier.fillMaxSize()) {
+        // List + scrollbar — never reads scrubController.overlayOpen (avoids LazyColumn recompose).
+        CustomScrollListBody(
+            state = state,
+            contentPadding = contentPadding,
+            verticalArrangement = verticalArrangement,
+            loadedItemCount = loadedItemCount,
+            virtualItemCount = virtualItemCount,
+            scrubIndex = scrubIndex,
+            scrubController = scrubController,
+            onScrubToIndex = onScrubToIndex,
+            onScrubJumpChange = onScrubJumpChange,
+            content = content,
+        )
+
+        // Scrub visuals isolated — only this subtree recomposes on open/close.
+        if (scrubIndex != null) {
+            LibraryScrubVisuals(
+                controller = scrubController,
+                dateIndex = scrubIndex,
+                modifier = Modifier.zIndex(2f),
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun CustomScrollListBody(
+    state: LazyListState,
+    contentPadding: PaddingValues,
+    verticalArrangement: Arrangement.Vertical,
+    loadedItemCount: Int?,
+    virtualItemCount: Int?,
+    scrubIndex: LibraryDateIndex?,
+    scrubController: ScrubController,
+    onScrubToIndex: suspend (Int) -> Unit,
+    onScrubJumpChange: (Boolean) -> Unit,
+    content: LazyListScope.() -> Unit,
+) {
+    var containerWidthPx by remember { mutableFloatStateOf(0f) }
+    var containerHeightPx by remember { mutableFloatStateOf(0f) }
+
+    val scrubEnabled = scrubIndex != null
     val scrollIndex = state.firstVisibleItemIndex
-    val anchorIndex = scrollbarAnchorIndex.takeIf { it >= 0 }
+    val minThumbPx = with(LocalDensity.current) { n(20).toPx() }
+    val scrollScope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val stripWidthPx = with(density) { SCRUBBAR_TOUCH_WIDTH.toPx() }
 
-    LaunchedEffect(pendingScrubTarget) {
-        if (pendingScrubTarget < 0) return@LaunchedEffect
-        val target = pendingScrubTarget
-        pendingScrubTarget = -1
+    DisposableEffect(Unit) {
+        onDispose { onScrubJumpChange(false) }
+    }
 
-        // Wait until LazyColumn has composed rows through the target index.
-        snapshotFlow {
-            val runway = if (hasMoreItems) 1 else 0
-            state.layoutInfo.totalItemsCount - runway
-        }.flowFirst { it > target }
-
-        onScrubToIndex(target)
-
-        snapshotFlow { state.firstVisibleItemIndex }.flowFirst { it >= target - 2 }
-        scrollbarAnchorIndex = -1
+    val layout by remember {
+        derivedStateOf {
+            state.computeScrollbarLayout(
+                loadedItemCount = loadedItemCount,
+                virtualItemCount = virtualItemCount,
+                minThumbPx = minThumbPx,
+            )
+        }
     }
 
     Box(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxSize()
-            .then(
-                if (scrubEnabled) {
-                    Modifier.pointerInput(dateIndex, scrollIndex) {
-                        awaitEachGesture {
-                            val down = awaitFirstDown(requireUnconsumed = false)
-                            val barLeft = size.width - SCRUBBAR_TOUCH_WIDTH.toPx()
-                            if (down.position.x < barLeft) return@awaitEachGesture
-
-                            val longPress = awaitLongPressOrCancellation(down.id) ?: return@awaitEachGesture
-                            longPress.consume()
-
-                            val index = dateIndex ?: return@awaitEachGesture
-                            var selection = initialScrubSelection(index, scrollIndex)
-                            scrubSelection = selection
-                            scrubActive = true
-
-                            while (true) {
-                                val event = awaitPointerEvent(PointerEventPass.Main)
-                                val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
-                                if (!pointer.pressed) break
-
-                                val column = scrubColumnAt(
-                                    xPx = pointer.position.x,
-                                    totalWidthPx = size.width.toFloat(),
-                                    density = density,
-                                )
-                                selection = updateScrubSelection(
-                                    dateIndex = index,
-                                    current = selection,
-                                    column = column,
-                                    yPx = pointer.position.y,
-                                    heightPx = size.height.toFloat(),
-                                )
-                                scrubSelection = selection
-                                pointer.consume()
-                            }
-
-                            val final = selection
-                            if (final.reachedMonthsZone && final.selectedMonth != null) {
-                                val targetIndex = final.selectedMonth.startIndex
-                                scrollbarAnchorIndex = targetIndex
-                                pendingScrubTarget = targetIndex
-                            }
-                            scrubActive = false
-                            scrubSelection = null
-                        }
-                    }
-                } else {
-                    Modifier
-                },
-            ),
+            .onSizeChanged {
+                containerWidthPx = it.width.toFloat()
+                containerHeightPx = it.height.toFloat()
+            },
     ) {
         CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
             LazyColumn(
@@ -160,97 +158,208 @@ fun CustomScrollView(
             )
         }
 
-        MonoScrollbar(
-            state = state,
-            loadedItemCount = loadedItemCount,
-            virtualItemCount = virtualItemCount,
-            anchorScrollIndex = anchorIndex,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .fillMaxHeight()
-                .width(SCRUBBAR_TOUCH_WIDTH)
-                .padding(start = n(2)),
-        )
+        val metrics = layout
+        if (metrics != null && containerHeightPx > 0f) {
+            val thumbColor = MonoColors.Foreground
+            val trackWidthPx = with(density) { n(1).toPx() }
+            val thumbWidthPx = with(density) { n(5).toPx() }
+            val thumbRightOverhangPx = with(density) { n(2).toPx() }
+            val stripLeftPx = containerWidthPx - stripWidthPx
 
-        if (scrubActive && scrubSelection != null && dateIndex != null) {
-            val selection = scrubSelection!!
-            LibraryDateScrubOverlay(
-                dateIndex = dateIndex,
-                selectedYear = selection.selectedYear,
-                selectedMonth = selection.selectedMonth,
-                monthsInYear = dateIndex.monthsForYear(selection.selectedYear),
-            )
+            Box(
+                modifier = Modifier
+                    .zIndex(3f)
+                    .align(Alignment.TopEnd)
+                    .fillMaxHeight()
+                    .width(SCRUBBAR_TOUCH_WIDTH)
+                    .padding(end = n(2))
+                    .pointerInput(
+                        scrubEnabled,
+                        scrubIndex,
+                        scrollIndex,
+                        loadedItemCount,
+                        virtualItemCount,
+                        containerWidthPx,
+                        containerHeightPx,
+                    ) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            down.consume()
+
+                            if (scrubEnabled) {
+                                val index = scrubIndex!!
+                                val longPress = awaitLongPressOrCancellation(down.id)
+                                if (longPress != null) {
+                                    longPress.consume()
+                                    var jumpTarget = -1
+                                    onScrubJumpChange(true)
+                                    try {
+                                        var selection = initialScrubSelection(index, scrollIndex)
+                                        scrubController.overlayOpen = true
+                                        scrubController.selection = selection
+
+                                        while (true) {
+                                            val event = awaitPointerEvent(PointerEventPass.Main)
+                                            val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
+                                            if (!pointer.pressed) break
+
+                                            selection = updateScrubSelection(
+                                                dateIndex = index,
+                                                current = selection,
+                                                column = scrubColumnAt(
+                                                    xPx = stripLeftPx + pointer.position.x,
+                                                    totalWidthPx = containerWidthPx,
+                                                    density = density.density,
+                                                ),
+                                                yPx = pointer.position.y,
+                                                heightPx = containerHeightPx,
+                                            )
+                                            scrubController.selection = selection
+                                            pointer.consume()
+                                        }
+
+                                        val final = selection
+                                        if (final.reachedMonthsZone && final.selectedMonth != null) {
+                                            jumpTarget = final.selectedMonth.startIndex
+                                        }
+                                    } finally {
+                                        scrubController.overlayOpen = false
+                                        scrubController.selection = null
+                                        if (jumpTarget < 0) {
+                                            onScrubJumpChange(false)
+                                        }
+                                    }
+
+                                    if (jumpTarget >= 0) {
+                                        val target = jumpTarget
+                                        scrollScope.launch {
+                                            withFrameNanos { }
+                                            try {
+                                                onScrubToIndex(target)
+                                            } finally {
+                                                onScrubJumpChange(false)
+                                            }
+                                        }
+                                    }
+                                    return@awaitEachGesture
+                                }
+                            }
+
+                            val touchSlopSq = viewConfiguration.touchSlop * viewConfiguration.touchSlop
+                            var dragActive = false
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!pointer.pressed) break
+
+                                val moved = (pointer.position - down.position).getDistanceSquared() > touchSlopSq
+                                if (moved || dragActive) {
+                                    dragActive = true
+                                    pointer.consume()
+                                    val scrollLayout = state.computeScrollbarLayout(
+                                        loadedItemCount = loadedItemCount,
+                                        virtualItemCount = virtualItemCount,
+                                        minThumbPx = minThumbPx,
+                                    ) ?: continue
+                                    scrollScope.launch {
+                                        state.scrollToStripY(
+                                            stripY = pointer.position.y,
+                                            stripHeight = containerHeightPx,
+                                            layout = scrollLayout,
+                                            loadedItemCount = loadedItemCount,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    },
+            ) {
+                Canvas(Modifier.fillMaxSize()) {
+                    val trackLeft = size.width - trackWidthPx
+                    val thumbLeft = size.width - thumbWidthPx + thumbRightOverhangPx
+                    drawRect(
+                        color = thumbColor,
+                        topLeft = Offset(trackLeft, 0f),
+                        size = Size(trackWidthPx, size.height),
+                    )
+                    drawRect(
+                        color = thumbColor,
+                        topLeft = Offset(thumbLeft, metrics.thumbY),
+                        size = Size(thumbWidthPx, metrics.thumbHeight),
+                    )
+                }
+            }
         }
     }
 }
 
-private data class ScrollbarMetrics(val thumbFraction: Float, val positionFraction: Float)
+private data class ScrollbarLayout(
+    val thumbHeight: Float,
+    val thumbY: Float,
+    val contentHeight: Float,
+    val viewport: Float,
+    val avgItemSize: Float,
+    val itemTotal: Int,
+)
 
-@Composable
-private fun MonoScrollbar(
-    state: LazyListState,
-    loadedItemCount: Int? = null,
-    virtualItemCount: Int? = null,
-    anchorScrollIndex: Int? = null,
-    modifier: Modifier = Modifier,
+private fun LazyListState.computeScrollbarLayout(
+    loadedItemCount: Int?,
+    virtualItemCount: Int?,
+    minThumbPx: Float,
+): ScrollbarLayout? {
+    val info = layoutInfo
+    val visible = info.visibleItemsInfo
+    if (visible.isEmpty()) return null
+
+    val avgItemSize = visible.sumOf { it.size }.toFloat() / visible.size
+    if (avgItemSize <= 0f) return null
+
+    val layoutTotal = info.totalItemsCount
+    val itemTotal = max(virtualItemCount ?: layoutTotal, layoutTotal)
+    val contentHeight = avgItemSize * itemTotal
+    val viewport = (info.viewportEndOffset - info.viewportStartOffset).toFloat()
+    if (viewport <= 0f) return null
+
+    val visibleSize = visible.sumOf { it.size }.toFloat()
+    if (contentHeight <= viewport && visibleSize <= viewport) return null
+
+    val first = visible.first()
+    val scrollPx = avgItemSize * first.index - first.offset
+
+    val thumbHeight = max((viewport * viewport) / contentHeight, minThumbPx)
+    val maxScroll = contentHeight - viewport
+    val thumbTravel = viewport - thumbHeight
+    val thumbY = if (maxScroll > 0f) {
+        ((scrollPx / maxScroll) * thumbTravel).coerceIn(0f, thumbTravel)
+    } else {
+        0f
+    }
+
+    return ScrollbarLayout(
+        thumbHeight = thumbHeight,
+        thumbY = thumbY,
+        contentHeight = contentHeight,
+        viewport = viewport,
+        avgItemSize = avgItemSize,
+        itemTotal = itemTotal,
+    )
+}
+
+private suspend fun LazyListState.scrollToStripY(
+    stripY: Float,
+    stripHeight: Float,
+    layout: ScrollbarLayout,
+    loadedItemCount: Int?,
 ) {
-    // Re-create derivedState when anchor changes; derivedStateOf inside tracks scroll.
-    val metrics by remember(anchorScrollIndex, loadedItemCount, virtualItemCount) {
-        derivedStateOf {
-            val info = state.layoutInfo
-            val visible = info.visibleItemsInfo
-            if (visible.isEmpty()) return@derivedStateOf null
-
-            val layoutTotal = info.totalItemsCount
-            val loaded = loadedItemCount ?: layoutTotal
-            val virtualTotal = max(virtualItemCount ?: loaded, loaded)
-            val spacing = info.mainAxisItemSpacing
-            val avgItem = visible.sumOf { it.size } / visible.size
-            val itemStride = avgItem + spacing
-            val viewport = (info.viewportEndOffset - info.viewportStartOffset).toFloat()
-            val estVirtualContent = (itemStride * virtualTotal - spacing).toFloat()
-            if (estVirtualContent <= viewport || viewport <= 0f) return@derivedStateOf null
-
-            val listIndex = minOf(state.firstVisibleItemIndex, max(loaded - 1, 0))
-            val scrollIndex = anchorScrollIndex?.coerceIn(0, max(virtualTotal - 1, 0)) ?: listIndex
-            val scrolled = if (anchorScrollIndex != null) {
-                scrollIndex * itemStride.toFloat()
-            } else {
-                (listIndex * itemStride + state.firstVisibleItemScrollOffset).toFloat()
-            }
-            val maxVirtualScroll = estVirtualContent - viewport
-            ScrollbarMetrics(
-                thumbFraction = (viewport / estVirtualContent).coerceIn(0f, 1f),
-                positionFraction = (scrolled / maxVirtualScroll).coerceIn(0f, 1f),
-            )
-        }
-    }
-
-    val m = metrics ?: return
-    val thumbColor = MonoColors.Foreground
-
-    Box(modifier) {
-        Canvas(
-            Modifier
-                .width(n(5))
-                .align(Alignment.TopEnd),
-        ) {
-            val trackHeight = size.height
-            val lineWidth = n(1).toPx()
-            val minThumb = n(20).toPx()
-            val thumbHeight = max(trackHeight * m.thumbFraction, minThumb)
-            val thumbY = m.positionFraction * (trackHeight - thumbHeight)
-
-            drawRect(
-                color = thumbColor.copy(alpha = 0.25f),
-                topLeft = Offset(size.width - lineWidth, 0f),
-                size = Size(lineWidth, trackHeight),
-            )
-            drawRect(
-                color = thumbColor,
-                topLeft = Offset(0f, thumbY),
-                size = Size(size.width, thumbHeight),
-            )
-        }
-    }
+    val thumbTravel = stripHeight - layout.thumbHeight
+    if (thumbTravel <= 0f) return
+    val thumbY = (stripY - layout.thumbHeight / 2f).coerceIn(0f, thumbTravel)
+    val maxScroll = layout.contentHeight - layout.viewport
+    if (maxScroll <= 0f) return
+    val scrollPx = (thumbY / thumbTravel) * maxScroll
+    val maxIndex = loadedItemCount?.minus(1)?.coerceAtLeast(0)
+        ?: max(layout.itemTotal - 1, 0)
+    val index = (scrollPx / layout.avgItemSize).toInt().coerceIn(0, maxIndex)
+    val offset = (scrollPx - index * layout.avgItemSize).toInt().coerceAtLeast(0)
+    scroll { scrollToItem(index, offset) }
 }

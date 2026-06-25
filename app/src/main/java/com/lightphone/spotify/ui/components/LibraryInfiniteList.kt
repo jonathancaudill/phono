@@ -23,6 +23,7 @@ fun <T> LibraryInfiniteList(
     modifier: Modifier = Modifier,
     dateIndex: LibraryDateIndex? = null,
     onScrubToIndex: suspend (Int) -> Unit = {},
+    onScrubJumpChange: (Boolean) -> Unit = {},
     itemContent: @Composable (index: Int, item: T) -> Unit,
 ) {
     LibraryListScrollAnchor(
@@ -41,6 +42,7 @@ fun <T> LibraryInfiniteList(
         hasMoreItems = hasMore,
         dateIndex = dateIndex,
         onScrubToIndex = onScrubToIndex,
+        onScrubJumpChange = onScrubJumpChange,
     ) {
         items(items.size, key = { itemKey(items[it]) }) { index ->
             itemContent(index, items[index])

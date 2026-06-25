@@ -1,6 +1,5 @@
 package com.lightphone.spotify.ui.components
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,6 +12,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import com.lightphone.spotify.ui.theme.MonoColors
 import com.lightphone.spotify.ui.theme.n
@@ -50,18 +52,24 @@ internal fun indexForVerticalPosition(yPx: Float, count: Int, heightPx: Float): 
     return (fraction * (count - 1)).roundToInt()
 }
 
+/** Scrim + labels only — composed separately from the LazyColumn so open/close is instant. */
 @Composable
-internal fun LibraryDateScrubOverlay(
+internal fun LibraryScrubVisuals(
+    controller: ScrubController,
     dateIndex: LibraryDateIndex,
-    selectedYear: Int,
-    selectedMonth: MonthSection?,
-    monthsInYear: List<MonthSection>,
     modifier: Modifier = Modifier,
+    scrimColor: Color = MonoColors.Background,
 ) {
+    val open = controller.overlayOpen
+    val selection = controller.selection
+    if (!open || selection == null) return
+
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MonoColors.Background),
+            .drawBehind {
+                drawRect(color = scrimColor, size = Size(size.width, size.height))
+            },
     ) {
         Row(
             modifier = Modifier
@@ -71,15 +79,16 @@ internal fun LibraryDateScrubOverlay(
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            val monthsInYear = dateIndex.monthsForYear(selection.selectedYear)
             ScrubLabelColumn(
                 labels = monthsInYear.map { monthLabel(it.month) },
-                selectedIndex = monthsInYear.indexOf(selectedMonth).takeIf { it >= 0 },
+                selectedIndex = monthsInYear.indexOf(selection.selectedMonth).takeIf { it >= 0 },
                 modifier = Modifier.width(SCRUB_MONTHS_COLUMN_WIDTH),
             )
             Spacer(Modifier.width(SCRUB_COLUMN_GAP))
             ScrubLabelColumn(
                 labels = dateIndex.years.map { it.toString() },
-                selectedIndex = dateIndex.years.indexOf(selectedYear).takeIf { it >= 0 },
+                selectedIndex = dateIndex.years.indexOf(selection.selectedYear).takeIf { it >= 0 },
                 modifier = Modifier.width(SCRUB_YEARS_COLUMN_WIDTH),
             )
         }
