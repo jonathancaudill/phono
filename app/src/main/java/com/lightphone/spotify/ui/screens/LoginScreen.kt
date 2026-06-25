@@ -10,9 +10,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
@@ -26,7 +29,10 @@ private const val REDIRECT_PREFIX = "http://127.0.0.1:8898/login"
 @Composable
 fun LoginScreen(vm: AppViewModel) {
     val playback by vm.playback.collectAsState()
-    val authUrl = remember { vm.beginLogin() }
+    var authUrl by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        authUrl = vm.beginLogin()
+    }
     Box(Modifier.fillMaxSize().background(MonoColors.Background)) {
         Column(Modifier.fillMaxSize()) {
             Column(
@@ -41,39 +47,41 @@ fun LoginScreen(vm: AppViewModel) {
                     color = MonoColors.Placeholder,
                 )
             }
-            AndroidView(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                factory = { context ->
-                    WebView(context).apply {
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        settings.databaseEnabled = true
-                        settings.userAgentString =
-                            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
-                                "Chrome/126.0.0.0 Mobile Safari/537.36"
-                        val cookieManager = android.webkit.CookieManager.getInstance()
-                        cookieManager.setAcceptCookie(true)
-                        cookieManager.setAcceptThirdPartyCookies(this, true)
-                        webViewClient = object : WebViewClient() {
-                            override fun shouldOverrideUrlLoading(
-                                view: WebView?,
-                                request: WebResourceRequest?,
-                            ): Boolean {
-                                val url = request?.url?.toString() ?: return false
-                                if (url.startsWith(REDIRECT_PREFIX)) {
-                                    val code = request.url.getQueryParameter("code")
-                                    if (code != null) vm.completeLogin(code)
-                                    return true
+            if (authUrl != null) {
+                AndroidView(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    factory = { context ->
+                        WebView(context).apply {
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            settings.databaseEnabled = true
+                            settings.userAgentString =
+                                "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
+                                    "Chrome/126.0.0.0 Mobile Safari/537.36"
+                            val cookieManager = android.webkit.CookieManager.getInstance()
+                            cookieManager.setAcceptCookie(true)
+                            cookieManager.setAcceptThirdPartyCookies(this, true)
+                            webViewClient = object : WebViewClient() {
+                                override fun shouldOverrideUrlLoading(
+                                    view: WebView?,
+                                    request: WebResourceRequest?,
+                                ): Boolean {
+                                    val url = request?.url?.toString() ?: return false
+                                    if (url.startsWith(REDIRECT_PREFIX)) {
+                                        val code = request.url.getQueryParameter("code")
+                                        if (code != null) vm.completeLogin(code)
+                                        return true
+                                    }
+                                    return false
                                 }
-                                return false
                             }
+                            loadUrl(authUrl!!)
                         }
-                        loadUrl(authUrl)
-                    }
-                },
-            )
+                    },
+                )
+            }
         }
         playback.error?.let { message ->
             Box(

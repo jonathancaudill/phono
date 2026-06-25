@@ -1,10 +1,14 @@
 package com.lightphone.spotify.ui
 
 import android.app.Application
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.compose.foundation.lazy.LazyListState
 import com.lightphone.spotify.App
+import com.lightphone.spotify.data.PlaylistFilter
 import com.lightphone.spotify.data.SearchFilter
 import com.lightphone.spotify.data.SearchResults
 import com.lightphone.spotify.data.SearchResultItem
@@ -19,10 +23,13 @@ import com.lightphone.spotify.data.local.SavedAlbumEntity
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ffi.NormalizationType
 import com.lightphone.spotify.ffi.StreamingQuality
+import com.lightphone.spotify.ui.components.MonoContextMenuItem
 import com.lightphone.spotify.playback.PlaybackController
 import com.lightphone.spotify.playback.PlaybackUiState
 import com.lightphone.spotify.playback.SettingsSnapshot
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -70,7 +77,6 @@ data class SettingsUiState(
     val gaplessEnabled: Boolean = true,
     val normalizationEnabled: Boolean = false,
     val normalizationType: NormalizationType = NormalizationType.AUTO,
-    val volumePercent: Int = 100,
     val proxy: String = "",
     val showAdvanced: Boolean = false,
 )
@@ -105,8 +111,34 @@ data class PlaylistPickerState(
     val loading: Boolean = false,
     val adding: Boolean = false,
     val playlists: List<PlaylistEntity> = emptyList(),
+    val selectedPlaylistIds: Set<String> = emptySet(),
     val error: String? = null,
     val statusMessage: String? = null,
+)
+
+enum class ContextMenuAction {
+    CopyLink,
+    AddToPlaylists,
+    RemoveFromLibrary,
+    DeletePlaylist,
+}
+
+sealed interface ContextMenuTarget {
+    data class Track(val uri: String, val id: String) : ContextMenuTarget
+    data class Album(val albumId: String, val uri: String) : ContextMenuTarget
+    data class Playlist(val playlistId: String, val uri: String, val ownerId: String) : ContextMenuTarget
+}
+
+data class DeletePlaylistConfirm(
+    val playlistId: String,
+    val name: String,
+)
+
+data class ContextMenuUiState(
+    val target: ContextMenuTarget? = null,
+    val showCopied: Boolean = false,
+    val deleteConfirm: DeletePlaylistConfirm? = null,
+    val navigateToPlaylistPickerUri: String? = null,
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -121,8 +153,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _savedAlbums = MutableStateFlow(LibraryListUiState<SavedAlbumEntity>())
     val savedAlbums: StateFlow<LibraryListUiState<SavedAlbumEntity>> = _savedAlbums.asStateFlow()
 
-    private val _playlists = MutableStateFlow(LibraryListUiState<PlaylistEntity>())
-    val playlists: StateFlow<LibraryListUiState<PlaylistEntity>> = _playlists.asStateFlow()
+    private val _playlists = MutableStateFlow(PlaylistsUiState())
+    val playlists: StateFlow<PlaylistsUiState> = _playlists.asStateFlow()
 
     private var likedTracksStarted = false
     private var savedAlbumsStarted = false
@@ -166,10 +198,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _playlistPicker = MutableStateFlow(PlaylistPickerState())
     val playlistPicker: StateFlow<PlaylistPickerState> = _playlistPicker.asStateFlow()
 
+    private val _contextMenu = MutableStateFlow(ContextMenuUiState())
+    val contextMenu: StateFlow<ContextMenuUiState> = _contextMenu.asStateFlow()
+
     private var loadedPlaylistId: String? = null
 
     init {
         refreshSettings()
+        viewModelScope.launch {
+            playback
+                .map { it.currentUri }
+                .distinctUntilChanged()
+                .collect { uri -> onCurrentTrackChanged(uri) }
+        }
+    }
+
+    private fun onCurrentTrackChanged(uri: String?) {
+        if (uri == null) {
+            playingExtrasJob?.cancel()
+            playingExtrasLoadedForUri = null
+            _playingExtras.value = PlayingExtrasState()
+            return
+        }
+        if (uri != playingExtrasLoadedForUri) {
+            playingExtrasLoadedForUri = null
+            _playingExtras.update {
+                it.copy(isTrackSaved = false, savePending = false, saveError = null)
+            }
+        }
+        refreshPlayingScreen()
     }
 
     fun refreshSettings() {
@@ -434,10 +491,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _playlists.value = _playlists.value.copy(initialLoading = true)
         viewModelScope.launch {
             controller.playlistsUiFlow().collect { (items, remoteTotal, hasMore) ->
-                _playlists.update { it.copy(items = items, remoteTotal = remoteTotal, hasMore = hasMore) }
+                _playlists.update {
+                    it.copy(items = items, remoteTotal = remoteTotal, hasMore = hasMore)
+                }
             }
         }
+        viewModelScope.launch {
+            runCatching { controller.currentUserId() }
+                .onSuccess { userId -> _playlists.update { it.copy(currentUserId = userId) } }
+        }
         refreshPlaylists()
+    }
+
+    fun setPlaylistsFilter(filter: PlaylistFilter) {
+        _playlists.update { it.copy(filter = filter) }
     }
 
     fun refreshPlaylists() {
@@ -484,7 +551,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun scrollPlaylistsToIndex(listState: LazyListState, targetIndex: Int) {
-        val items = _playlists.value.items
+        val items = _playlists.value.displayItems
         if (items.isEmpty()) return
         if (targetIndex > items.lastIndex) {
             android.util.Log.w("Library", "scrub target $targetIndex > lastIndex ${items.lastIndex}")
@@ -718,21 +785,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun addTrackToPlaylistFromPicker(playlistId: String, onAdded: () -> Unit) {
-        val uri = _playlistPicker.value.trackUri
-        if (uri.isBlank()) return
+    fun togglePlaylistPickerSelection(playlistId: String) {
+        _playlistPicker.update { state ->
+            if (state.adding) return@update state
+            val next = state.selectedPlaylistIds.toMutableSet()
+            if (playlistId in next) next.remove(playlistId) else next.add(playlistId)
+            state.copy(selectedPlaylistIds = next, error = null, statusMessage = null)
+        }
+    }
+
+    fun addTrackToSelectedPlaylists(onAdded: () -> Unit) {
+        val state = _playlistPicker.value
+        val uri = state.trackUri
+        val playlistIds = state.selectedPlaylistIds.toList()
+        if (uri.isBlank() || playlistIds.isEmpty()) return
         viewModelScope.launch {
-            _playlistPicker.update { it.copy(adding = true, error = null) }
-            runCatching { controller.addTrackToPlaylist(playlistId, uri) }
-                .onSuccess {
-                    _playlistPicker.update { it.copy(adding = false, statusMessage = "Added to playlist") }
-                    onAdded()
+            _playlistPicker.update { it.copy(adding = true, error = null, statusMessage = null) }
+            runCatching {
+                playlistIds.forEach { playlistId ->
+                    controller.addTrackToPlaylist(playlistId, uri)
                 }
-                .onFailure { e ->
-                    _playlistPicker.update {
-                        it.copy(adding = false, error = e.message ?: "Could not add track")
-                    }
+            }.onSuccess {
+                val count = playlistIds.size
+                val message = if (count == 1) "Added to playlist" else "Added to $count playlists"
+                _playlistPicker.update { it.copy(adding = false, statusMessage = message) }
+                onAdded()
+            }.onFailure { e ->
+                _playlistPicker.update {
+                    it.copy(adding = false, error = e.message ?: "Could not add track")
                 }
+            }
         }
     }
 
@@ -896,6 +978,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private var playingExtrasLoadedForUri: String? = null
+    private var playingExtrasJob: Job? = null
 
     fun refreshPlayingScreen() {
         val uri = playback.value.currentUri ?: return
@@ -905,8 +988,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (uri == playingExtrasLoadedForUri) return
         val requestedUri = uri
-        viewModelScope.launch {
-            _playingExtras.value = _playingExtras.value.copy(saveError = null)
+        playingExtrasJob?.cancel()
+        playingExtrasJob = viewModelScope.launch {
+            val localHint = runCatching { controller.isLikedTrackCached(requestedUri) }
+                .getOrDefault(false)
+            if (playback.value.currentUri == requestedUri) {
+                _playingExtras.update { it.copy(isTrackSaved = localHint, saveError = null) }
+            }
+
             val saved = runCatching { controller.isTrackSaved(requestedUri) }
                 .getOrElse { e ->
                     if (playback.value.currentUri != requestedUri) return@launch
@@ -916,7 +1005,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
             if (playback.value.currentUri != requestedUri) return@launch
-            _playingExtras.value = _playingExtras.value.copy(isTrackSaved = saved)
+            _playingExtras.value = _playingExtras.value.copy(isTrackSaved = saved, saveError = null)
             playingExtrasLoadedForUri = requestedUri
         }
     }
@@ -936,6 +1025,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 savePending = false,
                 saveError = result.exceptionOrNull()?.message,
             )
+            if (result.isSuccess) {
+                playingExtrasLoadedForUri = uri
+            }
         }
     }
 
@@ -957,6 +1049,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun clearManualQueue() = controller.clearManualQueue()
     fun refreshQueue() = controller.refreshQueue()
     fun logout() {
+        playingExtrasJob?.cancel()
         playingExtrasLoadedForUri = null
         _playingExtras.value = PlayingExtrasState()
         controller.logout()
@@ -982,12 +1075,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         controller.setNormalizationType(type)
     }
 
-    fun setVolumePercent(percent: Int) {
-        val clamped = percent.coerceIn(0, 100)
-        _settings.value = _settings.value.copy(volumePercent = clamped)
-        controller.setVolume(clamped)
-    }
-
     fun setProxy(proxy: String) {
         _settings.value = _settings.value.copy(proxy = proxy)
         val trimmed = proxy.trim()
@@ -1000,6 +1087,123 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearAudioCache() = controller.clearAudioCache()
 
+    fun showTrackContextMenu(uri: String, id: String) {
+        _contextMenu.value = ContextMenuUiState(target = ContextMenuTarget.Track(uri, id))
+    }
+
+    fun showAlbumContextMenu(albumId: String, uri: String) {
+        _contextMenu.value = ContextMenuUiState(
+            target = ContextMenuTarget.Album(albumId, uri),
+        )
+    }
+
+    fun showPlaylistContextMenu(playlistId: String, uri: String, ownerId: String) {
+        _contextMenu.value = ContextMenuUiState(
+            target = ContextMenuTarget.Playlist(playlistId, uri, ownerId),
+        )
+    }
+
+    fun dismissContextMenu() {
+        _contextMenu.update { it.copy(target = null) }
+    }
+
+    fun dismissCopiedOverlay() {
+        _contextMenu.update { it.copy(showCopied = false) }
+    }
+
+    fun cancelDeletePlaylist() {
+        _contextMenu.update { it.copy(deleteConfirm = null) }
+    }
+
+    fun consumeNavigateToPlaylistPicker() {
+        _contextMenu.update { it.copy(navigateToPlaylistPickerUri = null) }
+    }
+
+    fun contextMenuItemsFor(target: ContextMenuTarget, currentUserId: String?): List<MonoContextMenuItem> =
+        when (target) {
+            is ContextMenuTarget.Track -> listOf(
+                MonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink),
+                MonoContextMenuItem("Add To Playlists", ContextMenuAction.AddToPlaylists),
+                MonoContextMenuItem("Remove From Library", ContextMenuAction.RemoveFromLibrary),
+            )
+            is ContextMenuTarget.Album -> listOf(
+                MonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink),
+                MonoContextMenuItem("Remove From Library", ContextMenuAction.RemoveFromLibrary),
+            )
+            is ContextMenuTarget.Playlist -> buildList {
+                add(MonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink))
+                if (currentUserId != null && target.ownerId == currentUserId) {
+                    add(MonoContextMenuItem("Delete Playlist", ContextMenuAction.DeletePlaylist))
+                }
+            }
+        }
+
+    fun onContextMenuAction(action: ContextMenuAction) {
+        val target = _contextMenu.value.target ?: return
+        when (action) {
+            ContextMenuAction.CopyLink -> {
+                dismissContextMenu()
+                copyContextMenuLink(target)
+            }
+            ContextMenuAction.AddToPlaylists -> {
+                if (target !is ContextMenuTarget.Track) return
+                dismissContextMenu()
+                _contextMenu.update { it.copy(navigateToPlaylistPickerUri = target.uri) }
+            }
+            ContextMenuAction.RemoveFromLibrary -> {
+                dismissContextMenu()
+                removeContextMenuFromLibrary(target)
+            }
+            ContextMenuAction.DeletePlaylist -> {
+                if (target !is ContextMenuTarget.Playlist) return
+                dismissContextMenu()
+                _contextMenu.update {
+                    it.copy(deleteConfirm = DeletePlaylistConfirm(target.playlistId, ""))
+                }
+            }
+        }
+    }
+
+    fun confirmDeletePlaylist() {
+        val confirm = _contextMenu.value.deleteConfirm ?: return
+        _contextMenu.update { it.copy(deleteConfirm = null) }
+        viewModelScope.launch {
+            runCatching { controller.unfollowPlaylist(confirm.playlistId) }
+                .onFailure { e ->
+                    android.util.Log.e("Library", "deletePlaylist failed", e)
+                }
+        }
+    }
+
+    private fun copyContextMenuLink(target: ContextMenuTarget) {
+        val url = when (target) {
+            is ContextMenuTarget.Track -> spotifyShareUrl(target.uri, target.id, "track")
+            is ContextMenuTarget.Album -> spotifyShareUrl(target.uri, target.albumId, "album")
+            is ContextMenuTarget.Playlist -> spotifyShareUrl(target.uri, target.playlistId, "playlist")
+        }
+        val clipboard = getApplication<Application>().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Spotify link", url))
+        _contextMenu.update { it.copy(showCopied = true) }
+        viewModelScope.launch {
+            delay(1750)
+            if (_contextMenu.value.showCopied) dismissCopiedOverlay()
+        }
+    }
+
+    private fun removeContextMenuFromLibrary(target: ContextMenuTarget) {
+        viewModelScope.launch {
+            runCatching {
+                when (target) {
+                    is ContextMenuTarget.Track -> controller.removeTrack(target.uri)
+                    is ContextMenuTarget.Album -> controller.removeAlbum(target.albumId)
+                    is ContextMenuTarget.Playlist -> controller.unfollowPlaylist(target.playlistId)
+                }
+            }.onFailure { e ->
+                android.util.Log.e("Library", "removeFromLibrary failed", e)
+            }
+        }
+    }
+
     companion object {
         private const val SEARCH_TIMEOUT_MS = 30_000L
         private const val LOOKAHEAD_ROWS = 150
@@ -1011,7 +1215,6 @@ private fun SettingsSnapshot.toUiState(showAdvanced: Boolean) = SettingsUiState(
     gaplessEnabled = gaplessEnabled,
     normalizationEnabled = normalizationEnabled,
     normalizationType = normalizationType,
-    volumePercent = volumePercent,
     proxy = proxy.orEmpty(),
     showAdvanced = showAdvanced,
 )

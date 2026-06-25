@@ -11,7 +11,5 @@ class App : Application() {
         super.onCreate()
         // Loads the native lib, initializes ndk_context, and creates the engine.
         controller = PlaybackController.get(this)
-        // Restore a previous session silently if credentials are cached.
-        controller.tryCachedLogin { }
     }
 }

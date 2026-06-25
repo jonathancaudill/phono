@@ -4,16 +4,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -39,7 +35,6 @@ import com.lightphone.spotify.ui.theme.PublicSans
 import com.lightphone.spotify.ui.theme.n
 import com.lightphone.spotify.ui.theme.nSp
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     vm: AppViewModel,
@@ -74,8 +69,6 @@ fun SettingsScreen(
             item("body") {
                 Column(Modifier.fillMaxWidth().padding(end = n(20))) {
                     SectionLabel("Playback")
-                    VolumeControl(settings.volumePercent, vm::setVolumePercent)
-                    Spacer(Modifier.height(n(20)))
                     MonoToggleSwitch("Gapless playback", settings.gaplessEnabled, vm::setGaplessEnabled)
                     MonoToggleSwitch("Normalize volume", settings.normalizationEnabled, vm::setNormalizationEnabled)
                     if (settings.normalizationEnabled) {
@@ -143,28 +136,6 @@ private fun SectionLabel(text: String) {
         color = MonoColors.Placeholder,
         modifier = Modifier.padding(top = n(24), bottom = n(12)),
     )
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun VolumeControl(volumePercent: Int, onVolumeChange: (Int) -> Unit) {
-    Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            StyledText("Volume", size = 22, modifier = Modifier.weight(1f))
-            StyledText("$volumePercent%", size = 16, color = MonoColors.Placeholder)
-        }
-        Slider(
-            value = volumePercent.toFloat(),
-            onValueChange = { onVolumeChange(it.toInt()) },
-            valueRange = 0f..100f,
-            modifier = Modifier.fillMaxWidth(),
-            colors = SliderDefaults.colors(
-                thumbColor = MonoColors.Foreground,
-                activeTrackColor = MonoColors.Foreground,
-                inactiveTrackColor = MonoColors.PlaceholderBg,
-            ),
-        )
-    }
 }
 
 @Composable

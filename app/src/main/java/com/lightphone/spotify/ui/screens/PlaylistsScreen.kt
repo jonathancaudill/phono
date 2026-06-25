@@ -1,8 +1,13 @@
 package com.lightphone.spotify.ui.screens
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -14,13 +19,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import com.lightphone.spotify.data.PlaylistFilter
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.LibraryInfiniteList
 import com.lightphone.spotify.ui.components.MonoContentContainer
 import com.lightphone.spotify.ui.components.MonoMediaListItem
-import com.lightphone.spotify.ui.components.buildLibraryAlphaIndex
+import com.lightphone.spotify.ui.components.StyledText
+import com.lightphone.spotify.ui.components.tap
+import com.lightphone.spotify.ui.theme.MonoColors
 import com.lightphone.spotify.ui.theme.n
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -37,13 +44,14 @@ fun PlaylistsScreen(
     }
 
     val state by vm.playlists.collectAsState()
+    val displayItems = state.displayItems
     val listState = rememberLazyListState()
-    val alphaIndex = remember(state.items) {
-        buildLibraryAlphaIndex(state.items) { it.name }
+
+    LaunchedEffect(state.filter) {
+        listState.scrollToItem(0)
     }
 
     MonoContentContainer(
-        title = "Playlists",
         hideBackButton = true,
         leftIcon = Icons.Default.Add,
         onLeftIconClick = onCreatePlaylist,
@@ -51,6 +59,12 @@ fun PlaylistsScreen(
         onRightIconClick = onOpenPlaying,
         horizontalPadding = n(20),
         modifier = Modifier.fillMaxSize(),
+        titleContent = {
+            PlaylistFilterChips(
+                selected = state.filter,
+                onSelect = vm::setPlaylistsFilter,
+            )
+        },
     ) {
         PullToRefreshBox(
             isRefreshing = state.refreshing,
@@ -60,30 +74,31 @@ fun PlaylistsScreen(
                 .fillMaxWidth(),
         ) {
             when {
-                state.error != null && state.items.isEmpty() ->
+                state.error != null && displayItems.isEmpty() && state.items.isEmpty() ->
                     EmptyListMessage(state.error!!)
-                state.initialLoading && state.items.isEmpty() ->
+                state.initialLoading && displayItems.isEmpty() ->
                     EmptyListMessage("Loading playlists…")
                 state.isEmpty ->
-                    EmptyListMessage("No playlists found.")
+                    EmptyListMessage(
+                        if (state.filter == PlaylistFilter.YourPlaylists) {
+                            "No playlists created by you."
+                        } else {
+                            "No playlists found."
+                        },
+                    )
                 else -> Column(Modifier.fillMaxSize()) {
                     if (state.error != null && state.items.isNotEmpty()) {
                         LibraryPartialSyncBanner(state.error!!)
                     }
                     LibraryInfiniteList(
                         listState = listState,
-                        items = state.items,
-                        remoteTotal = state.remoteTotal,
+                        items = displayItems,
+                        remoteTotal = state.displayRemoteTotal,
                         hasMore = state.hasMore,
                         appending = state.appending,
                         canLoadMore = state.canLoadMore,
                         itemKey = { it.playlist_id },
                         onEnsureBufferAhead = vm::ensurePlaylistsBufferAhead,
-                        alphaIndex = alphaIndex,
-                        onScrubToIndex = { index -> vm.scrollPlaylistsToIndex(listState, index) },
-                        onScrubJumpChange = { active ->
-                            if (active) vm.onScrubJumpStart() else vm.onScrubJumpEnd()
-                        },
                     ) { _, playlist ->
                         MonoMediaListItem(
                             primaryText = playlist.name,
@@ -91,10 +106,55 @@ fun PlaylistsScreen(
                             showImage = false,
                             placeholderIcon = Icons.Default.QueueMusic,
                             onClick = { onOpenPlaylist(playlist.playlist_id, playlist.name) },
+                            onLongClick = {
+                                vm.showPlaylistContextMenu(
+                                    playlistId = playlist.playlist_id,
+                                    uri = playlist.uri.ifBlank { "spotify:playlist:${playlist.playlist_id}" },
+                                    ownerId = playlist.owner_id,
+                                )
+                            },
                         )
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun PlaylistFilterChips(
+    selected: PlaylistFilter,
+    onSelect: (PlaylistFilter) -> Unit,
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(n(8))) {
+        PlaylistFilter.entries.forEach { filter ->
+            PlaylistFilterChip(
+                filter = filter,
+                active = filter == selected,
+                onSelect = onSelect,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PlaylistFilterChip(
+    filter: PlaylistFilter,
+    active: Boolean,
+    onSelect: (PlaylistFilter) -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .background(if (active) MonoColors.Foreground else MonoColors.PlaceholderBg)
+            .tap { onSelect(filter) }
+            .padding(horizontal = n(14), vertical = n(8)),
+    ) {
+        StyledText(
+            filter.label,
+            size = 16,
+            lineHeight = 18,
+            color = if (active) MonoColors.Background else MonoColors.Foreground,
+            maxLines = 1,
+        )
     }
 }

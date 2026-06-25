@@ -1,20 +1,25 @@
 package com.lightphone.spotify.ui.screens
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
 import com.lightphone.spotify.ui.components.MonoContentContainer
-import com.lightphone.spotify.ui.components.MonoMediaListItem
+import com.lightphone.spotify.ui.components.MonoSquareCheckbox
 import com.lightphone.spotify.ui.components.MonoStyledButton
 import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.tap
@@ -30,6 +35,7 @@ fun PlaylistPickerScreen(
     onAdded: () -> Unit,
 ) {
     val state by vm.playlistPicker.collectAsState()
+    val hasSelection = state.selectedPlaylistIds.isNotEmpty()
 
     LaunchedEffect(trackUri) {
         vm.loadPlaylistPicker(trackUri)
@@ -39,7 +45,10 @@ fun PlaylistPickerScreen(
         title = "Add to playlist",
         hideBackButton = false,
         onBack = onBack,
-        rightIconVisible = false,
+        rightIcon = Icons.Default.Check,
+        onRightIconClick = { vm.addTrackToSelectedPlaylists(onAdded) },
+        rightIconVisible = hasSelection,
+        rightLoading = state.adding,
         horizontalPadding = n(20),
         modifier = Modifier.fillMaxSize(),
     ) {
@@ -61,15 +70,13 @@ fun PlaylistPickerScreen(
                 else -> CustomScrollView(modifier = Modifier.weight(1f)) {
                     state.playlists.forEach { playlist ->
                         item(key = playlist.playlist_id) {
-                            MonoMediaListItem(
-                                primaryText = playlist.name,
-                                secondaryText = playlist.owner_name,
-                                showImage = false,
-                                placeholderIcon = Icons.Default.QueueMusic,
+                            val selected = playlist.playlist_id in state.selectedPlaylistIds
+                            PlaylistPickerRow(
+                                name = playlist.name,
+                                ownerName = playlist.owner_name,
+                                selected = selected,
                                 disabled = state.adding,
-                                onClick = {
-                                    vm.addTrackToPlaylistFromPicker(playlist.playlist_id, onAdded)
-                                },
+                                onToggle = { vm.togglePlaylistPickerSelection(playlist.playlist_id) },
                             )
                         }
                     }
@@ -81,6 +88,52 @@ fun PlaylistPickerScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = n(12)),
+            )
+        }
+    }
+}
+
+@Composable
+private fun PlaylistPickerRow(
+    name: String,
+    ownerName: String,
+    selected: Boolean,
+    disabled: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .defaultMinSize(minHeight = n(50))
+            .tap(enabled = !disabled, onClick = onToggle),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .width(n(36))
+                .padding(end = n(8)),
+            contentAlignment = Alignment.Center,
+        ) {
+            MonoSquareCheckbox(checked = selected, enabled = !disabled)
+        }
+        Column(
+            Modifier
+                .weight(1f)
+                .padding(end = n(10)),
+        ) {
+            StyledText(
+                name,
+                size = 22,
+                lineHeight = 24,
+                color = if (disabled) MonoColors.DisabledIcon else MonoColors.Foreground,
+                maxLines = 1,
+            )
+            StyledText(
+                ownerName,
+                size = 16,
+                lineHeight = 18,
+                color = if (disabled) MonoColors.DisabledIcon else MonoColors.Foreground,
+                maxLines = 1,
             )
         }
     }

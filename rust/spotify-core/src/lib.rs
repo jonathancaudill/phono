@@ -1107,9 +1107,8 @@ impl EngineShared {
             backend(None, audio_format)
         });
 
-        if let Some(vol) = self.cache.volume() {
-            mixer.set_volume(vol);
-        }
+        // App volume is fixed at 100%; users adjust loudness via Android system volume.
+        mixer.set_volume(u16::MAX);
 
         let queue = Arc::new(Mutex::new(QueueState::default()));
         if let Some((uris, uri_index, position_ms)) = resume {

@@ -91,6 +91,12 @@ fun AlbumsScreen(
                             showImage = false,
                             placeholderIcon = Icons.Default.Album,
                             onClick = { onOpenAlbum(saved.album_id, saved.name) },
+                            onLongClick = {
+                                vm.showAlbumContextMenu(
+                                    saved.album_id,
+                                    saved.uri.ifBlank { "spotify:album:${saved.album_id}" },
+                                )
+                            },
                         )
                     }
                 }

@@ -21,6 +21,9 @@ interface LikedTrackDao {
     @Query("SELECT COUNT(*) FROM liked_tracks")
     suspend fun count(): Int
 
+    @Query("SELECT EXISTS(SELECT 1 FROM liked_tracks WHERE uri = :uri LIMIT 1)")
+    suspend fun exists(uri: String): Boolean
+
     @Query("SELECT * FROM liked_tracks ORDER BY sort_index ASC LIMIT :limit OFFSET :offset")
     suspend fun tracksFromOffset(offset: Int, limit: Int): List<LikedTrackEntity>
 

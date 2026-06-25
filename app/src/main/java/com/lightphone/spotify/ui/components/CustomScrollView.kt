@@ -1,6 +1,5 @@
 package com.lightphone.spotify.ui.components
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -29,17 +28,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import com.lightphone.spotify.ui.theme.MonoColors
 import com.lightphone.spotify.ui.theme.n
-import kotlin.math.max
 import kotlinx.coroutines.launch
 
 /**
@@ -51,8 +46,9 @@ import kotlinx.coroutines.launch
  *    Native's `overScrollMode="never"`.
  *  - A thin custom scroll indicator is drawn on the right edge instead of the
  *    platform scrollbar (visual spec from light-template: 1px track, 5px thumb).
- *  - Optional library date scrubber: hold the scrollbar, drag left into years,
- *    then months, release to jump.
+ *  - Drag the scrollbar strip to scrub rapidly through the list ([MonoGrabbableScrollbar]).
+ *  - Optional library date/A–Z scrubber: hold the scrollbar still, drag left into
+ *    years/months or letters, release to jump (Liked Songs, Albums, Playlists, etc.).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -172,11 +168,23 @@ private fun CustomScrollListBody(
 
         val metrics = layout
         if (metrics != null && containerHeightPx > 0f) {
-            val thumbColor = MonoColors.Foreground
-            val trackWidthPx = with(density) { n(1).toPx() }
-            val thumbWidthPx = with(density) { n(5).toPx() }
-            val thumbRightOverhangPx = with(density) { n(2).toPx() }
             val stripLeftPx = containerWidthPx - stripWidthPx
+
+            fun scrubToStripY(stripY: Float) {
+                val scrollLayout = state.computeScrollbarLayout(
+                    loadedItemCount = loadedItemCount,
+                    virtualItemCount = virtualItemCount,
+                    minThumbPx = minThumbPx,
+                ) ?: return
+                scrollScope.launch {
+                    state.scrollToStripY(
+                        stripY = stripY,
+                        stripHeight = containerHeightPx,
+                        layout = scrollLayout,
+                        loadedItemCount = loadedItemCount,
+                    )
+                }
+            }
 
             Box(
                 modifier = Modifier
@@ -207,13 +215,15 @@ private fun CustomScrollListBody(
                                     onScrubJumpChange(true)
                                     try {
                                         if (alphaScrubIndex != null) {
-                                            var alphaSelection = initialAlphaScrubSelection(alphaScrubIndex, scrollIndex)
+                                            var alphaSelection =
+                                                initialAlphaScrubSelection(alphaScrubIndex, scrollIndex)
                                             scrubController.overlayOpen = true
                                             scrubController.alphaSelection = alphaSelection
 
                                             while (true) {
                                                 val event = awaitPointerEvent(PointerEventPass.Main)
-                                                val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
+                                                val pointer =
+                                                    event.changes.firstOrNull { it.id == down.id } ?: break
                                                 if (!pointer.pressed) break
 
                                                 alphaSelection = updateAlphaScrubSelection(
@@ -233,7 +243,8 @@ private fun CustomScrollListBody(
 
                                             while (true) {
                                                 val event = awaitPointerEvent(PointerEventPass.Main)
-                                                val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
+                                                val pointer =
+                                                    event.changes.firstOrNull { it.id == down.id } ?: break
                                                 if (!pointer.pressed) break
 
                                                 selection = updateScrubSelection(
@@ -280,121 +291,20 @@ private fun CustomScrollListBody(
                                 }
                             }
 
-                            val touchSlopSq = viewConfiguration.touchSlop * viewConfiguration.touchSlop
-                            var dragActive = false
+                            var pointer = down
+                            scrubToStripY(pointer.position.y)
                             while (true) {
                                 val event = awaitPointerEvent(PointerEventPass.Main)
-                                val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
+                                pointer = event.changes.firstOrNull { it.id == down.id } ?: break
                                 if (!pointer.pressed) break
-
-                                val moved = (pointer.position - down.position).getDistanceSquared() > touchSlopSq
-                                if (moved || dragActive) {
-                                    dragActive = true
-                                    pointer.consume()
-                                    val scrollLayout = state.computeScrollbarLayout(
-                                        loadedItemCount = loadedItemCount,
-                                        virtualItemCount = virtualItemCount,
-                                        minThumbPx = minThumbPx,
-                                    ) ?: continue
-                                    scrollScope.launch {
-                                        state.scrollToStripY(
-                                            stripY = pointer.position.y,
-                                            stripHeight = containerHeightPx,
-                                            layout = scrollLayout,
-                                            loadedItemCount = loadedItemCount,
-                                        )
-                                    }
-                                }
+                                pointer.consume()
+                                scrubToStripY(pointer.position.y)
                             }
                         }
                     },
             ) {
-                Canvas(Modifier.fillMaxSize()) {
-                    val trackLeft = size.width - trackWidthPx
-                    val thumbLeft = size.width - thumbWidthPx + thumbRightOverhangPx
-                    drawRect(
-                        color = thumbColor,
-                        topLeft = Offset(trackLeft, 0f),
-                        size = Size(trackWidthPx, size.height),
-                    )
-                    drawRect(
-                        color = thumbColor,
-                        topLeft = Offset(thumbLeft, metrics.thumbY),
-                        size = Size(thumbWidthPx, metrics.thumbHeight),
-                    )
-                }
+                MonoGrabbableScrollbar(layout = metrics, modifier = Modifier.fillMaxSize())
             }
         }
     }
-}
-
-private data class ScrollbarLayout(
-    val thumbHeight: Float,
-    val thumbY: Float,
-    val contentHeight: Float,
-    val viewport: Float,
-    val avgItemSize: Float,
-    val itemTotal: Int,
-)
-
-private fun LazyListState.computeScrollbarLayout(
-    loadedItemCount: Int?,
-    virtualItemCount: Int?,
-    minThumbPx: Float,
-): ScrollbarLayout? {
-    val info = layoutInfo
-    val visible = info.visibleItemsInfo
-    if (visible.isEmpty()) return null
-
-    val avgItemSize = visible.sumOf { it.size }.toFloat() / visible.size
-    if (avgItemSize <= 0f) return null
-
-    val layoutTotal = info.totalItemsCount
-    val itemTotal = max(virtualItemCount ?: layoutTotal, layoutTotal)
-    val contentHeight = avgItemSize * itemTotal
-    val viewport = (info.viewportEndOffset - info.viewportStartOffset).toFloat()
-    if (viewport <= 0f) return null
-
-    val visibleSize = visible.sumOf { it.size }.toFloat()
-    if (contentHeight <= viewport && visibleSize <= viewport) return null
-
-    val first = visible.first()
-    val scrollPx = avgItemSize * first.index - first.offset
-
-    val thumbHeight = max((viewport * viewport) / contentHeight, minThumbPx)
-    val maxScroll = contentHeight - viewport
-    val thumbTravel = viewport - thumbHeight
-    val thumbY = if (maxScroll > 0f) {
-        ((scrollPx / maxScroll) * thumbTravel).coerceIn(0f, thumbTravel)
-    } else {
-        0f
-    }
-
-    return ScrollbarLayout(
-        thumbHeight = thumbHeight,
-        thumbY = thumbY,
-        contentHeight = contentHeight,
-        viewport = viewport,
-        avgItemSize = avgItemSize,
-        itemTotal = itemTotal,
-    )
-}
-
-private suspend fun LazyListState.scrollToStripY(
-    stripY: Float,
-    stripHeight: Float,
-    layout: ScrollbarLayout,
-    loadedItemCount: Int?,
-) {
-    val thumbTravel = stripHeight - layout.thumbHeight
-    if (thumbTravel <= 0f) return
-    val thumbY = (stripY - layout.thumbHeight / 2f).coerceIn(0f, thumbTravel)
-    val maxScroll = layout.contentHeight - layout.viewport
-    if (maxScroll <= 0f) return
-    val scrollPx = (thumbY / thumbTravel) * maxScroll
-    val maxIndex = loadedItemCount?.minus(1)?.coerceAtLeast(0)
-        ?: max(layout.itemTotal - 1, 0)
-    val index = (scrollPx / layout.avgItemSize).toInt().coerceIn(0, maxIndex)
-    val offset = (scrollPx - index * layout.avgItemSize).toInt().coerceAtLeast(0)
-    scroll { scrollToItem(index, offset) }
 }

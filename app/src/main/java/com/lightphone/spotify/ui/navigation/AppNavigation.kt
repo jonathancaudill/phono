@@ -25,6 +25,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.lightphone.spotify.ui.AppViewModel
+import com.lightphone.spotify.ui.components.ContextMenuHost
 import com.lightphone.spotify.ui.components.DefaultMonoTabs
 import com.lightphone.spotify.ui.components.MonoNavbar
 import com.lightphone.spotify.ui.components.MonoTab
@@ -56,6 +57,11 @@ fun SpotifyApp(vm: AppViewModel = viewModel()) {
     val playback by vm.playback.collectAsState()
     MonoTheme {
         when {
+            !playback.authInitialized -> Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(MonoColors.Background),
+            )
             !playback.loggedIn -> LoginScreen(vm)
             !playback.webApiReady -> WebApiSetupScreen(vm)
             else -> {
@@ -130,9 +136,6 @@ private fun MainNavigation(vm: AppViewModel) {
                             onPlayTrack = { index ->
                                 vm.playLikedFrom(index)
                                 overlayNav.navigate(Routes.Playing)
-                            },
-                            onAddToPlaylist = { uri ->
-                                overlayNav.navigate(Routes.playlistPicker(uri))
                             },
                         )
                     }
@@ -209,6 +212,13 @@ private fun MainNavigation(vm: AppViewModel) {
                     overlayNavController = overlayNavController,
                 )
             }
+
+            ContextMenuHost(
+                vm = vm,
+                onNavigateToPlaylistPicker = { uri ->
+                    overlayNav.navigate(Routes.playlistPicker(uri))
+                },
+            )
         }
     }
 }
@@ -257,9 +267,6 @@ private fun NavGraphBuilder.overlayDestinations(
             onOpenPlaylist = { id, name ->
                 overlayNav.navigate(Routes.playlist(id, name))
             },
-            onAddToPlaylist = { uri ->
-                overlayNav.navigate(Routes.playlistPicker(uri))
-            },
         )
     }
     composable(
@@ -284,9 +291,6 @@ private fun NavGraphBuilder.overlayDestinations(
                 vm.playAlbumFrom(albumId, index)
                 overlayNav.navigate(Routes.Playing)
             },
-            onAddToPlaylist = { uri ->
-                overlayNav.navigate(Routes.playlistPicker(uri))
-            },
         )
     }
     composable(
@@ -309,9 +313,6 @@ private fun NavGraphBuilder.overlayDestinations(
             onPlayTrack = { index ->
                 vm.playPlaylistFrom(playlistId, index)
                 overlayNav.navigate(Routes.Playing)
-            },
-            onAddToPlaylist = { uri ->
-                overlayNav.navigate(Routes.playlistPicker(uri))
             },
         )
     }
@@ -359,9 +360,6 @@ private fun NavGraphBuilder.overlayDestinations(
             onPlayTopTrack = { index ->
                 vm.playArtistTopTrack(index)
                 overlayNav.navigate(Routes.Playing)
-            },
-            onAddToPlaylist = { uri ->
-                overlayNav.navigate(Routes.playlistPicker(uri))
             },
         )
     }

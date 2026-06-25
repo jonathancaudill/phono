@@ -50,6 +50,8 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
+        // Spotify may send explicit null for string fields on unavailable/local albums (e.g. playlist items).
+        coerceInputValues = true
     }
 
     private val jsonMediaType = "application/json".toMediaType()

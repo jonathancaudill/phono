@@ -63,6 +63,8 @@ data class QueueViewState(
 
 data class PlaybackUiState(
     val loggedIn: Boolean = false,
+    /** False until the first cached-credential restore attempt finishes. */
+    val authInitialized: Boolean = false,
     val webApiReady: Boolean = false,
     val connected: Boolean = true,
     val networkOnline: Boolean = true,
@@ -179,16 +181,21 @@ class PlaybackController private constructor(
             becomingNoisyReceiver,
             IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
         )
+        val alreadyLoggedIn = engine.isLoggedIn()
         _state.update {
             recomputeStatusMessage(
                 it.copy(
-                    loggedIn = engine.isLoggedIn(),
+                    loggedIn = alreadyLoggedIn,
+                    authInitialized = alreadyLoggedIn,
                     webApiReady = webApiAuth.isAuthorized(),
                     networkOnline = isNetworkOnline(),
                 ),
             )
         }
         connectivityManager.registerDefaultNetworkCallback(networkCallback)
+        if (!alreadyLoggedIn) {
+            tryCachedLogin { }
+        }
     }
 
     // --- Auth ---------------------------------------------------------------
@@ -224,7 +231,9 @@ class PlaybackController private constructor(
     fun tryCachedLogin(onResult: (Boolean) -> Unit) {
         scope.launch {
             val ok = runCatching { engine.loginWithCachedCredentials() }.getOrDefault(false)
-            _state.update { it.copy(loggedIn = engine.isLoggedIn()) }
+            _state.update {
+                it.copy(loggedIn = engine.isLoggedIn(), authInitialized = true)
+            }
             onResult(ok)
         }
     }
@@ -238,6 +247,7 @@ class PlaybackController private constructor(
             _state.value = recomputeStatusMessage(
                 PlaybackUiState(
                     loggedIn = false,
+                    authInitialized = true,
                     webApiReady = false,
                     networkOnline = isNetworkOnline(),
                 ),
@@ -375,8 +385,6 @@ class PlaybackController private constructor(
         _state.update { it.copy(repeatMode = mode) }
         onStateChanged?.invoke()
     }
-    fun setVolume(percent: Int) = scope.launch { engine.setVolume(percent.coerceIn(0, 100).toUByte()) }
-
     fun refreshQueue() {
         val snapshot = engine.getQueue()
         val queue = QueueViewState(
@@ -474,7 +482,6 @@ class PlaybackController private constructor(
         gaplessEnabled = engine.getGaplessEnabled(),
         normalizationEnabled = engine.getNormalizationEnabled(),
         normalizationType = engine.getNormalizationType(),
-        volumePercent = engine.getVolume().toInt(),
         proxy = engine.getProxy(),
     )
 
@@ -653,6 +660,11 @@ class PlaybackController private constructor(
             }
         }
 
+    suspend fun currentUserId(): String =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            repository.currentUserId()
+        }
+
     suspend fun albumDetail(albumId: String): AlbumDetailResult =
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
@@ -706,6 +718,11 @@ class PlaybackController private constructor(
     suspend fun isTrackSaved(uri: String): Boolean =
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             repository.isTrackSaved(uri)
+        }
+
+    suspend fun isLikedTrackCached(uri: String): Boolean =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            libraryRepository.isLikedTrackCached(uri)
         }
 
     suspend fun saveTrack(uri: String) =
@@ -995,6 +1012,5 @@ data class SettingsSnapshot(
     val gaplessEnabled: Boolean,
     val normalizationEnabled: Boolean,
     val normalizationType: NormalizationType,
-    val volumePercent: Int,
     val proxy: String?,
 )

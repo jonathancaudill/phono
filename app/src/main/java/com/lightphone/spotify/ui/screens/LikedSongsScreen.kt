@@ -29,6 +29,7 @@ import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.buildLibraryDateIndex
 import com.lightphone.spotify.ui.theme.MonoColors
 import com.lightphone.spotify.ui.theme.n
+import com.lightphone.spotify.ui.trackIdFromUri
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -36,7 +37,6 @@ fun LikedSongsScreen(
     vm: AppViewModel,
     onOpenPlaying: () -> Unit,
     onPlayTrack: (Int) -> Unit,
-    onAddToPlaylist: ((String) -> Unit)? = null,
 ) {
     LaunchedEffect(Unit) {
         vm.ensureLikedTracksLoaded()
@@ -103,7 +103,12 @@ fun LikedSongsScreen(
                                 showImage = false,
                                 placeholderIcon = Icons.Default.MusicNote,
                                 onClick = { onPlayTrack(index) },
-                                onLongClick = onAddToPlaylist?.let { { it(track.uri) } },
+                                onLongClick = {
+                                    vm.showTrackContextMenu(
+                                        track.uri,
+                                        trackIdFromUri(track.uri),
+                                    )
+                                },
                             )
                         }
                     }

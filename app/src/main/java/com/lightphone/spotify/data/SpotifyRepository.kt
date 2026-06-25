@@ -182,9 +182,7 @@ class SpotifyRepository(
     }
 
     fun isTrackSaved(uri: String): Boolean =
-        runCatching {
-            webApi.libraryContains(listOf(normalizeUri(uri))).firstOrNull() ?: false
-        }.getOrDefault(false)
+        webApi.libraryContains(listOf(normalizeUri(uri))).firstOrNull() ?: false
 
     suspend fun saveTrack(uri: String) {
         val normalized = normalizeUri(uri)

@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
 import androidx.compose.material.icons.filled.Cancel
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MusicNote
@@ -117,7 +118,7 @@ fun StyledText(
 
 @Composable
 fun MonoHeader(
-    title: String,
+    title: String? = null,
     modifier: Modifier = Modifier,
     hideBackButton: Boolean = false,
     onBack: (() -> Unit)? = null,
@@ -128,6 +129,7 @@ fun MonoHeader(
     rightIconVisible: Boolean = true,
     rightLoading: Boolean = false,
     onTitleClick: (() -> Unit)? = null,
+    titleContent: @Composable (() -> Unit)? = null,
 ) {
     Row(
         modifier = modifier
@@ -146,18 +148,29 @@ fun MonoHeader(
             else -> Spacer(Modifier.size(n(32)))
         }
 
-        StyledText(
-            text = title,
-            size = 20,
-            color = MonoColors.Foreground,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
+        Box(
             modifier = Modifier
                 .weight(1f)
-                .padding(horizontal = n(4))
-                .then(if (onTitleClick != null) Modifier.tap(onClick = onTitleClick) else Modifier),
-        )
+                .padding(horizontal = n(4)),
+            contentAlignment = Alignment.Center,
+        ) {
+            when {
+                titleContent != null -> titleContent()
+                title != null -> StyledText(
+                    text = title,
+                    size = 20,
+                    color = MonoColors.Foreground,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    modifier = if (onTitleClick != null) {
+                        Modifier.tap(onClick = onTitleClick)
+                    } else {
+                        Modifier
+                    },
+                )
+            }
+        }
 
         // Right slot.
         when {
@@ -196,7 +209,7 @@ private fun HeaderIconSlot(icon: ImageVector, onClick: () -> Unit) {
  */
 @Composable
 fun MonoContentContainer(
-    title: String?,
+    title: String? = null,
     modifier: Modifier = Modifier,
     hideBackButton: Boolean = true,
     onBack: (() -> Unit)? = null,
@@ -207,6 +220,7 @@ fun MonoContentContainer(
     rightIconVisible: Boolean = true,
     rightLoading: Boolean = false,
     onTitleClick: (() -> Unit)? = null,
+    titleContent: @Composable (() -> Unit)? = null,
     horizontalPadding: Dp = n(37),
     topPadding: Dp = n(14),
     contentGap: Dp = n(47),
@@ -217,7 +231,7 @@ fun MonoContentContainer(
             .fillMaxSize()
             .background(MonoColors.Background),
     ) {
-        if (title != null) {
+        if (title != null || titleContent != null) {
             MonoHeader(
                 title = title,
                 hideBackButton = hideBackButton,
@@ -229,6 +243,7 @@ fun MonoContentContainer(
                 rightIconVisible = rightIconVisible,
                 rightLoading = rightLoading,
                 onTitleClick = onTitleClick,
+                titleContent = titleContent,
             )
         }
         Column(
@@ -240,6 +255,33 @@ fun MonoContentContainer(
             verticalArrangement = Arrangement.spacedBy(contentGap),
         ) {
             content()
+        }
+    }
+}
+
+@Composable
+fun MonoSquareCheckbox(
+    checked: Boolean,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    val borderColor = if (enabled) MonoColors.Foreground else MonoColors.DisabledIcon
+    val fillColor = if (enabled) MonoColors.Foreground else MonoColors.DisabledIcon
+    val checkColor = MonoColors.Background
+    Box(
+        modifier = modifier
+            .size(n(20))
+            .then(if (checked) Modifier.background(fillColor) else Modifier)
+            .border(n(2.5), borderColor),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (checked) {
+            Icon(
+                Icons.Default.Check,
+                contentDescription = null,
+                tint = checkColor,
+                modifier = Modifier.size(n(14)),
+            )
         }
     }
 }

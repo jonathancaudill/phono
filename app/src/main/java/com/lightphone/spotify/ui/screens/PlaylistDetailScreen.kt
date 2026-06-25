@@ -45,7 +45,6 @@ fun PlaylistDetailScreen(
     fallbackTitle: String,
     onBack: () -> Unit,
     onPlayTrack: (Int) -> Unit,
-    onAddToPlaylist: ((String) -> Unit)? = null,
 ) {
     val state by vm.playlistDetail.collectAsState()
     val listState = rememberLazyListState()
@@ -131,8 +130,11 @@ fun PlaylistDetailScreen(
                                 canMoveUp = index > 0,
                                 canMoveDown = index < tracks.size - 1,
                                 onPlay = { onPlayTrack(index) },
-                                onAddToPlaylist = onAddToPlaylist?.let { callback ->
-                                    { callback(track.uri) }
+                                onLongClick = {
+                                    vm.showTrackContextMenu(
+                                        track.uri,
+                                        track.id.ifBlank { track.uri.removePrefix("spotify:track:") },
+                                    )
                                 },
                                 onRemove = { vm.removePlaylistTrack(playlistId, index) },
                                 onMoveUp = { vm.movePlaylistTrack(playlistId, index, index - 1) },
@@ -158,7 +160,7 @@ private fun PlaylistTrackRow(
     canMoveUp: Boolean,
     canMoveDown: Boolean,
     onPlay: () -> Unit,
-    onAddToPlaylist: (() -> Unit)?,
+    onLongClick: (() -> Unit)?,
     onRemove: () -> Unit,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
@@ -170,7 +172,7 @@ private fun PlaylistTrackRow(
             artists = artists,
             durationMs = durationMs,
             onClick = onPlay,
-            onLongClick = onAddToPlaylist,
+            onLongClick = onLongClick,
             editActions = if (editMode) {
                 MonoTrackEditActions(
                     mutating = mutating,

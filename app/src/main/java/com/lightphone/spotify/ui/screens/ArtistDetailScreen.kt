@@ -33,7 +33,6 @@ fun ArtistDetailScreen(
     onBack: () -> Unit,
     onOpenAlbum: (String, String) -> Unit,
     onPlayTopTrack: (Int) -> Unit,
-    onAddToPlaylist: ((String) -> Unit)? = null,
 ) {
     val state by vm.artistDetail.collectAsState()
 
@@ -89,7 +88,9 @@ fun ArtistDetailScreen(
                                         artists = track.artists.joinToString { it.name },
                                         durationMs = track.durationMs,
                                         onClick = { onPlayTopTrack(index) },
-                                        onLongClick = onAddToPlaylist?.let { { it(track.uri) } },
+                                        onLongClick = {
+                                            vm.showTrackContextMenu(track.uri, track.id)
+                                        },
                                     )
                                 }
                                 Spacer(Modifier.height(n(8)))
@@ -113,6 +114,12 @@ fun ArtistDetailScreen(
                                     showImage = false,
                                     placeholderIcon = Icons.Default.Album,
                                     onClick = { onOpenAlbum(album.id, album.name) },
+                                    onLongClick = {
+                                        vm.showAlbumContextMenu(
+                                            album.id,
+                                            album.uri.ifBlank { "spotify:album:${album.id}" },
+                                        )
+                                    },
                                 )
                                 Spacer(Modifier.height(n(8)))
                             }

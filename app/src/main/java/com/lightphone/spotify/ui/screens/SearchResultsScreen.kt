@@ -48,7 +48,6 @@ fun SearchResultsScreen(
     onOpenArtist: (String) -> Unit,
     onPlayTrack: (SearchResultItem.Track) -> Unit,
     onOpenPlaylist: (String, String) -> Unit,
-    onAddToPlaylist: ((String) -> Unit)? = null,
 ) {
     val state by vm.search.collectAsState()
 
@@ -105,9 +104,45 @@ fun SearchResultsScreen(
                                                     onOpenPlaylist,
                                                 )
                                             },
-                                            onLongClick = onAddToPlaylist?.let { { it(item.track.uri) } },
+                                            onLongClick = {
+                                                vm.showTrackContextMenu(item.uri, item.id)
+                                            },
                                         )
                                     }
+                                    is SearchResultItem.Album -> SearchResultRow(
+                                        item = item,
+                                        onClick = {
+                                            vm.openSearchResult(
+                                                item,
+                                                onOpenAlbum,
+                                                onOpenArtist,
+                                                onPlayTrack,
+                                                onOpenPlaylist,
+                                            )
+                                        },
+                                        onLongClick = {
+                                            vm.showAlbumContextMenu(item.id, item.uri)
+                                        },
+                                    )
+                                    is SearchResultItem.Playlist -> SearchResultRow(
+                                        item = item,
+                                        onClick = {
+                                            vm.openSearchResult(
+                                                item,
+                                                onOpenAlbum,
+                                                onOpenArtist,
+                                                onPlayTrack,
+                                                onOpenPlaylist,
+                                            )
+                                        },
+                                        onLongClick = {
+                                            vm.showPlaylistContextMenu(
+                                                playlistId = item.id,
+                                                uri = item.uri,
+                                                ownerId = item.playlist.owner?.id.orEmpty(),
+                                            )
+                                        },
+                                    )
                                     else -> SearchResultRow(
                                         item = item,
                                         onClick = {

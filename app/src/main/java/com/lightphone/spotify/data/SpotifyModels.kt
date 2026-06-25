@@ -276,6 +276,11 @@ enum class SearchFilter(val label: String) {
     Playlists("Playlists"),
 }
 
+enum class PlaylistFilter(val label: String) {
+    YourPlaylists("Your Playlists"),
+    All("All"),
+}
+
 data class SearchResults(
     val query: String,
     val artists: List<SpotifyArtist> = emptyList(),

@@ -26,6 +26,9 @@ class LibraryRepository(
 
     fun observeLikedTracks(): Flow<List<LikedTrackEntity>> = trackDao.observeAll()
 
+    suspend fun isLikedTrackCached(uri: String): Boolean =
+        trackDao.exists(normalizeTrackUri(uri))
+
     fun observeSavedAlbums(): Flow<List<SavedAlbumEntity>> = albumDao.observeAll()
 
     fun observePlaylists(): Flow<List<PlaylistEntity>> = playlistDao.observeAll()
@@ -278,4 +281,6 @@ class LibraryRepository(
             syncDao.delete(LibraryResource.USER_PLAYLISTS)
         }
     }
+
+    private fun normalizeTrackUri(uri: String): String = uri.substringBefore('?').trim()
 }
