@@ -1,6 +1,10 @@
 package com.lightphone.spotify.data
 
 import com.lightphone.spotify.data.local.LibraryRepository
+import com.lightphone.spotify.data.SpotifyPlaylistDetail
+import com.lightphone.spotify.data.SpotifyPlaylistSimple
+import com.lightphone.spotify.data.SpotifyPlaylistTrackItem
+import com.lightphone.spotify.data.local.PlaylistEntity
 import com.lightphone.spotify.data.webapi.SpotifyWebApi
 import com.lightphone.spotify.data.webapi.WebApiAuthException
 import com.lightphone.spotify.data.toMetadata
@@ -31,6 +35,13 @@ fun TrackInfo.toMetadata(): TrackMetadata = TrackMetadata(
     artUrl = artUrl,
 )
 
+data class PlaylistDetailResult(
+    val detail: SpotifyPlaylistDetail,
+    val tracks: List<SpotifyPlaylistTrackItem>,
+    val currentUserId: String,
+    val isEditable: Boolean,
+)
+
 /** Metadata via Spotify Web API. */
 class SpotifyRepository(
     private val webApi: SpotifyWebApi,
@@ -38,6 +49,7 @@ class SpotifyRepository(
 ) {
     private val searchCache = ConcurrentHashMap<String, Pair<Long, SearchResults>>()
     private var dailyMixesCache: Pair<Long, List<SpotifyPlaylistSimple>>? = null
+    private var currentUserIdCache: String? = null
 
     fun albumDetail(albumId: String): AlbumDetailResult {
         val album = webApi.album(albumId)
@@ -71,6 +83,93 @@ class SpotifyRepository(
 
     fun playlistTracks(playlistId: String, limit: Int = 100): List<TrackMetadata> =
         webApi.playlistItems(playlistId, limit).map { it.toMetadata() }
+
+    fun currentUserId(): String {
+        currentUserIdCache?.let { return it }
+        val id = webApi.currentUser().id
+        currentUserIdCache = id
+        return id
+    }
+
+    fun playlistDetail(playlistId: String, trackLimit: Int = 500): PlaylistDetailResult {
+        val userId = currentUserId()
+        val detail = webApi.playlist(playlistId)
+        val tracks = paginatePlaylistTrackItems(playlistId, trackLimit)
+        val isEditable = detail.owner?.id == userId || detail.collaborative
+        return PlaylistDetailResult(
+            detail = detail,
+            tracks = tracks,
+            currentUserId = userId,
+            isEditable = isEditable,
+        )
+    }
+
+    suspend fun createPlaylist(name: String, isPublic: Boolean): SpotifyPlaylistSimple {
+        val userId = currentUserId()
+        val created = webApi.createPlaylist(userId, name.trim(), isPublic)
+        libraryRepository.prependPlaylist(created)
+        return created
+    }
+
+    suspend fun renamePlaylist(playlistId: String, name: String): SpotifyPlaylistDetail {
+        webApi.changePlaylistDetails(playlistId, name = name.trim())
+        return webApi.playlist(playlistId)
+    }
+
+    suspend fun addTrackToPlaylist(playlistId: String, uri: String, position: Int? = null): String? {
+        val normalized = normalizeUri(uri)
+        return webApi.addPlaylistItems(playlistId, listOf(normalized), position)
+    }
+
+    suspend fun removeTrackFromPlaylist(
+        playlistId: String,
+        uri: String,
+        snapshotId: String?,
+    ): String? = webApi.removePlaylistItems(playlistId, listOf(normalizeUri(uri)), snapshotId)
+
+    suspend fun reorderPlaylistTrack(
+        playlistId: String,
+        fromIndex: Int,
+        toIndex: Int,
+        snapshotId: String?,
+    ): String? {
+        if (fromIndex == toIndex) return snapshotId
+        val insertBefore = if (toIndex > fromIndex) toIndex + 1 else toIndex
+        return webApi.reorderPlaylistItems(
+            playlistId = playlistId,
+            rangeStart = fromIndex,
+            insertBefore = insertBefore,
+            rangeLength = 1,
+            snapshotId = snapshotId,
+        )
+    }
+
+    suspend fun unfollowPlaylist(playlistId: String) {
+        webApi.unfollowPlaylist(playlistId)
+        libraryRepository.removePlaylist(playlistId)
+    }
+
+    suspend fun editablePlaylists(): List<PlaylistEntity> {
+        val userId = currentUserId()
+        return libraryRepository.playlistsSnapshot().filter { playlist ->
+            playlist.owner_id == userId || playlist.is_collaborative
+        }
+    }
+
+    private fun paginatePlaylistTrackItems(playlistId: String, limit: Int): List<SpotifyPlaylistTrackItem> {
+        val results = mutableListOf<SpotifyPlaylistTrackItem>()
+        var offset = 0
+        while (results.size < limit) {
+            val page = kotlinx.coroutines.runBlocking {
+                webApi.playlistItemsPage(playlistId, offset)
+            }
+            if (page.items.isEmpty()) break
+            results.addAll(page.items)
+            offset += page.items.size
+            if (offset >= page.total) break
+        }
+        return results.take(limit)
+    }
 
     fun isTrackSaved(uri: String): Boolean =
         runCatching {

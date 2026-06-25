@@ -32,6 +32,7 @@ fun AlbumDetailScreen(
     onBack: () -> Unit,
     onOpenArtist: (String) -> Unit,
     onPlayTrack: (Int) -> Unit,
+    onAddToPlaylist: ((String) -> Unit)? = null,
 ) {
     val state by vm.albumDetail.collectAsState()
 
@@ -79,6 +80,7 @@ fun AlbumDetailScreen(
                                     artists = track.artists.joinToString { it.name },
                                     durationMs = track.durationMs,
                                     onClick = { onPlayTrack(index) },
+                                    onLongClick = onAddToPlaylist?.let { { it(track.uri) } },
                                 )
                             }
                             Spacer(Modifier.height(n(8)))

@@ -4,7 +4,17 @@ import com.lightphone.spotify.data.PagedResponse
 import com.lightphone.spotify.data.SpotifyAlbumDetail
 import com.lightphone.spotify.data.SpotifyAlbumSimple
 import com.lightphone.spotify.data.SpotifyArtistDetail
+import com.lightphone.spotify.data.AddPlaylistItemsBody
+import com.lightphone.spotify.data.ChangePlaylistDetailsBody
+import com.lightphone.spotify.data.CreatePlaylistBody
+import com.lightphone.spotify.data.RemovePlaylistItemsBody
+import com.lightphone.spotify.data.RemovePlaylistTrackRef
+import com.lightphone.spotify.data.ReorderPlaylistItemsBody
+import com.lightphone.spotify.data.SnapshotResponse
+import com.lightphone.spotify.data.SpotifyCurrentUser
+import com.lightphone.spotify.data.SpotifyPlaylistDetail
 import com.lightphone.spotify.data.SpotifyPlaylistSimple
+import com.lightphone.spotify.data.SpotifyPlaylistTrackItem
 import com.lightphone.spotify.data.SpotifySavedAlbum
 import com.lightphone.spotify.data.SpotifySavedTrack
 import com.lightphone.spotify.data.SpotifySearchResults
@@ -141,15 +151,128 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
         }
     }
 
+    fun currentUser(): SpotifyCurrentUser = get("/me")
+
+    suspend fun savedPlaylistsPage(
+        offset: Int,
+        limit: Int = LIBRARY_PAGE_LIMIT,
+    ): LibraryPage<SpotifyPlaylistSimple> {
+        val pageLimit = limit.coerceIn(1, LIBRARY_PAGE_LIMIT)
+        val safeOffset = offset.coerceAtLeast(0)
+        val page = getSuspend<PagedResponse<SpotifyPlaylistSimple?>>(
+            "/me/playlists?limit=$pageLimit&offset=$safeOffset",
+        )
+        return LibraryPage(
+            items = page.items.filterNotNull().filter { it.id.isNotBlank() },
+            total = page.total,
+            offset = safeOffset,
+        )
+    }
+
     fun myPlaylists(limit: Int = 50): List<SpotifyPlaylistSimple> =
         paginatePlaylists(limit.coerceIn(1, 50))
+
+    fun playlist(playlistId: String): SpotifyPlaylistDetail =
+        get("/playlists/$playlistId")
+
+    suspend fun playlistItemsPage(
+        playlistId: String,
+        offset: Int,
+        limit: Int = LIBRARY_PAGE_LIMIT,
+    ): LibraryPage<SpotifyPlaylistTrackItem> {
+        val pageLimit = limit.coerceIn(1, LIBRARY_PAGE_LIMIT)
+        val safeOffset = offset.coerceAtLeast(0)
+        val page = getSuspend<PagedResponse<SpotifyPlaylistTrackItem>>(
+            "/playlists/$playlistId/items?limit=$pageLimit&offset=$safeOffset&market=from_token",
+        )
+        return LibraryPage(
+            items = page.items.filter { it.track != null },
+            total = page.total,
+            offset = safeOffset,
+        )
+    }
 
     fun playlistItems(playlistId: String, limit: Int = 100): List<SpotifyTrack> {
         val items = paginatePlaylistItems(
             playlistId = playlistId,
             limit = limit.coerceIn(1, 500),
         )
-        return items.mapNotNull { it.item }
+        return items.mapNotNull { it.track }
+    }
+
+    fun createPlaylist(userId: String, name: String, isPublic: Boolean, description: String? = null): SpotifyPlaylistSimple {
+        val body = json.encodeToString(
+            CreatePlaylistBody.serializer(),
+            CreatePlaylistBody(name = name, public = isPublic, description = description),
+        )
+        return post("/users/$userId/playlists", body)
+    }
+
+    fun changePlaylistDetails(
+        playlistId: String,
+        name: String? = null,
+        isPublic: Boolean? = null,
+        description: String? = null,
+    ): SpotifyPlaylistSimple {
+        val body = json.encodeToString(
+            ChangePlaylistDetailsBody.serializer(),
+            ChangePlaylistDetailsBody(name = name, public = isPublic, description = description),
+        )
+        return putReturning("/playlists/$playlistId", body)
+    }
+
+    fun addPlaylistItems(playlistId: String, uris: List<String>, position: Int? = null): String? {
+        if (uris.isEmpty()) return null
+        val body = json.encodeToString(
+            AddPlaylistItemsBody.serializer(),
+            AddPlaylistItemsBody(uris = uris, position = position),
+        )
+        val response = postRaw("/playlists/$playlistId/items", body)
+        return if (response.isBlank()) null else json.decodeFromString<SnapshotResponse>(response).snapshotId
+    }
+
+    fun removePlaylistItems(
+        playlistId: String,
+        uris: List<String>,
+        snapshotId: String? = null,
+    ): String? {
+        if (uris.isEmpty()) return null
+        val body = json.encodeToString(
+            RemovePlaylistItemsBody.serializer(),
+            RemovePlaylistItemsBody(
+                tracks = uris.map { RemovePlaylistTrackRef(uri = it) },
+                snapshotId = snapshotId,
+            ),
+        )
+        val response = deleteReturning("/playlists/$playlistId/items", body)
+        return if (response.isBlank()) null else json.decodeFromString<SnapshotResponse>(response).snapshotId
+    }
+
+    fun reorderPlaylistItems(
+        playlistId: String,
+        rangeStart: Int,
+        insertBefore: Int,
+        rangeLength: Int = 1,
+        snapshotId: String? = null,
+    ): String? {
+        val body = json.encodeToString(
+            ReorderPlaylistItemsBody.serializer(),
+            ReorderPlaylistItemsBody(
+                rangeStart = rangeStart,
+                insertBefore = insertBefore,
+                rangeLength = rangeLength,
+                snapshotId = snapshotId,
+            ),
+        )
+        val response = putRaw("/playlists/$playlistId/items/reorder", body)
+        return if (response.isBlank()) null else json.decodeFromString<SnapshotResponse>(response).snapshotId
+    }
+
+    fun unfollowPlaylist(playlistId: String) {
+        val request = authorizedRequest("/playlists/$playlistId/followers")
+            .delete()
+            .build()
+        kotlinx.coroutines.runBlocking { executeWithRetry(request) }
     }
 
     private fun paginateTracks(path: String, limit: Int): List<SpotifyTrack> {
@@ -214,14 +337,14 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
         return results.take(limit)
     }
 
-    private fun paginatePlaylistItems(playlistId: String, limit: Int): List<PlaylistTrackItem> {
-        val results = mutableListOf<PlaylistTrackItem>()
+    private fun paginatePlaylistItems(playlistId: String, limit: Int): List<SpotifyPlaylistTrackItem> {
+        val results = mutableListOf<SpotifyPlaylistTrackItem>()
         var offset = 0
         var total = Int.MAX_VALUE
         while (results.size < limit && offset < total) {
             val pageLimit = minOf(LIBRARY_PAGE_LIMIT, limit - results.size)
-            val page = get<PagedResponse<PlaylistTrackItem>>(
-                "/playlists/$playlistId/items?limit=$pageLimit&offset=$offset",
+            val page = get<PagedResponse<SpotifyPlaylistTrackItem>>(
+                "/playlists/$playlistId/items?limit=$pageLimit&offset=$offset&market=from_token",
             )
             total = page.total
             if (page.items.isEmpty()) break
@@ -264,6 +387,45 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
             .delete(jsonBody.toRequestBody(jsonMediaType))
             .build()
         kotlinx.coroutines.runBlocking { executeWithRetry(request) }
+    }
+
+    private inline fun <reified T> post(path: String, jsonBody: String): T {
+        val body = postRaw(path, jsonBody)
+        return if (body.isBlank()) {
+            json.decodeFromString("{}")
+        } else {
+            json.decodeFromString(body)
+        }
+    }
+
+    private inline fun <reified T> putReturning(path: String, jsonBody: String): T {
+        val body = putRaw(path, jsonBody)
+        return if (body.isBlank()) {
+            json.decodeFromString("{}")
+        } else {
+            json.decodeFromString(body)
+        }
+    }
+
+    private fun postRaw(path: String, jsonBody: String): String {
+        val request = authorizedRequest(path)
+            .post(jsonBody.toRequestBody(jsonMediaType))
+            .build()
+        return kotlinx.coroutines.runBlocking { executeWithRetry(request) }
+    }
+
+    private fun putRaw(path: String, jsonBody: String): String {
+        val request = authorizedRequest(path)
+            .put(jsonBody.toRequestBody(jsonMediaType))
+            .build()
+        return kotlinx.coroutines.runBlocking { executeWithRetry(request) }
+    }
+
+    private fun deleteReturning(path: String, jsonBody: String): String {
+        val request = authorizedRequest(path)
+            .delete(jsonBody.toRequestBody(jsonMediaType))
+            .build()
+        return kotlinx.coroutines.runBlocking { executeWithRetry(request) }
     }
 
     private fun authorizedRequest(path: String): Request.Builder {
@@ -319,9 +481,4 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
 
     @Serializable
     private data class LibraryUris(val uris: List<String>)
-
-    @Serializable
-    private data class PlaylistTrackItem(
-        val item: SpotifyTrack? = null,
-    )
 }

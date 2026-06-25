@@ -69,12 +69,15 @@ fun CustomScrollView(
     hasMoreItems: Boolean = false,
     /** When set, holding the scrollbar opens the year/month jump overlay. */
     dateIndex: LibraryDateIndex? = null,
+    /** When set, holding the scrollbar opens the A–Z jump overlay. */
+    alphaIndex: LibraryAlphaIndex? = null,
     onScrubToIndex: suspend (Int) -> Unit = {},
     onScrubJumpChange: (Boolean) -> Unit = {},
     content: LazyListScope.() -> Unit,
 ) {
     val scrubIndex = dateIndex?.takeIf { !it.isEmpty }
-    val scrubController = remember(scrubIndex) { ScrubController() }
+    val alphaScrubIndex = alphaIndex?.takeIf { !it.isEmpty }
+    val scrubController = remember(scrubIndex, alphaScrubIndex) { ScrubController() }
 
     Box(modifier = modifier.fillMaxSize()) {
         // List + scrollbar — never reads scrubController.overlayOpen (avoids LazyColumn recompose).
@@ -85,6 +88,7 @@ fun CustomScrollView(
             loadedItemCount = loadedItemCount,
             virtualItemCount = virtualItemCount,
             scrubIndex = scrubIndex,
+            alphaScrubIndex = alphaScrubIndex,
             scrubController = scrubController,
             onScrubToIndex = onScrubToIndex,
             onScrubJumpChange = onScrubJumpChange,
@@ -96,6 +100,13 @@ fun CustomScrollView(
             LibraryScrubVisuals(
                 controller = scrubController,
                 dateIndex = scrubIndex,
+                modifier = Modifier.zIndex(2f),
+            )
+        }
+        if (alphaScrubIndex != null) {
+            LibraryAlphaScrubVisuals(
+                controller = scrubController,
+                alphaIndex = alphaScrubIndex,
                 modifier = Modifier.zIndex(2f),
             )
         }
@@ -111,6 +122,7 @@ private fun CustomScrollListBody(
     loadedItemCount: Int?,
     virtualItemCount: Int?,
     scrubIndex: LibraryDateIndex?,
+    alphaScrubIndex: LibraryAlphaIndex?,
     scrubController: ScrubController,
     onScrubToIndex: suspend (Int) -> Unit,
     onScrubJumpChange: (Boolean) -> Unit,
@@ -119,7 +131,7 @@ private fun CustomScrollListBody(
     var containerWidthPx by remember { mutableFloatStateOf(0f) }
     var containerHeightPx by remember { mutableFloatStateOf(0f) }
 
-    val scrubEnabled = scrubIndex != null
+    val scrubEnabled = scrubIndex != null || alphaScrubIndex != null
     val scrollIndex = state.firstVisibleItemIndex
     val minThumbPx = with(LocalDensity.current) { n(20).toPx() }
     val scrollScope = rememberCoroutineScope()
@@ -176,6 +188,7 @@ private fun CustomScrollListBody(
                     .pointerInput(
                         scrubEnabled,
                         scrubIndex,
+                        alphaScrubIndex,
                         scrollIndex,
                         loadedItemCount,
                         virtualItemCount,
@@ -187,44 +200,66 @@ private fun CustomScrollListBody(
                             down.consume()
 
                             if (scrubEnabled) {
-                                val index = scrubIndex!!
                                 val longPress = awaitLongPressOrCancellation(down.id)
                                 if (longPress != null) {
                                     longPress.consume()
                                     var jumpTarget = -1
                                     onScrubJumpChange(true)
                                     try {
-                                        var selection = initialScrubSelection(index, scrollIndex)
-                                        scrubController.overlayOpen = true
-                                        scrubController.selection = selection
+                                        if (alphaScrubIndex != null) {
+                                            var alphaSelection = initialAlphaScrubSelection(alphaScrubIndex, scrollIndex)
+                                            scrubController.overlayOpen = true
+                                            scrubController.alphaSelection = alphaSelection
 
-                                        while (true) {
-                                            val event = awaitPointerEvent(PointerEventPass.Main)
-                                            val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
-                                            if (!pointer.pressed) break
+                                            while (true) {
+                                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                                val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
+                                                if (!pointer.pressed) break
 
-                                            selection = updateScrubSelection(
-                                                dateIndex = index,
-                                                current = selection,
-                                                column = scrubColumnAt(
-                                                    xPx = stripLeftPx + pointer.position.x,
-                                                    totalWidthPx = containerWidthPx,
-                                                    density = density.density,
-                                                ),
-                                                yPx = pointer.position.y,
-                                                heightPx = containerHeightPx,
-                                            )
+                                                alphaSelection = updateAlphaScrubSelection(
+                                                    alphaIndex = alphaScrubIndex,
+                                                    yPx = pointer.position.y,
+                                                    heightPx = containerHeightPx,
+                                                )
+                                                scrubController.alphaSelection = alphaSelection
+                                                pointer.consume()
+                                            }
+                                            jumpTarget = alphaSelection.startIndex
+                                        } else {
+                                            val index = scrubIndex!!
+                                            var selection = initialScrubSelection(index, scrollIndex)
+                                            scrubController.overlayOpen = true
                                             scrubController.selection = selection
-                                            pointer.consume()
-                                        }
 
-                                        val final = selection
-                                        if (final.reachedMonthsZone && final.selectedMonth != null) {
-                                            jumpTarget = final.selectedMonth.startIndex
+                                            while (true) {
+                                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                                val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
+                                                if (!pointer.pressed) break
+
+                                                selection = updateScrubSelection(
+                                                    dateIndex = index,
+                                                    current = selection,
+                                                    column = scrubColumnAt(
+                                                        xPx = stripLeftPx + pointer.position.x,
+                                                        totalWidthPx = containerWidthPx,
+                                                        density = density.density,
+                                                    ),
+                                                    yPx = pointer.position.y,
+                                                    heightPx = containerHeightPx,
+                                                )
+                                                scrubController.selection = selection
+                                                pointer.consume()
+                                            }
+
+                                            val final = selection
+                                            if (final.reachedMonthsZone && final.selectedMonth != null) {
+                                                jumpTarget = final.selectedMonth.startIndex
+                                            }
                                         }
                                     } finally {
                                         scrubController.overlayOpen = false
                                         scrubController.selection = null
+                                        scrubController.alphaSelection = null
                                         if (jumpTarget < 0) {
                                             onScrubJumpChange(false)
                                         }

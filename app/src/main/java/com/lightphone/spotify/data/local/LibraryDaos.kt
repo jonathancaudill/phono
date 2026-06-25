@@ -40,7 +40,14 @@ interface LikedTrackDao {
 
 @Dao
 interface SavedAlbumDao {
-    @Query("SELECT * FROM saved_albums ORDER BY sort_index ASC")
+    @Query(
+        """
+        SELECT * FROM saved_albums
+        ORDER BY CASE WHEN added_at IS NULL THEN 1 ELSE 0 END ASC,
+                 added_at DESC,
+                 sort_index ASC
+        """,
+    )
     fun observeAll(): Flow<List<SavedAlbumEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -63,6 +70,30 @@ interface SavedAlbumDao {
     suspend fun shiftSortIndicesForPrepend()
 
     @Query("SELECT MIN(sort_index) FROM saved_albums")
+    suspend fun minSortIndex(): Int?
+}
+
+@Dao
+interface PlaylistDao {
+    @Query("SELECT * FROM playlists ORDER BY sort_index ASC")
+    fun observeAll(): Flow<List<PlaylistEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(items: List<PlaylistEntity>)
+
+    @Query("DELETE FROM playlists")
+    suspend fun clearAll()
+
+    @Query("SELECT COUNT(*) FROM playlists")
+    suspend fun count(): Int
+
+    @Query("DELETE FROM playlists WHERE playlist_id = :playlistId")
+    suspend fun deleteByPlaylistId(playlistId: String)
+
+    @Query("UPDATE playlists SET sort_index = sort_index + 1")
+    suspend fun shiftSortIndicesForPrepend()
+
+    @Query("SELECT MIN(sort_index) FROM playlists")
     suspend fun minSortIndex(): Int?
 }
 

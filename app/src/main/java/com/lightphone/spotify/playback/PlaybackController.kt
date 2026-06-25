@@ -18,6 +18,10 @@ import com.lightphone.spotify.data.mapWebApiError
 import com.lightphone.spotify.data.local.LibraryRepository
 import com.lightphone.spotify.data.local.LikedTrackEntity
 import com.lightphone.spotify.data.local.MonoDatabase
+import com.lightphone.spotify.data.PlaylistDetailResult
+import com.lightphone.spotify.data.SpotifyPlaylistDetail
+import com.lightphone.spotify.data.SpotifyPlaylistSimple
+import com.lightphone.spotify.data.local.PlaylistEntity
 import com.lightphone.spotify.data.local.SavedAlbumEntity
 import com.lightphone.spotify.data.SpotifyRepository
 import com.lightphone.spotify.data.SearchResults
@@ -556,6 +560,97 @@ class PlaybackController private constructor(
     suspend fun likedTracksForPlayback(fromIndex: Int): List<TrackMetadata> =
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             libraryRepository.likedTracksForPlayback(fromIndex)
+        }
+
+    fun playlistsUiFlow(): Flow<Triple<List<PlaylistEntity>, Int, Boolean>> =
+        libraryRepository.playlistsUiFlow()
+
+    suspend fun refreshPlaylists(): Boolean =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            libraryRepository.refreshPlaylists()
+        }
+
+    suspend fun playlistsNeedsFill(): Boolean =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            libraryRepository.playlistsNeedsFill()
+        }
+
+    suspend fun appendPlaylists(): Boolean =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            libraryRepository.appendPlaylists()
+        }
+
+    suspend fun fillRemainingPlaylists(): Int =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            libraryRepository.fillRemainingPlaylists()
+        }
+
+    suspend fun playlistDetail(playlistId: String): PlaylistDetailResult =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            try {
+                repository.playlistDetail(playlistId)
+            } catch (e: Throwable) {
+                android.util.Log.e("Library", "playlistDetail failed", e)
+                throw Exception(mapWebApiError(e))
+            }
+        }
+
+    suspend fun createPlaylist(name: String, isPublic: Boolean): SpotifyPlaylistSimple =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            try {
+                repository.createPlaylist(name, isPublic)
+            } catch (e: Throwable) {
+                throw Exception(mapWebApiError(e))
+            }
+        }
+
+    suspend fun renamePlaylist(playlistId: String, name: String): SpotifyPlaylistDetail =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            try {
+                repository.renamePlaylist(playlistId, name)
+            } catch (e: Throwable) {
+                throw Exception(mapWebApiError(e))
+            }
+        }
+
+    suspend fun addTrackToPlaylist(playlistId: String, uri: String): String? =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            try {
+                repository.addTrackToPlaylist(playlistId, uri)
+            } catch (e: Throwable) {
+                throw Exception(mapWebApiError(e))
+            }
+        }
+
+    suspend fun removeTrackFromPlaylist(playlistId: String, uri: String, snapshotId: String?): String? =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            try {
+                repository.removeTrackFromPlaylist(playlistId, uri, snapshotId)
+            } catch (e: Throwable) {
+                throw Exception(mapWebApiError(e))
+            }
+        }
+
+    suspend fun reorderPlaylistTrack(
+        playlistId: String,
+        fromIndex: Int,
+        toIndex: Int,
+        snapshotId: String?,
+    ): String? = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        try {
+            repository.reorderPlaylistTrack(playlistId, fromIndex, toIndex, snapshotId)
+        } catch (e: Throwable) {
+            throw Exception(mapWebApiError(e))
+        }
+    }
+
+    suspend fun editablePlaylists(): List<PlaylistEntity> =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            try {
+                repository.editablePlaylists()
+            } catch (e: Throwable) {
+                throw Exception(mapWebApiError(e))
+            }
         }
 
     suspend fun albumDetail(albumId: String): AlbumDetailResult =

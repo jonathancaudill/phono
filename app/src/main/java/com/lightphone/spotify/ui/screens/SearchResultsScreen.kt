@@ -33,6 +33,7 @@ import com.lightphone.spotify.ui.components.MonoContentContainer
 import com.lightphone.spotify.ui.components.MonoSwipeToActionRow
 import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.tap
+import com.lightphone.spotify.ui.components.tapWithLongPress
 import com.lightphone.spotify.ui.theme.MonoColors
 import com.lightphone.spotify.ui.theme.n
 import kotlin.math.min
@@ -47,6 +48,7 @@ fun SearchResultsScreen(
     onOpenArtist: (String) -> Unit,
     onPlayTrack: (SearchResultItem.Track) -> Unit,
     onPlayPlaylist: (String, String?) -> Unit,
+    onAddToPlaylist: ((String) -> Unit)? = null,
 ) {
     val state by vm.search.collectAsState()
 
@@ -92,7 +94,23 @@ fun SearchResultsScreen(
                                             vm.addTrackToQueue(item.track.toMetadata())
                                         },
                                     ) {
-                                        SearchResultRow(item) {
+                                        SearchResultRow(
+                                            item = item,
+                                            onClick = {
+                                                vm.openSearchResult(
+                                                    item,
+                                                    onOpenAlbum,
+                                                    onOpenArtist,
+                                                    onPlayTrack,
+                                                    onPlayPlaylist,
+                                                )
+                                            },
+                                            onLongClick = onAddToPlaylist?.let { { it(item.track.uri) } },
+                                        )
+                                    }
+                                    else -> SearchResultRow(
+                                        item = item,
+                                        onClick = {
                                             vm.openSearchResult(
                                                 item,
                                                 onOpenAlbum,
@@ -100,17 +118,8 @@ fun SearchResultsScreen(
                                                 onPlayTrack,
                                                 onPlayPlaylist,
                                             )
-                                        }
-                                    }
-                                    else -> SearchResultRow(item) {
-                                        vm.openSearchResult(
-                                            item,
-                                            onOpenAlbum,
-                                            onOpenArtist,
-                                            onPlayTrack,
-                                            onPlayPlaylist,
-                                        )
-                                    }
+                                        },
+                                    )
                                 }
                             }
                         }
@@ -187,12 +196,16 @@ private fun SearchFilterChip(
 }
 
 @Composable
-private fun SearchResultRow(item: SearchResultItem, onClick: () -> Unit) {
+private fun SearchResultRow(
+    item: SearchResultItem,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .defaultMinSize(minHeight = n(50))
-            .tap(onClick = onClick),
+            .tapWithLongPress(onClick = onClick, onLongClick = onLongClick),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(

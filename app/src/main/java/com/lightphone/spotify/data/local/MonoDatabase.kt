@@ -11,15 +11,17 @@ import androidx.room.TypeConverters
     entities = [
         LikedTrackEntity::class,
         SavedAlbumEntity::class,
+        PlaylistEntity::class,
         LibrarySyncStateEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 @TypeConverters(LibraryResourceConverter::class)
 abstract class MonoDatabase : RoomDatabase() {
     abstract fun likedTrackDao(): LikedTrackDao
     abstract fun savedAlbumDao(): SavedAlbumDao
+    abstract fun playlistDao(): PlaylistDao
     abstract fun librarySyncDao(): LibrarySyncDao
 
     companion object {
@@ -32,7 +34,9 @@ abstract class MonoDatabase : RoomDatabase() {
                     context.applicationContext,
                     MonoDatabase::class.java,
                     "mono_library.db",
-                ).build().also { instance = it }
+                )
+                    .fallbackToDestructiveMigration()
+                    .build().also { instance = it }
             }
         }
     }

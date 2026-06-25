@@ -1,5 +1,6 @@
 package com.lightphone.spotify.data.local
 
+import com.lightphone.spotify.data.SpotifyPlaylistSimple
 import com.lightphone.spotify.data.SpotifySavedAlbum
 import com.lightphone.spotify.data.SpotifySavedTrack
 import com.lightphone.spotify.data.TrackMetadata
@@ -32,6 +33,21 @@ fun SpotifySavedAlbum.toEntity(sortIndex: Int): SavedAlbumEntity {
         sort_index = sortIndex,
     )
 }
+
+fun SpotifyPlaylistSimple.toEntity(sortIndex: Int): PlaylistEntity =
+    PlaylistEntity(
+        playlist_id = id,
+        uri = uri.ifBlank { "spotify:playlist:$id" },
+        name = name,
+        owner_id = owner?.id.orEmpty(),
+        owner_name = owner?.displayName ?: "Playlist",
+        art_url = null,
+        track_count = trackCount,
+        snapshot_id = snapshotId,
+        is_public = public ?: false,
+        is_collaborative = collaborative,
+        sort_index = sortIndex,
+    )
 
 fun TrackMetadata.toLikedTrackEntity(sortIndex: Int, addedAt: String? = null): LikedTrackEntity =
     LikedTrackEntity(

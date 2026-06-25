@@ -36,6 +36,7 @@ fun LikedSongsScreen(
     vm: AppViewModel,
     onOpenPlaying: () -> Unit,
     onPlayTrack: (Int) -> Unit,
+    onAddToPlaylist: ((String) -> Unit)? = null,
 ) {
     LaunchedEffect(Unit) {
         vm.ensureLikedTracksLoaded()
@@ -102,6 +103,7 @@ fun LikedSongsScreen(
                                 showImage = false,
                                 placeholderIcon = Icons.Default.MusicNote,
                                 onClick = { onPlayTrack(index) },
+                                onLongClick = onAddToPlaylist?.let { { it(track.uri) } },
                             )
                         }
                     }

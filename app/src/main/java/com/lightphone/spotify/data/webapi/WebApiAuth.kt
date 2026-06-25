@@ -32,6 +32,8 @@ class WebApiAuth(private val context: Context) {
             "user-library-modify",
             "playlist-read-private",
             "playlist-read-collaborative",
+            "playlist-modify-public",
+            "playlist-modify-private",
             "user-read-private",
         )
 

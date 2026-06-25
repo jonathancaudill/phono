@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
@@ -55,6 +56,7 @@ fun PlayingScreen(
     onBack: () -> Unit,
     onOpenAlbum: (String) -> Unit,
     onOpenQueue: () -> Unit,
+    onAddToPlaylist: ((String) -> Unit)? = null,
 ) {
     val playback by vm.playback.collectAsState()
     val extras by vm.playingExtras.collectAsState()
@@ -141,9 +143,19 @@ fun PlayingScreen(
                     modifier = Modifier
                         .fillMaxWidth(0.92f)
                         .padding(bottom = n(20)),
-                    horizontalArrangement = Arrangement.Center,
+                    horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    if (onAddToPlaylist != null && playback.currentUri != null) {
+                        Icon(
+                            Icons.Default.PlaylistAdd,
+                            contentDescription = "Add to playlist",
+                            tint = MonoColors.Foreground,
+                            modifier = Modifier
+                                .size(n(30))
+                                .tap { onAddToPlaylist(playback.currentUri!!) },
+                        )
+                    }
                     Icon(
                         if (extras.isTrackSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                         contentDescription = "Like",

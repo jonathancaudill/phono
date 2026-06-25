@@ -2,7 +2,9 @@ package com.lightphone.spotify.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,6 +22,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
+import androidx.compose.material.icons.filled.Cancel
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -56,6 +61,30 @@ fun Modifier.tap(enabled: Boolean = true, onClick: () -> Unit): Modifier = compo
         enabled = enabled,
         onClick = onClick,
     )
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+fun Modifier.tapWithLongPress(
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+): Modifier = composed {
+    if (onLongClick != null) {
+        combinedClickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+            enabled = enabled,
+            onClick = onClick,
+            onLongClick = onLongClick,
+        )
+    } else {
+        clickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+            enabled = enabled,
+            onClick = onClick,
+        )
+    }
 }
 
 /** The single styled text primitive (Public Sans, white by default). */
@@ -227,12 +256,13 @@ fun MonoMediaListItem(
     /** False for library rows — avoids crossfade jank during fast scroll. */
     crossfadeImage: Boolean = true,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
             .defaultMinSize(minHeight = n(50))
-            .tap(enabled = !disabled, onClick = onClick),
+            .tapWithLongPress(enabled = !disabled, onClick = onClick, onLongClick = onLongClick),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (showImage) {
@@ -274,34 +304,79 @@ fun MonoMediaListItem(
     }
 }
 
+private val TrackListLeadingWidth = n(56)
+private val TrackEditReorderEndPadding = n(14)
+
+data class MonoTrackEditActions(
+    val mutating: Boolean = false,
+    val canMoveUp: Boolean,
+    val canMoveDown: Boolean,
+    val onRemove: () -> Unit,
+    val onMoveUp: () -> Unit,
+    val onMoveDown: () -> Unit,
+)
+
 @Composable
 fun MonoTrackListItem(
-    trackNumber: Int,
+    trackNumber: Int? = null,
     name: String,
     artists: String,
     durationMs: Long,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+    editActions: MonoTrackEditActions? = null,
 ) {
+    val interactiveModifier = if (editActions == null) {
+        Modifier.tapWithLongPress(onClick = onClick, onLongClick = onLongClick)
+    } else {
+        Modifier
+    }
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .tap(onClick = onClick),
+            .then(interactiveModifier),
         verticalAlignment = Alignment.Top,
     ) {
-        StyledText(
-            "$trackNumber.",
-            size = 26,
-            color = MonoColors.Foreground,
-            textAlign = TextAlign.Center,
-            modifier = Modifier
-                .width(n(56))
-                .padding(end = n(8)),
-        )
+        when {
+            editActions != null -> {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterVertically)
+                        .width(TrackListLeadingWidth)
+                        .padding(end = n(8)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Default.Cancel,
+                        contentDescription = "Remove track",
+                        tint = if (!editActions.mutating) {
+                            MonoColors.Foreground
+                        } else {
+                            MonoColors.DisabledIcon
+                        },
+                        modifier = Modifier
+                            .size(n(20))
+                            .tap(enabled = !editActions.mutating, onClick = editActions.onRemove),
+                    )
+                }
+            }
+            trackNumber != null -> {
+                StyledText(
+                    "$trackNumber.",
+                    size = 26,
+                    color = MonoColors.Foreground,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .width(TrackListLeadingWidth)
+                        .padding(end = n(8)),
+                )
+            }
+        }
         Column(
             Modifier
                 .weight(1f)
-                .padding(end = n(10)),
+                .padding(end = if (editActions != null) n(8) else n(10)),
         ) {
             StyledText(
                 name,
@@ -317,6 +392,34 @@ fun MonoTrackListItem(
                 color = MonoColors.Foreground,
                 modifier = Modifier.padding(bottom = n(6)),
             )
+        }
+        if (editActions != null) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.CenterVertically)
+                    .padding(end = TrackEditReorderEndPadding),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val upEnabled = editActions.canMoveUp && !editActions.mutating
+                Icon(
+                    Icons.Default.KeyboardArrowUp,
+                    contentDescription = "Move up",
+                    tint = if (upEnabled) MonoColors.Foreground else MonoColors.Placeholder,
+                    modifier = Modifier
+                        .size(n(32))
+                        .tap(enabled = upEnabled, onClick = editActions.onMoveUp),
+                )
+                Spacer(Modifier.width(n(4)))
+                val downEnabled = editActions.canMoveDown && !editActions.mutating
+                Icon(
+                    Icons.Default.KeyboardArrowDown,
+                    contentDescription = "Move down",
+                    tint = if (downEnabled) MonoColors.Foreground else MonoColors.Placeholder,
+                    modifier = Modifier
+                        .size(n(32))
+                        .tap(enabled = downEnabled, onClick = editActions.onMoveDown),
+                )
+            }
         }
     }
 }

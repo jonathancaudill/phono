@@ -22,6 +22,7 @@ fun <T> LibraryInfiniteList(
     onEnsureBufferAhead: (lastVisibleIndex: Int) -> Unit,
     modifier: Modifier = Modifier,
     dateIndex: LibraryDateIndex? = null,
+    alphaIndex: LibraryAlphaIndex? = null,
     onScrubToIndex: suspend (Int) -> Unit = {},
     onScrubJumpChange: (Boolean) -> Unit = {},
     itemContent: @Composable (index: Int, item: T) -> Unit,
@@ -41,6 +42,7 @@ fun <T> LibraryInfiniteList(
         virtualItemCount = remoteTotal.takeIf { it > 0 },
         hasMoreItems = hasMore,
         dateIndex = dateIndex,
+        alphaIndex = alphaIndex,
         onScrubToIndex = onScrubToIndex,
         onScrubJumpChange = onScrubJumpChange,
     ) {

@@ -112,18 +112,106 @@ data class SpotifySearchResults(
 )
 
 @Serializable
+data class SpotifyPlaylistTracksRef(
+    val total: Int = 0,
+)
+
+@Serializable
 data class SpotifyPlaylistSimple(
     val id: String = "",
     val name: String = "",
     val uri: String = "",
-    val images: List<SpotifyImage> = emptyList(),
+    val images: List<SpotifyImage>? = null,
     val owner: SpotifyPlaylistOwner? = null,
-)
+    @SerialName("snapshot_id") val snapshotId: String? = null,
+    val tracks: SpotifyPlaylistTracksRef? = null,
+    val public: Boolean? = null,
+    val collaborative: Boolean = false,
+    val description: String? = null,
+    /** Not documented on GET /me/playlists; parsed when Spotify returns it. */
+    @SerialName("added_at") val addedAt: String? = null,
+) {
+    val trackCount: Int get() = tracks?.total ?: 0
+}
+
+@Serializable
+data class SpotifyPlaylistDetail(
+    val id: String = "",
+    val name: String = "",
+    val uri: String = "",
+    val images: List<SpotifyImage>? = null,
+    val owner: SpotifyPlaylistOwner? = null,
+    @SerialName("snapshot_id") val snapshotId: String? = null,
+    val tracks: SpotifyPlaylistTracksRef? = null,
+    val public: Boolean? = null,
+    val collaborative: Boolean = false,
+    val description: String? = null,
+) {
+    val trackCount: Int get() = tracks?.total ?: 0
+}
 
 @Serializable
 data class SpotifyPlaylistOwner(
     val id: String = "",
     @SerialName("display_name") val displayName: String? = null,
+)
+
+@Serializable
+data class SpotifyPlaylistTrackItem(
+    @SerialName("added_at") val addedAt: String? = null,
+    val track: SpotifyTrack? = null,
+)
+
+@Serializable
+data class SpotifyCurrentUser(
+    val id: String = "",
+    @SerialName("display_name") val displayName: String? = null,
+)
+
+@Serializable
+data class CreatePlaylistBody(
+    val name: String,
+    val public: Boolean = false,
+    val description: String? = null,
+    val collaborative: Boolean = false,
+)
+
+@Serializable
+data class ChangePlaylistDetailsBody(
+    val name: String? = null,
+    val public: Boolean? = null,
+    val description: String? = null,
+    val collaborative: Boolean? = null,
+)
+
+@Serializable
+data class AddPlaylistItemsBody(
+    val uris: List<String>,
+    val position: Int? = null,
+)
+
+@Serializable
+data class RemovePlaylistTrackRef(
+    val uri: String,
+)
+
+@Serializable
+data class RemovePlaylistItemsBody(
+    val tracks: List<RemovePlaylistTrackRef>,
+    @SerialName("snapshot_id") val snapshotId: String? = null,
+)
+
+@Serializable
+data class SnapshotResponse(
+    @SerialName("snapshot_id") val snapshotId: String = "",
+)
+
+@Serializable
+data class ReorderPlaylistItemsBody(
+    @SerialName("range_start") val rangeStart: Int,
+    @SerialName("insert_before") val insertBefore: Int,
+    @SerialName("range_length") val rangeLength: Int = 1,
+    @SerialName("snapshot_id") val snapshotId: String? = null,
 )
 
 sealed class SearchResultItem {
@@ -161,7 +249,7 @@ sealed class SearchResultItem {
         override val id = playlist.id
         override val title = playlist.name
         override val subtitle = "Playlist • ${playlist.owner?.displayName ?: "Playlist"}"
-        override val imageUrl = playlist.images.firstOrNull()?.url
+        override val imageUrl = null
         override val uri = playlist.uri
     }
 }

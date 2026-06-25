@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -73,6 +74,7 @@ private fun OfflineStrip(message: String) {
 enum class MonoTab(val route: String, val label: String, val icon: ImageVector) {
     Liked("liked", "Liked Songs", Icons.Default.Favorite),
     Albums("albums", "Albums", Icons.Default.Album),
+    Playlists("playlists", "Playlists", Icons.Default.QueueMusic),
     Search("search", "Search", Icons.Default.Search),
     Settings("settings", "Settings", Icons.Default.MoreHoriz),
 }
@@ -80,6 +82,7 @@ enum class MonoTab(val route: String, val label: String, val icon: ImageVector) 
 val DefaultMonoTabs = listOf(
     MonoTab.Liked,
     MonoTab.Albums,
+    MonoTab.Playlists,
     MonoTab.Search,
     MonoTab.Settings,
 )
