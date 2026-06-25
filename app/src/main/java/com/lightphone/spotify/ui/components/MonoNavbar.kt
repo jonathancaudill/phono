@@ -20,8 +20,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.lightphone.spotify.ui.theme.MonoColors
 import com.lightphone.spotify.ui.theme.n
+
+/** Icon row: vertical padding n(11) + icon n(48) + vertical padding n(11). */
+val MonoNavbarBarHeight: Dp = n(70)
+
+val MonoNavbarOfflineStripHeight: Dp = n(18)
+
+fun monoNavbarTotalHeight(showOfflineStrip: Boolean): Dp =
+    MonoNavbarBarHeight + if (showOfflineStrip) MonoNavbarOfflineStripHeight else 0.dp
 
 @Composable
 fun MonoNavbar(

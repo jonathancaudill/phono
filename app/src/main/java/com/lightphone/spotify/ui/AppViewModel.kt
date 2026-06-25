@@ -87,8 +87,10 @@ data class PlaylistDetailState(
     val tracks: List<PlaylistDetailTrackRow> = emptyList(),
     val snapshotId: String? = null,
     val isEditable: Boolean = false,
+    val isInLibrary: Boolean = false,
     val editMode: Boolean = false,
     val mutating: Boolean = false,
+    val saving: Boolean = false,
     val error: String? = null,
     val mutationError: String? = null,
 )
@@ -551,6 +553,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         },
                         snapshotId = result.detail.snapshotId,
                         isEditable = result.isEditable,
+                        isInLibrary = result.isInLibrary,
                     )
                 }
                 .onFailure { e ->
@@ -561,6 +564,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun togglePlaylistEditMode() {
         _playlistDetail.update { it.copy(editMode = !it.editMode, mutationError = null) }
+    }
+
+    fun togglePlaylistLibrary(playlistId: String) {
+        viewModelScope.launch {
+            val current = _playlistDetail.value
+            if (current.saving || current.mutating) return@launch
+            _playlistDetail.update { it.copy(saving = true, mutationError = null) }
+            val result = runCatching {
+                if (current.isInLibrary) {
+                    controller.unfollowPlaylist(playlistId)
+                } else {
+                    controller.followPlaylist(playlistId)
+                }
+            }
+            _playlistDetail.update {
+                it.copy(
+                    saving = false,
+                    isInLibrary = if (result.isSuccess) !it.isInLibrary else it.isInLibrary,
+                    mutationError = result.exceptionOrNull()?.message,
+                )
+            }
+        }
     }
 
     fun renamePlaylist(playlistId: String, name: String) {
@@ -854,13 +879,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         onOpenAlbum: (String, String) -> Unit,
         onOpenArtist: (String) -> Unit,
         onPlayTrack: (SearchResultItem.Track) -> Unit,
-        onPlayPlaylist: (String, String?) -> Unit,
+        onOpenPlaylist: (String, String) -> Unit,
     ) {
         when (item) {
             is SearchResultItem.Track -> onPlayTrack(item)
             is SearchResultItem.Album -> onOpenAlbum(item.album.id, item.album.name)
             is SearchResultItem.Artist -> onOpenArtist(item.artist.id)
-            is SearchResultItem.Playlist -> onPlayPlaylist(item.playlist.id, item.playlist.name)
+            is SearchResultItem.Playlist -> onOpenPlaylist(item.playlist.id, item.playlist.name)
         }
     }
 
@@ -870,19 +895,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         playTracks(tracks, index, label)
     }
 
+    private var playingExtrasLoadedForUri: String? = null
+
     fun refreshPlayingScreen() {
         val uri = playback.value.currentUri ?: return
-        controller.refreshNowPlayingFromWebApi()
+        val state = playback.value
+        if (state.title.isNullOrBlank() || state.durationMs <= 0L || state.artUrl.isNullOrBlank()) {
+            controller.refreshNowPlayingFromWebApi()
+        }
+        if (uri == playingExtrasLoadedForUri) return
+        val requestedUri = uri
         viewModelScope.launch {
             _playingExtras.value = _playingExtras.value.copy(saveError = null)
-            val saved = runCatching { controller.isTrackSaved(uri) }
+            val saved = runCatching { controller.isTrackSaved(requestedUri) }
                 .getOrElse { e ->
+                    if (playback.value.currentUri != requestedUri) return@launch
                     _playingExtras.value = _playingExtras.value.copy(
                         saveError = e.message ?: "Could not check liked status",
                     )
                     return@launch
                 }
+            if (playback.value.currentUri != requestedUri) return@launch
             _playingExtras.value = _playingExtras.value.copy(isTrackSaved = saved)
+            playingExtrasLoadedForUri = requestedUri
         }
     }
 
@@ -921,7 +956,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun moveContextItemDown(index: Int) = controller.moveContextItemDown(index)
     fun clearManualQueue() = controller.clearManualQueue()
     fun refreshQueue() = controller.refreshQueue()
-    fun logout() = controller.logout()
+    fun logout() {
+        playingExtrasLoadedForUri = null
+        _playingExtras.value = PlayingExtrasState()
+        controller.logout()
+    }
 
     fun setStreamingQuality(quality: StreamingQuality) {
         _settings.value = _settings.value.copy(streamingQuality = quality)

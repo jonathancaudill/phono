@@ -133,20 +133,17 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
 
     fun saveLibrary(uris: List<String>) {
         if (uris.isEmpty()) return
-        val body = json.encodeToString(LibraryUris.serializer(), LibraryUris(uris))
-        put("/me/library", body)
+        put(libraryUrisPath(uris))
     }
 
     fun removeLibrary(uris: List<String>) {
         if (uris.isEmpty()) return
-        val body = json.encodeToString(LibraryUris.serializer(), LibraryUris(uris))
-        delete("/me/library", body)
+        delete(libraryUrisPath(uris))
     }
 
     fun libraryContains(uris: List<String>): List<Boolean> {
         if (uris.isEmpty()) return emptyList()
-        val query = uris.joinToString(",")
-        return getRaw("/me/library/contains?uris=${urlEncode(query)}").let { body ->
+        return getRaw(libraryUrisPath(uris, contains = true)).let { body ->
             json.decodeFromString<List<Boolean>>(body)
         }
     }
@@ -269,10 +266,11 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
     }
 
     fun unfollowPlaylist(playlistId: String) {
-        val request = authorizedRequest("/playlists/$playlistId/followers")
-            .delete()
-            .build()
-        kotlinx.coroutines.runBlocking { executeWithRetry(request) }
+        removeLibrary(listOf("spotify:playlist:$playlistId"))
+    }
+
+    fun followPlaylist(playlistId: String) {
+        saveLibrary(listOf("spotify:playlist:$playlistId"))
     }
 
     private fun paginateTracks(path: String, limit: Int): List<SpotifyTrack> {
@@ -375,10 +373,22 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
         executeWithRetry(request)
     }
 
+    private fun put(path: String) {
+        val request = authorizedRequest(path)
+            .put(ByteArray(0).toRequestBody(null))
+            .build()
+        kotlinx.coroutines.runBlocking { executeWithRetry(request) }
+    }
+
     private fun put(path: String, jsonBody: String) {
         val request = authorizedRequest(path)
             .put(jsonBody.toRequestBody(jsonMediaType))
             .build()
+        kotlinx.coroutines.runBlocking { executeWithRetry(request) }
+    }
+
+    private fun delete(path: String) {
+        val request = authorizedRequest(path).delete().build()
         kotlinx.coroutines.runBlocking { executeWithRetry(request) }
     }
 
@@ -476,9 +486,12 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
         return count
     }
 
+    private fun libraryUrisPath(uris: List<String>, contains: Boolean = false): String {
+        val encoded = uris.joinToString(",") { urlEncode(it) }
+        val base = if (contains) "/me/library/contains" else "/me/library"
+        return "$base?uris=$encoded"
+    }
+
     private fun urlEncode(value: String): String =
         java.net.URLEncoder.encode(value, Charsets.UTF_8.name())
-
-    @Serializable
-    private data class LibraryUris(val uris: List<String>)
 }

@@ -150,6 +150,20 @@ data class SpotifyPlaylistDetail(
     val trackCount: Int get() = tracks?.total ?: 0
 }
 
+fun SpotifyPlaylistDetail.toPlaylistSimple(): SpotifyPlaylistSimple =
+    SpotifyPlaylistSimple(
+        id = id,
+        name = name,
+        uri = uri.ifBlank { "spotify:playlist:$id" },
+        images = images,
+        owner = owner,
+        snapshotId = snapshotId,
+        tracks = tracks,
+        public = public,
+        collaborative = collaborative,
+        description = description,
+    )
+
 @Serializable
 data class SpotifyPlaylistOwner(
     val id: String = "",
