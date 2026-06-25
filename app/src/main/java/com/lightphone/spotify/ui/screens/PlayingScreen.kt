@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Shuffle
@@ -53,6 +54,7 @@ fun PlayingScreen(
     vm: AppViewModel,
     onBack: () -> Unit,
     onOpenAlbum: (String) -> Unit,
+    onOpenQueue: () -> Unit,
 ) {
     val playback by vm.playback.collectAsState()
     val extras by vm.playingExtras.collectAsState()
@@ -67,7 +69,9 @@ fun PlayingScreen(
         title = " ",
         hideBackButton = false,
         onBack = onBack,
-        rightIconVisible = false,
+        rightIcon = Icons.AutoMirrored.Filled.QueueMusic,
+        onRightIconClick = onOpenQueue,
+        rightIconVisible = hasTrack,
         horizontalPadding = n(20),
         topPadding = n(0),
         modifier = Modifier.fillMaxSize(),

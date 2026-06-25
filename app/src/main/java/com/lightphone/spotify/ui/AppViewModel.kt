@@ -468,17 +468,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _search.value = _search.value.copy(filter = filter)
     }
 
-    fun playTracks(tracks: List<TrackMetadata>, startIndex: Int) {
+    fun playTracks(tracks: List<TrackMetadata>, startIndex: Int, contextLabel: String? = null) {
         if (tracks.isEmpty()) return
         controller.ensureServiceStarted()
-        controller.play(tracks, startIndex)
+        controller.play(tracks, startIndex, contextLabel)
     }
 
     fun playLikedFrom(index: Int) {
         viewModelScope.launch {
             val tracks = runCatching { controller.likedTracksForPlayback(index) }.getOrNull()
             if (!tracks.isNullOrEmpty()) {
-                playTracks(tracks, 0)
+                playTracks(tracks, 0, "Liked Songs")
             }
         }
     }
@@ -489,20 +489,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val tracks = detail?.tracks?.items?.map { it.toMetadata() }
                 ?: runCatching { controller.albumTracks(albumId) }.getOrNull()
             if (!tracks.isNullOrEmpty()) {
-                playTracks(tracks, trackIndex.coerceIn(0, tracks.lastIndex))
+                val label = detail?.name ?: tracks.firstOrNull()?.album
+                playTracks(tracks, trackIndex.coerceIn(0, tracks.lastIndex), label)
             }
         }
     }
 
     fun playSearchTrack(item: SearchResultItem.Track) {
-        playTracks(listOf(item.track.toMetadata()), 0)
+        val meta = item.track.toMetadata()
+        playTracks(listOf(meta), 0, meta.album.ifBlank { null })
     }
 
-    fun playSearchPlaylist(playlistId: String, onStarted: () -> Unit = {}) {
+    fun playSearchPlaylist(playlistId: String, playlistName: String? = null, onStarted: () -> Unit = {}) {
         viewModelScope.launch {
             val tracks = runCatching { controller.playlistTracks(playlistId) }.getOrNull()
             if (!tracks.isNullOrEmpty()) {
-                playTracks(tracks, 0)
+                playTracks(tracks, 0, playlistName)
                 onStarted()
             }
         }
@@ -513,19 +515,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         onOpenAlbum: (String, String) -> Unit,
         onOpenArtist: (String) -> Unit,
         onPlayTrack: (SearchResultItem.Track) -> Unit,
-        onPlayPlaylist: (String) -> Unit,
+        onPlayPlaylist: (String, String?) -> Unit,
     ) {
         when (item) {
             is SearchResultItem.Track -> onPlayTrack(item)
             is SearchResultItem.Album -> onOpenAlbum(item.album.id, item.album.name)
             is SearchResultItem.Artist -> onOpenArtist(item.artist.id)
-            is SearchResultItem.Playlist -> onPlayPlaylist(item.playlist.id)
+            is SearchResultItem.Playlist -> onPlayPlaylist(item.playlist.id, item.playlist.name)
         }
     }
 
     fun playArtistTopTrack(index: Int) {
         val tracks = _artistDetail.value.topTracks.map { it.toMetadata() }
-        playTracks(tracks, index)
+        val label = _artistDetail.value.artist?.name
+        playTracks(tracks, index, label)
     }
 
     fun refreshPlayingScreen() {
@@ -569,6 +572,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleShuffle() = controller.toggleShuffle()
     fun toggleRepeat() = controller.toggleRepeat()
     fun seek(positionMs: Long) = controller.seek(positionMs)
+    fun addTrackToQueue(track: TrackMetadata) {
+        controller.ensureServiceStarted()
+        controller.addToQueue(track)
+    }
+    fun moveQueueItemUp(index: Int) = controller.moveQueueItemUp(index)
+    fun moveQueueItemDown(index: Int) = controller.moveQueueItemDown(index)
+    fun moveContextItemUp(index: Int) = controller.moveContextItemUp(index)
+    fun moveContextItemDown(index: Int) = controller.moveContextItemDown(index)
+    fun clearManualQueue() = controller.clearManualQueue()
+    fun refreshQueue() = controller.refreshQueue()
     fun logout() = controller.logout()
 
     fun setStreamingQuality(quality: StreamingQuality) {

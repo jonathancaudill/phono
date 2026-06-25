@@ -20,9 +20,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import com.lightphone.spotify.ui.AppViewModel
+import com.lightphone.spotify.data.local.toTrackMetadata
 import com.lightphone.spotify.ui.components.LibraryInfiniteList
 import com.lightphone.spotify.ui.components.MonoContentContainer
 import com.lightphone.spotify.ui.components.MonoMediaListItem
+import com.lightphone.spotify.ui.components.MonoSwipeToActionRow
 import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.buildLibraryDateIndex
 import com.lightphone.spotify.ui.theme.MonoColors
@@ -91,13 +93,17 @@ fun LikedSongsScreen(
                             .weight(1f)
                             .fillMaxWidth(),
                     ) { index, track ->
-                        MonoMediaListItem(
-                            primaryText = track.title,
-                            secondaryText = track.artists,
-                            showImage = false,
-                            placeholderIcon = Icons.Default.MusicNote,
-                            onClick = { onPlayTrack(index) },
-                        )
+                        MonoSwipeToActionRow(
+                            onSwipeAction = { vm.addTrackToQueue(track.toTrackMetadata()) },
+                        ) {
+                            MonoMediaListItem(
+                                primaryText = track.title,
+                                secondaryText = track.artists,
+                                showImage = false,
+                                placeholderIcon = Icons.Default.MusicNote,
+                                onClick = { onPlayTrack(index) },
+                            )
+                        }
                     }
                 }
             }

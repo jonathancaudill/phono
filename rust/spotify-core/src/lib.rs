@@ -28,7 +28,7 @@ mod settings;
 mod android_ctx;
 
 pub use library::EntityInfo;
-pub use queue::RepeatMode;
+pub use queue::{QueueSnapshot, RepeatMode};
 pub use settings::{NetworkBufferPreset, NormalizationType, StreamingQuality};
 
 uniffi::setup_scaffolding!();
@@ -88,6 +88,7 @@ pub trait PlayerEventListener: Send + Sync {
     fn on_connection_lost(&self);
     fn on_connection_restored(&self);
     fn on_error(&self, message: String);
+    fn on_queue_changed(&self);
 }
 
 type SharedListener = Arc<Mutex<Option<Box<dyn PlayerEventListener>>>>;
@@ -229,14 +230,20 @@ impl LibrespotEngine {
         self.shared.daily_mixes()
     }
 
-    /// Replace the queue with `uris` and start playing at `start_index`.
-    pub fn play_uris(&self, uris: Vec<String>, start_index: u32) -> Result<(), SpotifyError> {
-        self.shared.play_uris(uris, start_index)
+    /// Replace the playback context with `uris` and start playing at `start_index`.
+    /// `context_label` is shown in the queue UI (e.g. album name). Clears manual queue.
+    pub fn play_uris(
+        &self,
+        uris: Vec<String>,
+        start_index: u32,
+        context_label: Option<String>,
+    ) -> Result<(), SpotifyError> {
+        self.shared.play_uris(uris, start_index, context_label)
     }
 
     /// Convenience: play a single URI.
     pub fn play_uri(&self, uri: String) -> Result<(), SpotifyError> {
-        self.shared.play_uris(vec![uri], 0)
+        self.shared.play_uris(vec![uri], 0, None)
     }
 
     pub fn pause(&self) {
@@ -273,6 +280,38 @@ impl LibrespotEngine {
 
     pub fn toggle_repeat(&self) -> RepeatMode {
         self.shared.toggle_repeat()
+    }
+
+    /// Current queue from now-playing through the end, in playback order.
+    pub fn get_queue(&self) -> QueueSnapshot {
+        self.shared.get_queue()
+    }
+
+    /// Append a track to the end of the queue without interrupting playback.
+    pub fn add_to_queue(&self, uri: String) -> Result<(), SpotifyError> {
+        self.shared.add_to_queue(uri)
+    }
+
+    /// Move a manual-queue item earlier. `index` is into [QueueSnapshot::next_in_queue].
+    pub fn move_queue_item_up(&self, index: u32) -> Result<(), SpotifyError> {
+        self.shared.move_manual_queue_item(index, true)
+    }
+
+    pub fn move_queue_item_down(&self, index: u32) -> Result<(), SpotifyError> {
+        self.shared.move_manual_queue_item(index, false)
+    }
+
+    pub fn move_context_item_up(&self, index: u32) -> Result<(), SpotifyError> {
+        self.shared.move_context_queue_item(index, true)
+    }
+
+    pub fn move_context_item_down(&self, index: u32) -> Result<(), SpotifyError> {
+        self.shared.move_context_queue_item(index, false)
+    }
+
+    /// Remove all manually queued tracks (does not affect playback context).
+    pub fn clear_manual_queue(&self) {
+        self.shared.clear_manual_queue()
     }
 
     /// Volume as a percentage 0..=100.
@@ -806,7 +845,12 @@ impl EngineShared {
             .map_err(|e| SpotifyError::Network { msg: e.to_string() })
     }
 
-    fn play_uris(&self, uris: Vec<String>, start_index: u32) -> Result<(), SpotifyError> {
+    fn play_uris(
+        &self,
+        uris: Vec<String>,
+        start_index: u32,
+        context_label: Option<String>,
+    ) -> Result<(), SpotifyError> {
         if uris.is_empty() {
             return Err(SpotifyError::InvalidUri {
                 uri: "empty queue".into(),
@@ -828,7 +872,7 @@ impl EngineShared {
             let active = guard.as_ref().ok_or(SpotifyError::NotLoggedIn)?;
             {
                 let mut q = active.queue.lock().unwrap();
-                q.set_queue(parsed, start_index as usize);
+                q.set_queue(parsed, start_index as usize, context_label);
             }
             let uri = active
                 .queue
@@ -842,7 +886,90 @@ impl EngineShared {
         };
 
         player.load(uri, true, 0);
+        self.notify_queue_changed();
         Ok(())
+    }
+
+    fn get_queue(&self) -> QueueSnapshot {
+        self.with_active_queue(|q| q.queue_snapshot())
+    }
+
+    fn add_to_queue(&self, uri: String) -> Result<(), SpotifyError> {
+        if !self.is_logged_in() {
+            return Err(SpotifyError::NotLoggedIn);
+        }
+        let parsed = parse_uri(&uri)?;
+        self.with_active_queue_mut(|q| {
+            q.add_to_queue(parsed);
+        });
+        self.refresh_next_preload();
+        self.notify_queue_changed();
+        Ok(())
+    }
+
+    fn move_manual_queue_item(&self, index: u32, up: bool) -> Result<(), SpotifyError> {
+        if !self.is_logged_in() {
+            return Err(SpotifyError::NotLoggedIn);
+        }
+        let mut success = false;
+        self.with_active_queue_mut(|q| {
+            success = if up {
+                q.move_manual_up(index as usize).is_ok()
+            } else {
+                q.move_manual_down(index as usize).is_ok()
+            };
+        });
+        if !success {
+            return Err(SpotifyError::InvalidUri {
+                uri: format!("queue index {index} out of range"),
+            });
+        }
+        self.notify_queue_changed();
+        self.refresh_next_preload();
+        Ok(())
+    }
+
+    fn move_context_queue_item(&self, index: u32, up: bool) -> Result<(), SpotifyError> {
+        if !self.is_logged_in() {
+            return Err(SpotifyError::NotLoggedIn);
+        }
+        let mut success = false;
+        self.with_active_queue_mut(|q| {
+            success = if up {
+                q.move_context_up(index as usize).is_ok()
+            } else {
+                q.move_context_down(index as usize).is_ok()
+            };
+        });
+        if !success {
+            return Err(SpotifyError::InvalidUri {
+                uri: format!("context index {index} out of range"),
+            });
+        }
+        self.notify_queue_changed();
+        self.refresh_next_preload();
+        Ok(())
+    }
+
+    fn clear_manual_queue(&self) {
+        self.with_active_queue_mut(|q| q.clear_manual_queue());
+        self.notify_queue_changed();
+        self.refresh_next_preload();
+    }
+
+    /// Re-preload the current up-next track after queue order changes mid-song.
+    /// librespot discards a stale preload when the URI differs, so this is safe
+    /// to call on every mutation.
+    fn refresh_next_preload(&self) {
+        self.with_active(|a| {
+            if let Some(uri) = a.queue.lock().unwrap().next_preload_uri() {
+                a.player.preload(uri);
+            }
+        });
+    }
+
+    fn notify_queue_changed(&self) {
+        notify(&self.listener, |l| l.on_queue_changed());
     }
 
     fn with_active<F: FnOnce(&Active)>(&self, f: F) {
@@ -893,6 +1020,8 @@ impl EngineShared {
         };
         if let Some((player, uri)) = resolved {
             player.load(uri, true, 0);
+            self.notify_queue_changed();
+            self.refresh_next_preload();
         }
     }
 
@@ -903,6 +1032,8 @@ impl EngineShared {
     fn toggle_shuffle(&self) -> bool {
         let mut out = false;
         self.with_active_queue_mut(|q| out = q.toggle_shuffle());
+        self.notify_queue_changed();
+        self.refresh_next_preload();
         out
     }
 

@@ -31,6 +31,7 @@ import com.lightphone.spotify.ui.screens.LikedSongsScreen
 import com.lightphone.spotify.ui.screens.LoginScreen
 import com.lightphone.spotify.ui.screens.WebApiSetupScreen
 import com.lightphone.spotify.ui.screens.PlayingScreen
+import com.lightphone.spotify.ui.screens.QueueScreen
 import com.lightphone.spotify.ui.screens.SearchResultsScreen
 import com.lightphone.spotify.ui.screens.SearchScreen
 import com.lightphone.spotify.ui.screens.SettingsScreen
@@ -145,6 +146,13 @@ private fun MainNavigation(vm: AppViewModel) {
                         onOpenAlbum = { albumId ->
                             overlayNav.navigate(Routes.album(albumId))
                         },
+                        onOpenQueue = { overlayNav.navigate(Routes.Queue) },
+                    )
+                }
+                composable(Routes.Queue) {
+                    QueueScreen(
+                        vm = vm,
+                        onBack = { navController.popBackStack() },
                     )
                 }
                 composable(
@@ -164,8 +172,8 @@ private fun MainNavigation(vm: AppViewModel) {
                             vm.playSearchTrack(track)
                             overlayNav.navigate(Routes.Playing)
                         },
-                        onPlayPlaylist = { playlistId ->
-                            vm.playSearchPlaylist(playlistId) {
+                        onPlayPlaylist = { id, name ->
+                            vm.playSearchPlaylist(id, name) {
                                 overlayNav.navigate(Routes.Playing)
                             }
                         },
