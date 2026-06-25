@@ -33,6 +33,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -94,6 +97,7 @@ fun PlayingScreen(
                 MonoFallbackImage(
                     imageUrl = playback.artUrl,
                     placeholderIcon = Icons.Default.MusicNote,
+                    crossfade = false,
                     modifier = Modifier
                         .padding(bottom = n(20))
                         .size(n(200)),
@@ -138,32 +142,38 @@ fun PlayingScreen(
                 PlaybackControls(playback, vm)
             }
 
-            if (hasTrack) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth(0.92f)
-                        .padding(bottom = n(20)),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (onAddToPlaylist != null && playback.currentUri != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.92f)
+                    .height(n(50))
+                    .padding(bottom = n(20)),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (hasTrack) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (onAddToPlaylist != null && playback.currentUri != null) {
+                            Icon(
+                                Icons.Default.PlaylistAdd,
+                                contentDescription = "Add to playlist",
+                                tint = MonoColors.Foreground,
+                                modifier = Modifier
+                                    .size(n(30))
+                                    .tap { onAddToPlaylist(playback.currentUri!!) },
+                            )
+                        }
                         Icon(
-                            Icons.Default.PlaylistAdd,
-                            contentDescription = "Add to playlist",
+                            if (extras.isTrackSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            contentDescription = "Like",
                             tint = MonoColors.Foreground,
                             modifier = Modifier
                                 .size(n(30))
-                                .tap { onAddToPlaylist(playback.currentUri!!) },
+                                .tap(enabled = !extras.savePending) { vm.toggleCurrentTrackSave() },
                         )
                     }
-                    Icon(
-                        if (extras.isTrackSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                        contentDescription = "Like",
-                        tint = MonoColors.Foreground,
-                        modifier = Modifier
-                            .size(n(30))
-                            .tap(enabled = !extras.savePending) { vm.toggleCurrentTrackSave() },
-                    )
                 }
             }
         }
@@ -172,7 +182,11 @@ fun PlayingScreen(
 
 @Composable
 private fun ProgressBar(playback: PlaybackUiState, onSeek: (Long) -> Unit) {
-    val duration = playback.durationMs.coerceAtLeast(1)
+    var lastDurationMs by remember(playback.currentUri) { mutableLongStateOf(0L) }
+    if (playback.durationMs > 0L) {
+        lastDurationMs = playback.durationMs
+    }
+    val duration = (if (playback.durationMs > 0L) playback.durationMs else lastDurationMs).coerceAtLeast(1)
     val progress = (playback.positionMs.toFloat() / duration).coerceIn(0f, 1f)
 
     Column(

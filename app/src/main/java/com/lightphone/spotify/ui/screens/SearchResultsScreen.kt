@@ -47,7 +47,7 @@ fun SearchResultsScreen(
     onOpenAlbum: (String, String) -> Unit,
     onOpenArtist: (String) -> Unit,
     onPlayTrack: (SearchResultItem.Track) -> Unit,
-    onPlayPlaylist: (String, String?) -> Unit,
+    onOpenPlaylist: (String, String) -> Unit,
     onAddToPlaylist: ((String) -> Unit)? = null,
 ) {
     val state by vm.search.collectAsState()
@@ -102,7 +102,7 @@ fun SearchResultsScreen(
                                                     onOpenAlbum,
                                                     onOpenArtist,
                                                     onPlayTrack,
-                                                    onPlayPlaylist,
+                                                    onOpenPlaylist,
                                                 )
                                             },
                                             onLongClick = onAddToPlaylist?.let { { it(item.track.uri) } },
@@ -116,7 +116,7 @@ fun SearchResultsScreen(
                                                 onOpenAlbum,
                                                 onOpenArtist,
                                                 onPlayTrack,
-                                                onPlayPlaylist,
+                                                onOpenPlaylist,
                                             )
                                         },
                                     )

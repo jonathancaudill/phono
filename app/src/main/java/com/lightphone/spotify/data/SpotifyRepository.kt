@@ -40,6 +40,7 @@ data class PlaylistDetailResult(
     val tracks: List<SpotifyPlaylistTrackItem>,
     val currentUserId: String,
     val isEditable: Boolean,
+    val isInLibrary: Boolean,
 )
 
 /** Metadata via Spotify Web API. */
@@ -96,11 +97,14 @@ class SpotifyRepository(
         val detail = webApi.playlist(playlistId)
         val tracks = paginatePlaylistTrackItems(playlistId, trackLimit)
         val isEditable = detail.owner?.id == userId || detail.collaborative
+        val uri = detail.uri.ifBlank { "spotify:playlist:$playlistId" }
+        val isInLibrary = webApi.libraryContains(listOf(uri)).firstOrNull() ?: false
         return PlaylistDetailResult(
             detail = detail,
             tracks = tracks,
             currentUserId = userId,
             isEditable = isEditable,
+            isInLibrary = isInLibrary,
         )
     }
 
@@ -142,6 +146,12 @@ class SpotifyRepository(
             rangeLength = 1,
             snapshotId = snapshotId,
         )
+    }
+
+    suspend fun followPlaylist(playlistId: String) {
+        webApi.followPlaylist(playlistId)
+        val detail = webApi.playlist(playlistId)
+        libraryRepository.prependPlaylist(detail.toPlaylistSimple())
     }
 
     suspend fun unfollowPlaylist(playlistId: String) {

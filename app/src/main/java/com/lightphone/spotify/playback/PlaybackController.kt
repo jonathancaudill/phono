@@ -748,6 +748,26 @@ class PlaybackController private constructor(
             }
         }
 
+    suspend fun followPlaylist(playlistId: String) =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            try {
+                repository.followPlaylist(playlistId)
+            } catch (e: Throwable) {
+                android.util.Log.e("Library", "followPlaylist failed", e)
+                throw Exception(mapWebApiError(e))
+            }
+        }
+
+    suspend fun unfollowPlaylist(playlistId: String) =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            try {
+                repository.unfollowPlaylist(playlistId)
+            } catch (e: Throwable) {
+                android.util.Log.e("Library", "unfollowPlaylist failed", e)
+                throw Exception(mapWebApiError(e))
+            }
+        }
+
     /** Fetch track metadata (art, title, duration) from the Web API for now-playing. */
     fun refreshNowPlayingFromWebApi() {
         val uri = _state.value.currentUri ?: return

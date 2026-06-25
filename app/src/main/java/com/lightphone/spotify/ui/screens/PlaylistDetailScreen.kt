@@ -11,8 +11,10 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -73,12 +75,20 @@ fun PlaylistDetailScreen(
         title = title,
         hideBackButton = false,
         onBack = onBack,
-        rightIcon = if (state.editMode) Icons.Default.Check else Icons.Default.Edit,
-        onRightIconClick = {
-            if (!state.mutating) vm.togglePlaylistEditMode()
+        rightIcon = when {
+            state.isEditable -> if (state.editMode) Icons.Default.Check else Icons.Default.Edit
+            state.isInLibrary -> Icons.Default.Remove
+            else -> Icons.Default.Add
         },
-        rightIconVisible = state.isEditable,
-        rightLoading = state.mutating,
+        onRightIconClick = {
+            if (state.isEditable) {
+                if (!state.mutating) vm.togglePlaylistEditMode()
+            } else if (!state.saving) {
+                vm.togglePlaylistLibrary(playlistId)
+            }
+        },
+        rightIconVisible = state.isEditable || state.detail != null,
+        rightLoading = state.mutating || state.saving,
         onTitleClick = if (state.editMode && state.isEditable) {
             { renameDraft = title }
         } else {
