@@ -16,9 +16,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
 import com.lightphone.spotify.ui.components.MonoContentContainer
+import com.lightphone.spotify.ui.components.MonoSwipeToActionRow
 import com.lightphone.spotify.ui.components.MonoTrackListItem
 import com.lightphone.spotify.ui.theme.n
 
@@ -68,13 +70,17 @@ fun AlbumDetailScreen(
                             if (previous != null && track.discNumber != previous.discNumber) {
                                 Spacer(Modifier.height(n(40)))
                             }
-                            MonoTrackListItem(
-                                trackNumber = track.trackNumber,
-                                name = track.name,
-                                artists = track.artists.joinToString { it.name },
-                                durationMs = track.durationMs,
-                                onClick = { onPlayTrack(index) },
-                            )
+                            MonoSwipeToActionRow(
+                                onSwipeAction = { vm.addTrackToQueue(track.toMetadata()) },
+                            ) {
+                                MonoTrackListItem(
+                                    trackNumber = track.trackNumber,
+                                    name = track.name,
+                                    artists = track.artists.joinToString { it.name },
+                                    durationMs = track.durationMs,
+                                    onClick = { onPlayTrack(index) },
+                                )
+                            }
                             Spacer(Modifier.height(n(8)))
                         }
                     }

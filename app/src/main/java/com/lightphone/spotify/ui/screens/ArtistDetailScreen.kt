@@ -15,10 +15,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
 import com.lightphone.spotify.ui.components.MonoContentContainer
 import com.lightphone.spotify.ui.components.MonoMediaListItem
+import com.lightphone.spotify.ui.components.MonoSwipeToActionRow
 import com.lightphone.spotify.ui.components.MonoTrackListItem
 import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.theme.MonoColors
@@ -77,13 +79,17 @@ fun ArtistDetailScreen(
                         }
                         itemsIndexed(state.topTracks, key = { _, t -> t.id }) { index, track ->
                             Column {
-                                MonoTrackListItem(
-                                    trackNumber = index + 1,
-                                    name = track.name,
-                                    artists = track.artists.joinToString { it.name },
-                                    durationMs = track.durationMs,
-                                    onClick = { onPlayTopTrack(index) },
-                                )
+                                MonoSwipeToActionRow(
+                                    onSwipeAction = { vm.addTrackToQueue(track.toMetadata()) },
+                                ) {
+                                    MonoTrackListItem(
+                                        trackNumber = index + 1,
+                                        name = track.name,
+                                        artists = track.artists.joinToString { it.name },
+                                        durationMs = track.durationMs,
+                                        onClick = { onPlayTopTrack(index) },
+                                    )
+                                }
                                 Spacer(Modifier.height(n(8)))
                             }
                         }

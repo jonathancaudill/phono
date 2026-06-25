@@ -43,6 +43,20 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.io.File
 
+data class QueueUiItem(
+    val uri: String,
+    val title: String,
+    val artists: String,
+    val durationMs: Long,
+)
+
+data class QueueViewState(
+    val nowPlaying: QueueUiItem? = null,
+    val nextInQueue: List<QueueUiItem> = emptyList(),
+    val contextLabel: String? = null,
+    val nextFromContext: List<QueueUiItem> = emptyList(),
+)
+
 data class PlaybackUiState(
     val loggedIn: Boolean = false,
     val webApiReady: Boolean = false,
@@ -62,6 +76,7 @@ data class PlaybackUiState(
     val durationMs: Long = 0,
     val shuffleEnabled: Boolean = false,
     val repeatMode: RepeatMode = RepeatMode.OFF,
+    val queue: QueueViewState = QueueViewState(),
     val error: String? = null,
 )
 
@@ -268,7 +283,7 @@ class PlaybackController private constructor(
 
     // --- Transport ----------------------------------------------------------
 
-    fun play(tracks: List<TrackMetadata>, startIndex: Int) {
+    fun play(tracks: List<TrackMetadata>, startIndex: Int, contextLabel: String? = null) {
         tracks.forEach { trackMetadata[normalizeUri(it.uri)] = it }
         tracks.getOrNull(startIndex)?.let { track ->
             _state.update {
@@ -298,7 +313,7 @@ class PlaybackController private constructor(
                 onStateChanged?.invoke()
                 return@launch
             }
-            runCatching { engine.playUris(uris, startIndex.toUInt()) }
+            runCatching { engine.playUris(uris, startIndex.toUInt(), contextLabel) }
                 .onSuccess {
                     android.util.Log.i("Playback", "playUris index=$startIndex uri=${uris.getOrNull(startIndex)}")
                     _state.update { it.copy(isPlaying = true, isLoading = true) }
@@ -357,6 +372,98 @@ class PlaybackController private constructor(
         onStateChanged?.invoke()
     }
     fun setVolume(percent: Int) = scope.launch { engine.setVolume(percent.coerceIn(0, 100).toUByte()) }
+
+    fun refreshQueue() {
+        val snapshot = engine.getQueue()
+        val queue = QueueViewState(
+            nowPlaying = snapshot.nowPlayingUri?.let { uriToQueueItem(normalizeUri(it)) },
+            nextInQueue = snapshot.nextInQueue.map { uriToQueueItem(normalizeUri(it)) },
+            contextLabel = snapshot.contextLabel,
+            nextFromContext = snapshot.nextFromContext.map { uriToQueueItem(normalizeUri(it)) },
+        )
+        _state.update { it.copy(queue = queue) }
+        onStateChanged?.invoke()
+        enrichQueueMetadata(queue.allUris())
+    }
+
+    private fun QueueViewState.allUris(): List<String> =
+        buildList {
+            nowPlaying?.uri?.let { add(it) }
+            addAll(nextInQueue.map { it.uri })
+            addAll(nextFromContext.map { it.uri })
+        }
+
+    private fun uriToQueueItem(uri: String): QueueUiItem {
+        val cached = trackMetadata[uri]
+        return QueueUiItem(
+            uri = uri,
+            title = cached?.title ?: "…",
+            artists = cached?.artists.orEmpty(),
+            durationMs = cached?.durationMs ?: 0L,
+        )
+    }
+
+    private fun enrichQueueMetadata(uris: List<String>) {
+        val missing = uris.filter { trackMetadata[it] == null }
+        if (missing.isEmpty()) return
+        scope.launch {
+            for (uri in missing) {
+                runCatching { repository.trackMetadataForUri(uri) }
+                    .onSuccess { meta ->
+                        if (meta != null) {
+                            trackMetadata[uri] = meta
+                            refreshQueue()
+                        }
+                    }
+            }
+        }
+    }
+
+    fun addToQueue(track: TrackMetadata) {
+        trackMetadata[normalizeUri(track.uri)] = track
+        val snapshot = engine.getQueue()
+        if (_state.value.currentUri == null && snapshot.nowPlayingUri == null) {
+            play(listOf(track), 0, track.album.ifBlank { track.title })
+            return
+        }
+        scope.launch {
+            runCatching { engine.addToQueue(normalizeUri(track.uri)) }
+                .onSuccess { refreshQueue() }
+                .onFailure { e ->
+                    android.util.Log.w("Playback", "addToQueue failed", e)
+                    _state.update { it.copy(error = e.message) }
+                }
+        }
+    }
+
+    fun clearManualQueue() = scope.launch {
+        engine.clearManualQueue()
+        refreshQueue()
+    }
+
+    fun moveQueueItemUp(index: Int) = scope.launch {
+        runCatching { engine.moveQueueItemUp(index.toUInt()) }
+            .onSuccess { refreshQueue() }
+            .onFailure { e -> android.util.Log.w("Playback", "moveQueueItemUp failed", e) }
+    }
+
+    fun moveQueueItemDown(index: Int) = scope.launch {
+        runCatching { engine.moveQueueItemDown(index.toUInt()) }
+            .onSuccess { refreshQueue() }
+            .onFailure { e -> android.util.Log.w("Playback", "moveQueueItemDown failed", e) }
+    }
+
+    fun moveContextItemUp(index: Int) = scope.launch {
+        runCatching { engine.moveContextItemUp(index.toUInt()) }
+            .onSuccess { refreshQueue() }
+            .onFailure { e -> android.util.Log.w("Playback", "moveContextItemUp failed", e) }
+    }
+
+    fun moveContextItemDown(index: Int) = scope.launch {
+        runCatching { engine.moveContextItemDown(index.toUInt()) }
+            .onSuccess { refreshQueue() }
+            .onFailure { e -> android.util.Log.w("Playback", "moveContextItemDown failed", e) }
+    }
 
     fun loadSettings(): SettingsSnapshot = SettingsSnapshot(
         streamingQuality = engine.getStreamingQuality(),
@@ -597,6 +704,7 @@ class PlaybackController private constructor(
         _state.update { it.copy(currentUri = normalized, isLoading = false, error = null) }
         syncPlaybackModes()
         fetchMetadata(normalized)
+        refreshQueue()
         onStateChanged?.invoke()
     }
 
@@ -639,6 +747,10 @@ class PlaybackController private constructor(
 
     override fun onError(message: String) {
         _state.update { it.copy(error = message) }
+    }
+
+    override fun onQueueChanged() {
+        refreshQueue()
     }
 
     private fun fetchMetadata(uri: String) {

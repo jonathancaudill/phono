@@ -4,6 +4,7 @@ object Routes {
     const val Login = "login"
     const val Main = "main"
     const val Playing = "playing"
+    const val Queue = "queue"
     const val SearchResults = "search_results/{query}"
     const val Album = "album/{albumId}?title={title}"
     const val Artist = "artist/{artistId}"

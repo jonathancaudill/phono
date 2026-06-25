@@ -26,9 +26,11 @@ import androidx.compose.ui.unit.Constraints
 import com.lightphone.spotify.data.SearchFilter
 import com.lightphone.spotify.data.SearchResultItem
 import com.lightphone.spotify.data.SearchResults
+import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
 import com.lightphone.spotify.ui.components.MonoContentContainer
+import com.lightphone.spotify.ui.components.MonoSwipeToActionRow
 import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.tap
 import com.lightphone.spotify.ui.theme.MonoColors
@@ -44,7 +46,7 @@ fun SearchResultsScreen(
     onOpenAlbum: (String, String) -> Unit,
     onOpenArtist: (String) -> Unit,
     onPlayTrack: (SearchResultItem.Track) -> Unit,
-    onPlayPlaylist: (String) -> Unit,
+    onPlayPlaylist: (String, String?) -> Unit,
 ) {
     val state by vm.search.collectAsState()
 
@@ -84,14 +86,31 @@ fun SearchResultsScreen(
                         val items = results.displayFor(state.filter)
                         CustomScrollView(verticalArrangement = Arrangement.spacedBy(n(8))) {
                             items(items, key = { "${it::class.simpleName}-${it.id}" }) { item ->
-                                SearchResultRow(item) {
-                                    vm.openSearchResult(
-                                        item,
-                                        onOpenAlbum,
-                                        onOpenArtist,
-                                        onPlayTrack,
-                                        onPlayPlaylist,
-                                    )
+                                when (item) {
+                                    is SearchResultItem.Track -> MonoSwipeToActionRow(
+                                        onSwipeAction = {
+                                            vm.addTrackToQueue(item.track.toMetadata())
+                                        },
+                                    ) {
+                                        SearchResultRow(item) {
+                                            vm.openSearchResult(
+                                                item,
+                                                onOpenAlbum,
+                                                onOpenArtist,
+                                                onPlayTrack,
+                                                onPlayPlaylist,
+                                            )
+                                        }
+                                    }
+                                    else -> SearchResultRow(item) {
+                                        vm.openSearchResult(
+                                            item,
+                                            onOpenAlbum,
+                                            onOpenArtist,
+                                            onPlayTrack,
+                                            onPlayPlaylist,
+                                        )
+                                    }
                                 }
                             }
                         }
