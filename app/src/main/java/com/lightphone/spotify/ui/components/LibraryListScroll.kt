@@ -13,7 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
 import kotlinx.coroutines.flow.distinctUntilChanged
 
@@ -58,7 +58,7 @@ fun LazyItemScope.LibraryListRunway(appending: Boolean) {
         contentAlignment = Alignment.Center,
     ) {
         if (appending) {
-            CircularProgressIndicator(color = MonoColors.Foreground)
+            CircularProgressIndicator(color = PhonoColors.Foreground)
         }
     }
 }

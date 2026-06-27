@@ -1,4 +1,4 @@
-# Spotify Client for Light Phone III
+# phono — Spotify Client for Light Phone III
 
 Thanks to **[Vandam Dinh](https://github.com/vandamd)** — especially
 [Echo](https://github.com/vandamd/echo) and the
@@ -17,13 +17,13 @@ No official Spotify app required.
 
 ## How this differs from Echo
 
-| | **mono** | **Echo** |
+| | **phono** | **Echo** |
 |---|---|---|
 | Playback | librespot in-process | Spotify Android SDK (official app installed) |
 | Metadata | Web API (your dev app) | Web API (your dev app) |
 | Spotify app required | No | Yes |
 
-Both need a Spotify Developer app for library/search/browse. mono additionally needs a
+Both need a Spotify Developer app for library/search/browse. phono additionally needs a
 one-time Keymaster OAuth login (Step 1) for streaming.
 
 ## Setup (required before first use)

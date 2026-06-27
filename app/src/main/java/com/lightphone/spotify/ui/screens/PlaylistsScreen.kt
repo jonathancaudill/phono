@@ -23,11 +23,11 @@ import androidx.compose.ui.Modifier
 import com.lightphone.spotify.data.PlaylistFilter
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.LibraryInfiniteList
-import com.lightphone.spotify.ui.components.MonoContentContainer
-import com.lightphone.spotify.ui.components.MonoMediaListItem
+import com.lightphone.spotify.ui.components.PhonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoMediaListItem
 import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.tap
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -51,7 +51,7 @@ fun PlaylistsScreen(
         listState.scrollToItem(0)
     }
 
-    MonoContentContainer(
+    PhonoContentContainer(
         hideBackButton = true,
         leftIcon = Icons.Default.Add,
         onLeftIconClick = onCreatePlaylist,
@@ -100,7 +100,7 @@ fun PlaylistsScreen(
                         itemKey = { it.playlist_id },
                         onEnsureBufferAhead = vm::ensurePlaylistsBufferAhead,
                     ) { _, playlist ->
-                        MonoMediaListItem(
+                        PhonoMediaListItem(
                             primaryText = playlist.name,
                             secondaryText = playlist.owner_name,
                             showImage = false,
@@ -145,7 +145,7 @@ private fun PlaylistFilterChip(
 ) {
     Box(
         modifier = Modifier
-            .background(if (active) MonoColors.Foreground else MonoColors.PlaceholderBg)
+            .background(if (active) PhonoColors.Foreground else PhonoColors.PlaceholderBg)
             .tap { onSelect(filter) }
             .padding(horizontal = n(14), vertical = n(8)),
     ) {
@@ -153,7 +153,7 @@ private fun PlaylistFilterChip(
             filter.label,
             size = 16,
             lineHeight = 18,
-            color = if (active) MonoColors.Background else MonoColors.Foreground,
+            color = if (active) PhonoColors.Background else PhonoColors.Foreground,
             maxLines = 1,
         )
     }

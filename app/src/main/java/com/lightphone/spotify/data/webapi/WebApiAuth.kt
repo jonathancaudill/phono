@@ -37,7 +37,7 @@ class WebApiAuth(private val context: Context) {
             "user-read-private",
         )
 
-        private const val PREFS_NAME = "mono_web_api_auth"
+        private const val PREFS_NAME = "phono_web_api_auth"
         private const val KEY_CLIENT_ID = "client_id"
         private const val KEY_CLIENT_SECRET = "client_secret"
         private const val KEY_ACCESS_TOKEN = "access_token"

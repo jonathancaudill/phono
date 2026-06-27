@@ -21,12 +21,12 @@ fun ContextMenuHost(
     }
 
     if (state.showCopied) {
-        MonoCopiedOverlay(onDismiss = vm::dismissCopiedOverlay)
+        PhonoCopiedOverlay(onDismiss = vm::dismissCopiedOverlay)
         return
     }
 
     state.deleteConfirm?.let { confirm ->
-        MonoDeleteConfirmOverlay(
+        PhonoDeleteConfirmOverlay(
             message = "Deleting this playlist will permanently remove it from your library, are you sure?",
             onConfirm = { vm.confirmDeletePlaylist() },
             onCancel = vm::cancelDeletePlaylist,
@@ -36,7 +36,7 @@ fun ContextMenuHost(
 
     state.target?.let { target ->
         val items = vm.contextMenuItemsFor(target, playlists.currentUserId)
-        MonoContextMenuOverlay(
+        PhonoContextMenuOverlay(
             items = items,
             onItemClick = { item -> vm.onContextMenuAction(item.action) },
             onDismiss = vm::dismissContextMenu,

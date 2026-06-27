@@ -18,12 +18,12 @@ import androidx.compose.ui.Modifier
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
-import com.lightphone.spotify.ui.components.MonoContentContainer
-import com.lightphone.spotify.ui.components.MonoMediaListItem
-import com.lightphone.spotify.ui.components.MonoSwipeToActionRow
-import com.lightphone.spotify.ui.components.MonoTrackListItem
+import com.lightphone.spotify.ui.components.PhonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoMediaListItem
+import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
+import com.lightphone.spotify.ui.components.PhonoTrackListItem
 import com.lightphone.spotify.ui.components.StyledText
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
 
 @Composable
@@ -40,7 +40,7 @@ fun ArtistDetailScreen(
 
     val artist = state.artist
 
-    MonoContentContainer(
+    PhonoContentContainer(
         title = artist?.name ?: "Artist",
         hideBackButton = false,
         onBack = onBack,
@@ -63,7 +63,7 @@ fun ArtistDetailScreen(
                             StyledText(
                                 "${followers / 1000}K followers",
                                 size = 16,
-                                color = MonoColors.Placeholder,
+                                color = PhonoColors.Placeholder,
                                 modifier = Modifier.padding(bottom = n(16)),
                             )
                         }
@@ -73,16 +73,16 @@ fun ArtistDetailScreen(
                             StyledText(
                                 "Popular",
                                 size = 20,
-                                color = MonoColors.Foreground,
+                                color = PhonoColors.Foreground,
                                 modifier = Modifier.padding(bottom = n(8)),
                             )
                         }
                         itemsIndexed(state.topTracks, key = { _, t -> t.id }) { index, track ->
                             Column {
-                                MonoSwipeToActionRow(
+                                PhonoSwipeToActionRow(
                                     onSwipeAction = { vm.addTrackToQueue(track.toMetadata()) },
                                 ) {
-                                    MonoTrackListItem(
+                                    PhonoTrackListItem(
                                         trackNumber = index + 1,
                                         name = track.name,
                                         artists = track.artists.joinToString { it.name },
@@ -102,13 +102,13 @@ fun ArtistDetailScreen(
                             StyledText(
                                 "Albums",
                                 size = 20,
-                                color = MonoColors.Foreground,
+                                color = PhonoColors.Foreground,
                                 modifier = Modifier.padding(top = n(16), bottom = n(8)),
                             )
                         }
                         itemsIndexed(state.albums, key = { _, a -> a.id }) { _, album ->
                             Column {
-                                MonoMediaListItem(
+                                PhonoMediaListItem(
                                     primaryText = album.name,
                                     secondaryText = album.artists.joinToString { it.name },
                                     showImage = false,

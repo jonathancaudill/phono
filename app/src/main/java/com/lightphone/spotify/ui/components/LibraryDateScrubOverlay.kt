@@ -25,13 +25,15 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.lightphone.spotify.debug.DebugSessionLog
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
 import com.lightphone.spotify.ui.theme.nSp
 import kotlin.math.abs
 
+/** Visual scrollbar track width (drawn at the screen's right gutter). */
 internal val SCRUBBAR_TOUCH_WIDTH: Dp = n(24)
-internal val GRABBABLE_STRIP_TOUCH_WIDTH: Dp = n(72)
+/** Empty margin to the right of list text — matches [PhonoContentContainer] horizontal padding. */
+internal val SCROLLBAR_SCREEN_GUTTER: Dp = n(20)
 internal val SCRUB_YEARS_COLUMN_WIDTH: Dp = n(56)
 internal val SCRUB_MONTHS_COLUMN_WIDTH: Dp = n(168)
 private val SCRUB_COLUMN_GAP: Dp = n(20)
@@ -67,7 +69,8 @@ internal fun LibraryAlphaScrubVisuals(
     controller: ScrubController,
     alphaIndex: LibraryAlphaIndex,
     modifier: Modifier = Modifier,
-    scrimColor: Color = MonoColors.Background,
+    screenEdgeGutter: Dp = SCROLLBAR_SCREEN_GUTTER,
+    scrimColor: Color = PhonoColors.Background,
 ) {
     if (!controller.overlayOpen || controller.alphaSelection == null) return
 
@@ -84,7 +87,7 @@ internal fun LibraryAlphaScrubVisuals(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .fillMaxHeight()
-                .padding(end = SCRUBBAR_TOUCH_WIDTH)
+                .padding(end = screenEdgeGutter)
                 .width(SCRUB_YEARS_COLUMN_WIDTH),
         )
     }
@@ -114,7 +117,8 @@ internal fun LibraryScrubVisuals(
     controller: ScrubController,
     dateIndex: LibraryDateIndex,
     modifier: Modifier = Modifier,
-    scrimColor: Color = MonoColors.Background,
+    screenEdgeGutter: Dp = SCROLLBAR_SCREEN_GUTTER,
+    scrimColor: Color = PhonoColors.Background,
 ) {
     val open = controller.overlayOpen
     val selection = controller.selection
@@ -131,7 +135,7 @@ internal fun LibraryScrubVisuals(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .fillMaxHeight()
-                .padding(end = SCRUBBAR_TOUCH_WIDTH),
+                .padding(end = screenEdgeGutter),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             val monthsInYear = dateIndex.monthsForYear(selection.selectedYear)
@@ -210,9 +214,9 @@ private fun ScrubWheelColumn(
                     else -> Triple(centerTextSize - 6, 0.25f, 3.dp)
                 }
                 val textColor = if (distanceFromCenter == 0) {
-                    MonoColors.Foreground
+                    PhonoColors.Foreground
                 } else {
-                    MonoColors.InactiveTab
+                    PhonoColors.InactiveTab
                 }
                 val blurRadiusPx = with(density) { blurRadiusDp.toPx() }
                 val lineHeight = with(density) { nSp(textSize).toDp() }
@@ -257,9 +261,9 @@ private fun ScrubLabelColumn(
                 modifier = Modifier.padding(vertical = n(4)),
                 size = 15,
                 color = if (index == selectedIndex) {
-                    MonoColors.Foreground
+                    PhonoColors.Foreground
                 } else {
-                    MonoColors.InactiveTab
+                    PhonoColors.InactiveTab
                 },
             )
         }

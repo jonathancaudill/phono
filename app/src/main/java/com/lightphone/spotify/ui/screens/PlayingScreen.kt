@@ -45,12 +45,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.lightphone.spotify.ffi.RepeatMode
 import com.lightphone.spotify.playback.PlaybackUiState
 import com.lightphone.spotify.ui.AppViewModel
-import com.lightphone.spotify.ui.components.MonoContentContainer
-import com.lightphone.spotify.ui.components.MonoFallbackImage
+import com.lightphone.spotify.ui.components.PhonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoFallbackImage
 import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.formatTime
 import com.lightphone.spotify.ui.components.tap
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
 
 @Composable
@@ -70,7 +70,7 @@ fun PlayingScreen(
 
     val hasTrack = playback.currentUri != null || playback.title != null
 
-    MonoContentContainer(
+    PhonoContentContainer(
         title = " ",
         hideBackButton = false,
         onBack = onBack,
@@ -94,7 +94,7 @@ fun PlayingScreen(
                     .fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                MonoFallbackImage(
+                PhonoFallbackImage(
                     imageUrl = playback.artUrl,
                     placeholderIcon = Icons.Default.MusicNote,
                     crossfade = false,
@@ -112,7 +112,7 @@ fun PlayingScreen(
                         if (hasTrack) playback.title.orEmpty() else "No song playing",
                         size = 22,
                         lineHeight = 24,
-                        color = MonoColors.Foreground,
+                        color = PhonoColors.Foreground,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         textAlign = TextAlign.Center,
@@ -130,7 +130,7 @@ fun PlayingScreen(
                         if (hasTrack) playback.artist.orEmpty() else "Go back and play something!",
                         size = 14,
                         lineHeight = 16,
-                        color = MonoColors.Foreground,
+                        color = PhonoColors.Foreground,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         textAlign = TextAlign.Center,
@@ -159,7 +159,7 @@ fun PlayingScreen(
                             Icon(
                                 Icons.Default.PlaylistAdd,
                                 contentDescription = "Add to playlist",
-                                tint = MonoColors.Foreground,
+                                tint = PhonoColors.Foreground,
                                 modifier = Modifier
                                     .size(n(30))
                                     .tap { onAddToPlaylist(playback.currentUri!!) },
@@ -168,7 +168,7 @@ fun PlayingScreen(
                         Icon(
                             if (extras.isTrackSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             contentDescription = "Like",
-                            tint = MonoColors.Foreground,
+                            tint = PhonoColors.Foreground,
                             modifier = Modifier
                                 .size(n(30))
                                 .tap(enabled = !extras.savePending) { vm.toggleCurrentTrackSave() },
@@ -209,14 +209,14 @@ private fun ProgressBar(playback: PlaybackUiState, onSeek: (Long) -> Unit) {
                     .fillMaxWidth()
                     .height(n(2))
                     .align(Alignment.Center)
-                    .background(MonoColors.Foreground),
+                    .background(PhonoColors.Foreground),
             )
             Box(
                 Modifier
                     .fillMaxWidth(progress)
                     .fillMaxHeight()
                     .align(Alignment.CenterStart)
-                    .background(MonoColors.Foreground),
+                    .background(PhonoColors.Foreground),
             )
         }
         Row(
@@ -225,8 +225,8 @@ private fun ProgressBar(playback: PlaybackUiState, onSeek: (Long) -> Unit) {
                 .padding(top = n(3), bottom = n(6)),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            StyledText(formatTime(playback.positionMs), size = 12, color = MonoColors.Foreground)
-            StyledText(formatTime(duration), size = 12, color = MonoColors.Foreground)
+            StyledText(formatTime(playback.positionMs), size = 12, color = PhonoColors.Foreground)
+            StyledText(formatTime(duration), size = 12, color = PhonoColors.Foreground)
         }
     }
 }
@@ -249,19 +249,19 @@ private fun PlaybackControls(playback: PlaybackUiState, vm: AppViewModel) {
         Icon(
             Icons.Default.SkipPrevious,
             contentDescription = "Previous",
-            tint = MonoColors.Foreground,
+            tint = PhonoColors.Foreground,
             modifier = Modifier.size(n(52)).tap { vm.previous() },
         )
         Icon(
             if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
             contentDescription = "Play/Pause",
-            tint = MonoColors.Foreground,
+            tint = PhonoColors.Foreground,
             modifier = Modifier.size(n(52)).tap { if (playback.isPlaying) vm.pause() else vm.resume() },
         )
         Icon(
             Icons.Default.SkipNext,
             contentDescription = "Next",
-            tint = MonoColors.Foreground,
+            tint = PhonoColors.Foreground,
             modifier = Modifier.size(n(52)).tap { vm.next() },
         )
         PlaybackModeIcon(
@@ -290,7 +290,7 @@ private fun PlaybackModeIcon(
         Icon(
             icon,
             contentDescription = contentDescription,
-            tint = MonoColors.Foreground,
+            tint = PhonoColors.Foreground,
             modifier = Modifier.size(n(30)),
         )
         Spacer(Modifier.height(n(4)))
@@ -298,7 +298,7 @@ private fun PlaybackModeIcon(
             Box(
                 Modifier
                     .size(n(5))
-                    .background(MonoColors.Foreground, CircleShape),
+                    .background(PhonoColors.Foreground, CircleShape),
             )
         } else {
             Spacer(Modifier.height(n(5)))

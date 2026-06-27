@@ -11,9 +11,9 @@
     <application
         android:name=".App"
         android:allowBackup="false"
-        android:label="Spotify"
+        android:label="phono"
         android:supportsRtl="true"
-        android:theme="@style/Theme.SpotifyLP3">
+        android:theme="@style/Theme.Phono">
 
         <activity
             android:name=".MainActivity"

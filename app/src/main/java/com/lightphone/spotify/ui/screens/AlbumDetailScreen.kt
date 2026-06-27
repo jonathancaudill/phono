@@ -19,9 +19,9 @@ import androidx.compose.ui.Modifier
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
-import com.lightphone.spotify.ui.components.MonoContentContainer
-import com.lightphone.spotify.ui.components.MonoSwipeToActionRow
-import com.lightphone.spotify.ui.components.MonoTrackListItem
+import com.lightphone.spotify.ui.components.PhonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
+import com.lightphone.spotify.ui.components.PhonoTrackListItem
 import com.lightphone.spotify.ui.theme.n
 
 @Composable
@@ -41,7 +41,7 @@ fun AlbumDetailScreen(
     val title = album?.name ?: fallbackTitle
     val tracks = album?.tracks?.items.orEmpty()
 
-    MonoContentContainer(
+    PhonoContentContainer(
         title = title,
         hideBackButton = false,
         onBack = onBack,
@@ -70,10 +70,10 @@ fun AlbumDetailScreen(
                             if (previous != null && track.discNumber != previous.discNumber) {
                                 Spacer(Modifier.height(n(40)))
                             }
-                            MonoSwipeToActionRow(
+                            PhonoSwipeToActionRow(
                                 onSwipeAction = { vm.addTrackToQueue(track.toMetadata()) },
                             ) {
-                                MonoTrackListItem(
+                                PhonoTrackListItem(
                                     trackNumber = track.trackNumber,
                                     name = track.name,
                                     artists = track.artists.joinToString { it.name },

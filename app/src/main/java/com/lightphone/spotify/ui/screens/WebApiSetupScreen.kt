@@ -26,10 +26,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.viewinterop.AndroidView
 import com.lightphone.spotify.data.webapi.WebApiAuth
 import com.lightphone.spotify.ui.AppViewModel
-import com.lightphone.spotify.ui.components.MonoContentContainer
-import com.lightphone.spotify.ui.components.MonoStyledButton
+import com.lightphone.spotify.ui.components.PhonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoStyledButton
 import com.lightphone.spotify.ui.components.StyledText
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.PublicSans
 import com.lightphone.spotify.ui.theme.n
 import com.lightphone.spotify.ui.theme.nSp
@@ -43,7 +43,7 @@ fun WebApiSetupScreen(vm: AppViewModel) {
     var authUrl by remember { mutableStateOf<String?>(null) }
 
     if (showWebView && authUrl != null) {
-        Box(Modifier.fillMaxSize().background(MonoColors.Background)) {
+        Box(Modifier.fillMaxSize().background(PhonoColors.Background)) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { context ->
@@ -76,17 +76,17 @@ fun WebApiSetupScreen(vm: AppViewModel) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(MonoColors.Background.copy(alpha = 0.92f)),
+                        .background(PhonoColors.Background.copy(alpha = 0.92f)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    StyledText(message, size = 16, color = MonoColors.Error, modifier = Modifier.padding(n(24)))
+                    StyledText(message, size = 16, color = PhonoColors.Error, modifier = Modifier.padding(n(24)))
                 }
             }
         }
         return
     }
 
-    MonoContentContainer(
+    PhonoContentContainer(
         title = "Step 2: Web API",
         hideBackButton = true,
         rightIconVisible = false,
@@ -97,12 +97,12 @@ fun WebApiSetupScreen(vm: AppViewModel) {
         StyledText(
             "Enter your Spotify Developer app credentials. Create one at developer.spotify.com/dashboard.",
             size = 16,
-            color = MonoColors.Placeholder,
+            color = PhonoColors.Placeholder,
         )
         StyledText(
             "Redirect URI (copy exactly into dashboard):\n${WebApiAuth.REDIRECT_URI}\nPackage: com.lightphone.spotify",
             size = 14,
-            color = MonoColors.Placeholder,
+            color = PhonoColors.Placeholder,
         )
         UnderlinedField(
             value = clientId,
@@ -116,7 +116,7 @@ fun WebApiSetupScreen(vm: AppViewModel) {
             password = true,
         )
         Spacer(Modifier.height(n(4)))
-        MonoStyledButton(
+        PhonoStyledButton(
             text = "Connect Web API",
             onClick = {
                 if (clientId.isNotBlank() && clientSecret.isNotBlank()) {
@@ -127,7 +127,7 @@ fun WebApiSetupScreen(vm: AppViewModel) {
             },
         )
         playback.error?.let { message ->
-            StyledText(message, size = 16, color = MonoColors.Error)
+            StyledText(message, size = 16, color = PhonoColors.Error)
         }
     }
 }
@@ -148,19 +148,19 @@ private fun UnderlinedField(
             BasicTextField(
                 value = value,
                 onValueChange = onChange,
-                textStyle = TextStyle(color = MonoColors.Foreground, fontSize = nSp(24), fontFamily = PublicSans),
-                cursorBrush = SolidColor(MonoColors.Foreground),
+                textStyle = TextStyle(color = PhonoColors.Foreground, fontSize = nSp(24), fontFamily = PublicSans),
+                cursorBrush = SolidColor(PhonoColors.Foreground),
                 singleLine = true,
                 visualTransformation = if (password) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
                 modifier = Modifier.fillMaxWidth(),
                 decorationBox = { inner ->
                     if (value.isEmpty()) {
-                        StyledText(placeholder, size = 24, color = MonoColors.Placeholder)
+                        StyledText(placeholder, size = 24, color = PhonoColors.Placeholder)
                     }
                     inner()
                 },
             )
         }
-        Box(Modifier.fillMaxWidth().height(n(1)).background(MonoColors.Foreground))
+        Box(Modifier.fillMaxWidth().height(n(1)).background(PhonoColors.Foreground))
     }
 }

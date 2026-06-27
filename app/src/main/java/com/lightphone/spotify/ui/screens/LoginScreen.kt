@@ -21,7 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.StyledText
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
 
 private const val REDIRECT_PREFIX = "http://127.0.0.1:8898/login"
@@ -33,18 +33,18 @@ fun LoginScreen(vm: AppViewModel) {
     LaunchedEffect(Unit) {
         authUrl = vm.beginLogin()
     }
-    Box(Modifier.fillMaxSize().background(MonoColors.Background)) {
+    Box(Modifier.fillMaxSize().background(PhonoColors.Background)) {
         Column(Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = n(22), vertical = n(8)),
             ) {
-                StyledText("Step 1: Playback", size = 22, color = MonoColors.Foreground)
+                StyledText("Step 1: Playback", size = 22, color = PhonoColors.Foreground)
                 StyledText(
                     "Sign in with Spotify for audio playback (librespot).",
                     size = 16,
-                    color = MonoColors.Placeholder,
+                    color = PhonoColors.Placeholder,
                 )
             }
             if (authUrl != null) {
@@ -87,18 +87,18 @@ fun LoginScreen(vm: AppViewModel) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(MonoColors.Background.copy(alpha = 0.92f)),
+                    .background(PhonoColors.Background.copy(alpha = 0.92f)),
                 contentAlignment = Alignment.Center,
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.padding(n(24)),
                 ) {
-                    StyledText("Login failed", size = 22, color = MonoColors.Foreground)
+                    StyledText("Login failed", size = 22, color = PhonoColors.Foreground)
                     StyledText(
                         message,
                         size = 16,
-                        color = MonoColors.Error,
+                        color = PhonoColors.Error,
                         modifier = Modifier.padding(top = n(12)),
                     )
                 }

@@ -28,11 +28,11 @@ import androidx.compose.ui.text.TextStyle
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
-import com.lightphone.spotify.ui.components.MonoContentContainer
-import com.lightphone.spotify.ui.components.MonoSwipeToActionRow
-import com.lightphone.spotify.ui.components.MonoTrackEditActions
-import com.lightphone.spotify.ui.components.MonoTrackListItem
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.components.PhonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
+import com.lightphone.spotify.ui.components.PhonoTrackEditActions
+import com.lightphone.spotify.ui.components.PhonoTrackListItem
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.PublicSans
 import com.lightphone.spotify.ui.theme.n
 import com.lightphone.spotify.ui.theme.nSp
@@ -66,7 +66,7 @@ fun PlaylistDetailScreen(
     val title = state.detail?.name ?: fallbackTitle
     val tracks = state.tracks
 
-    MonoContentContainer(
+    PhonoContentContainer(
         title = title,
         hideBackButton = false,
         onBack = onBack,
@@ -159,14 +159,14 @@ private fun PlaylistTrackRow(
     onSwipeToQueue: () -> Unit,
 ) {
     val item = @Composable {
-        MonoTrackListItem(
+        PhonoTrackListItem(
             name = name,
             artists = artists,
             durationMs = durationMs,
             onClick = onPlay,
             onLongClick = onLongClick,
             editActions = if (editMode) {
-                MonoTrackEditActions(
+                PhonoTrackEditActions(
                     mutating = mutating,
                     canMoveUp = canMoveUp,
                     canMoveDown = canMoveDown,
@@ -182,7 +182,7 @@ private fun PlaylistTrackRow(
     if (editMode) {
         item()
     } else {
-        MonoSwipeToActionRow(onSwipeAction = onSwipeToQueue) {
+        PhonoSwipeToActionRow(onSwipeAction = onSwipeToQueue) {
             item()
         }
     }
@@ -196,7 +196,7 @@ private fun RenamePlaylistOverlay(
 ) {
     var name by remember(initialName) { mutableStateOf(initialName) }
 
-    MonoContentContainer(
+    PhonoContentContainer(
         title = "Rename playlist",
         hideBackButton = false,
         onBack = onCancel,
@@ -208,17 +208,17 @@ private fun RenamePlaylistOverlay(
             value = name,
             onValueChange = { name = it },
             textStyle = TextStyle(
-                color = MonoColors.Foreground,
+                color = PhonoColors.Foreground,
                 fontSize = nSp(22),
                 fontFamily = PublicSans,
             ),
-            cursorBrush = SolidColor(MonoColors.Foreground),
+            cursorBrush = SolidColor(PhonoColors.Foreground),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = n(12)),
             singleLine = true,
         )
-        com.lightphone.spotify.ui.components.MonoStyledButton(
+        com.lightphone.spotify.ui.components.PhonoStyledButton(
             text = "Save",
             onClick = { onConfirm(name.trim()) },
         )

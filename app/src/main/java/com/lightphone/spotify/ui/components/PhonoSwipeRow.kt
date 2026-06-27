@@ -25,7 +25,7 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
 import kotlin.math.roundToInt
 
@@ -34,7 +34,7 @@ import kotlin.math.roundToInt
  * right edge free for the library scrollbar).
  */
 @Composable
-fun MonoSwipeToActionRow(
+fun PhonoSwipeToActionRow(
     onSwipeAction: () -> Unit,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
@@ -51,7 +51,7 @@ fun MonoSwipeToActionRow(
     )
 
     val revealProgress = (animatedOffset / actionWidthPx).coerceIn(0f, 1f)
-    val iconColor = lerp(MonoColors.Placeholder, MonoColors.Foreground, revealProgress)
+    val iconColor = lerp(PhonoColors.Placeholder, PhonoColors.Foreground, revealProgress)
 
     Box(
         modifier = modifier
@@ -90,7 +90,7 @@ fun MonoSwipeToActionRow(
             modifier = Modifier
                 .offset { IntOffset(animatedOffset.roundToInt(), 0) }
                 .fillMaxWidth()
-                .background(MonoColors.Background),
+                .background(PhonoColors.Background),
         ) {
             content()
         }

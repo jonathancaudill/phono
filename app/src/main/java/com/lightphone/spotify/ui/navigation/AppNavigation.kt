@@ -26,9 +26,9 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.ContextMenuHost
-import com.lightphone.spotify.ui.components.DefaultMonoTabs
-import com.lightphone.spotify.ui.components.MonoNavbar
-import com.lightphone.spotify.ui.components.MonoTab
+import com.lightphone.spotify.ui.components.DefaultPhonoTabs
+import com.lightphone.spotify.ui.components.PhonoNavbar
+import com.lightphone.spotify.ui.components.PhonoTab
 import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.theme.n
 import com.lightphone.spotify.ui.screens.AlbumDetailScreen
@@ -46,8 +46,8 @@ import com.lightphone.spotify.ui.screens.PlaylistsScreen
 import com.lightphone.spotify.ui.screens.SearchResultsScreen
 import com.lightphone.spotify.ui.screens.SearchScreen
 import com.lightphone.spotify.ui.screens.SettingsScreen
-import com.lightphone.spotify.ui.theme.MonoColors
-import com.lightphone.spotify.ui.theme.MonoTheme
+import com.lightphone.spotify.ui.theme.PhonoColors
+import com.lightphone.spotify.ui.theme.PhonoTheme
 import java.net.URLDecoder
 
 private const val OverlayRoot = "overlay_root"
@@ -55,12 +55,12 @@ private const val OverlayRoot = "overlay_root"
 @Composable
 fun SpotifyApp(vm: AppViewModel = viewModel()) {
     val playback by vm.playback.collectAsState()
-    MonoTheme {
+    PhonoTheme {
         when {
             !playback.authInitialized -> Box(
                 Modifier
                     .fillMaxSize()
-                    .background(MonoColors.Background),
+                    .background(PhonoColors.Background),
             )
             !playback.loggedIn -> LoginScreen(vm)
             !playback.webApiReady -> WebApiSetupScreen(vm)
@@ -83,20 +83,20 @@ private fun MainNavigation(vm: AppViewModel) {
     val overlayRoute = overlayBackStackEntry?.destination?.route?.substringBefore('?')
     val playback by vm.playback.collectAsState()
 
-    val currentTab = DefaultMonoTabs.firstOrNull { it.route == tabRoute } ?: MonoTab.Liked
+    val currentTab = DefaultPhonoTabs.firstOrNull { it.route == tabRoute } ?: PhonoTab.Liked
     val showOverlayLayer = overlayRoute != null && overlayRoute != OverlayRoot
     val showOfflineStrip = !playback.networkOnline
 
     Column(
         Modifier
             .fillMaxSize()
-            .background(MonoColors.Background),
+            .background(PhonoColors.Background),
     ) {
         playback.statusMessage?.let { msg ->
             StyledText(
                 msg,
                 size = 14,
-                color = MonoColors.Warning,
+                color = PhonoColors.Warning,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = n(12), vertical = n(4)),
@@ -107,7 +107,7 @@ private fun MainNavigation(vm: AppViewModel) {
                 StyledText(
                     err,
                     size = 14,
-                    color = MonoColors.Error,
+                    color = PhonoColors.Error,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = n(12), vertical = n(4)),
@@ -119,7 +119,7 @@ private fun MainNavigation(vm: AppViewModel) {
             Column(Modifier.fillMaxSize()) {
                 NavHost(
                     navController = tabNavController,
-                    startDestination = MonoTab.Liked.route,
+                    startDestination = PhonoTab.Liked.route,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth(),
@@ -129,7 +129,7 @@ private fun MainNavigation(vm: AppViewModel) {
                     popExitTransition = { ExitTransition.None },
                     sizeTransform = { null },
                 ) {
-                    composable(MonoTab.Liked.route) {
+                    composable(PhonoTab.Liked.route) {
                         LikedSongsScreen(
                             vm = vm,
                             onOpenPlaying = { overlayNav.navigate(Routes.Playing) },
@@ -139,7 +139,7 @@ private fun MainNavigation(vm: AppViewModel) {
                             },
                         )
                     }
-                    composable(MonoTab.Albums.route) {
+                    composable(PhonoTab.Albums.route) {
                         AlbumsScreen(
                             vm = vm,
                             onOpenPlaying = { overlayNav.navigate(Routes.Playing) },
@@ -148,7 +148,7 @@ private fun MainNavigation(vm: AppViewModel) {
                             },
                         )
                     }
-                    composable(MonoTab.Playlists.route) {
+                    composable(PhonoTab.Playlists.route) {
                         PlaylistsScreen(
                             vm = vm,
                             onOpenPlaying = { overlayNav.navigate(Routes.Playing) },
@@ -161,7 +161,7 @@ private fun MainNavigation(vm: AppViewModel) {
                             },
                         )
                     }
-                    composable(MonoTab.Search.route) {
+                    composable(PhonoTab.Search.route) {
                         SearchScreen(
                             vm = vm,
                             onSubmit = { query ->
@@ -169,7 +169,7 @@ private fun MainNavigation(vm: AppViewModel) {
                             },
                         )
                     }
-                    composable(MonoTab.Settings.route) {
+                    composable(PhonoTab.Settings.route) {
                         SettingsScreen(
                             vm = vm,
                             onLogout = { vm.logout() },
@@ -177,12 +177,12 @@ private fun MainNavigation(vm: AppViewModel) {
                     }
                 }
 
-                MonoNavbar(
-                    tabs = DefaultMonoTabs,
+                PhonoNavbar(
+                    tabs = DefaultPhonoTabs,
                     currentTab = currentTab,
                     onTabSelected = { tab ->
                         tabNavController.navigate(tab.route) {
-                            popUpTo(MonoTab.Liked.route) { saveState = true }
+                            popUpTo(PhonoTab.Liked.route) { saveState = true }
                             launchSingleTop = true
                             restoreState = true
                         }

@@ -25,12 +25,12 @@ import com.lightphone.spotify.ffi.NormalizationType
 import com.lightphone.spotify.ffi.StreamingQuality
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
-import com.lightphone.spotify.ui.components.MonoContentContainer
-import com.lightphone.spotify.ui.components.MonoStyledButton
-import com.lightphone.spotify.ui.components.MonoToggleSwitch
+import com.lightphone.spotify.ui.components.PhonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoStyledButton
+import com.lightphone.spotify.ui.components.PhonoToggleSwitch
 import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.tap
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.PublicSans
 import com.lightphone.spotify.ui.theme.n
 import com.lightphone.spotify.ui.theme.nSp
@@ -44,7 +44,7 @@ fun SettingsScreen(
     var confirm by remember { mutableStateOf<ConfirmRequest?>(null) }
 
     confirm?.let { request ->
-        MonoConfirmScreen(
+        PhonoConfirmScreen(
             title = request.title,
             message = request.message,
             confirmText = request.confirmText,
@@ -57,7 +57,7 @@ fun SettingsScreen(
         return
     }
 
-    MonoContentContainer(
+    PhonoContentContainer(
         title = "Settings",
         hideBackButton = true,
         rightIconVisible = false,
@@ -65,12 +65,12 @@ fun SettingsScreen(
         contentGap = n(0),
         modifier = Modifier.fillMaxSize(),
     ) {
-        CustomScrollView(modifier = Modifier.weight(1f)) {
+        CustomScrollView(modifier = Modifier.weight(1f), screenEdgeGutter = n(37)) {
             item("body") {
                 Column(Modifier.fillMaxWidth().padding(end = n(20))) {
                     SectionLabel("Playback")
-                    MonoToggleSwitch("Gapless playback", settings.gaplessEnabled, vm::setGaplessEnabled)
-                    MonoToggleSwitch("Normalize volume", settings.normalizationEnabled, vm::setNormalizationEnabled)
+                    PhonoToggleSwitch("Gapless playback", settings.gaplessEnabled, vm::setGaplessEnabled)
+                    PhonoToggleSwitch("Normalize volume", settings.normalizationEnabled, vm::setNormalizationEnabled)
                     if (settings.normalizationEnabled) {
                         Spacer(Modifier.height(n(8)))
                         NormalizationOptions(settings.normalizationType, vm::setNormalizationType)
@@ -80,7 +80,7 @@ fun SettingsScreen(
                     StreamingQualityOptions(settings.streamingQuality, vm::setStreamingQuality)
 
                     SectionLabel("Storage")
-                    MonoStyledButton(
+                    PhonoStyledButton(
                         text = "Clear Cache",
                         onClick = {
                             confirm = ConfirmRequest(
@@ -93,7 +93,7 @@ fun SettingsScreen(
                     )
 
                     SectionLabel("Advanced")
-                    MonoStyledButton(
+                    PhonoStyledButton(
                         text = if (settings.showAdvanced) "Hide proxy settings" else "Show proxy settings",
                         onClick = vm::toggleAdvancedSettings,
                     )
@@ -103,7 +103,7 @@ fun SettingsScreen(
                     }
 
                     SectionLabel("Account")
-                    MonoStyledButton(
+                    PhonoStyledButton(
                         text = "Logout",
                         onClick = {
                             confirm = ConfirmRequest(
@@ -133,7 +133,7 @@ private fun SectionLabel(text: String) {
     StyledText(
         text.uppercase(),
         size = 12,
-        color = MonoColors.Placeholder,
+        color = PhonoColors.Placeholder,
         modifier = Modifier.padding(top = n(24), bottom = n(12)),
     )
 }
@@ -146,7 +146,7 @@ private fun StreamingQualityOptions(selected: StreamingQuality, onSelect: (Strea
         StreamingQuality.HIGH to "High (320 kbps)",
     )
     options.forEach { (quality, label) ->
-        MonoStyledButton(text = label, selected = quality == selected, onClick = { onSelect(quality) })
+        PhonoStyledButton(text = label, selected = quality == selected, onClick = { onSelect(quality) })
         Spacer(Modifier.height(n(6)))
     }
 }
@@ -159,7 +159,7 @@ private fun NormalizationOptions(selected: NormalizationType, onSelect: (Normali
         NormalizationType.ALBUM to "Album",
     )
     options.forEach { (type, label) ->
-        MonoStyledButton(text = label, selected = type == selected, onClick = { onSelect(type) })
+        PhonoStyledButton(text = label, selected = type == selected, onClick = { onSelect(type) })
         Spacer(Modifier.height(n(6)))
     }
 }
@@ -175,39 +175,39 @@ private fun ProxyField(value: String, onChange: (String) -> Unit) {
             BasicTextField(
                 value = value,
                 onValueChange = onChange,
-                textStyle = TextStyle(color = MonoColors.Foreground, fontSize = nSp(22), fontFamily = PublicSans),
-                cursorBrush = SolidColor(MonoColors.Foreground),
+                textStyle = TextStyle(color = PhonoColors.Foreground, fontSize = nSp(22), fontFamily = PublicSans),
+                cursorBrush = SolidColor(PhonoColors.Foreground),
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 decorationBox = { inner ->
                     if (value.isEmpty()) {
-                        StyledText("http://host:port", size = 22, color = MonoColors.Placeholder)
+                        StyledText("http://host:port", size = 22, color = PhonoColors.Placeholder)
                     }
                     inner()
                 },
             )
         }
-        Box(Modifier.fillMaxWidth().height(n(1)).background(MonoColors.Foreground))
+        Box(Modifier.fillMaxWidth().height(n(1)).background(PhonoColors.Foreground))
     }
 }
 
-/** Full-screen destructive confirmation, ported from mono's confirm screen. */
+/** Full-screen destructive confirmation, ported from phono's confirm screen. */
 @Composable
-fun MonoConfirmScreen(
+fun PhonoConfirmScreen(
     title: String,
     message: String,
     confirmText: String,
     onConfirm: () -> Unit,
     onCancel: () -> Unit,
 ) {
-    MonoContentContainer(
+    PhonoContentContainer(
         title = title,
         hideBackButton = false,
         onBack = onCancel,
         rightIconVisible = false,
         modifier = Modifier.fillMaxSize(),
     ) {
-        StyledText(message, size = 18, color = MonoColors.Foreground, modifier = Modifier.padding(top = n(10)))
+        StyledText(message, size = 18, color = PhonoColors.Foreground, modifier = Modifier.padding(top = n(10)))
         Column(
             Modifier
                 .weight(1f)
@@ -218,7 +218,7 @@ fun MonoConfirmScreen(
             StyledText(
                 confirmText.uppercase(),
                 size = 40,
-                color = MonoColors.Foreground,
+                color = PhonoColors.Foreground,
                 textAlign = TextAlign.Center,
                 modifier = Modifier
                     .tap(onClick = onConfirm)

@@ -20,7 +20,7 @@ import kotlinx.coroutines.coroutineScope
  * the local cache becomes a complete offline copy of the library.
  */
 internal class LikedTracksSync(
-    private val database: MonoDatabase,
+    private val database: PhonoDatabase,
     private val webApi: SpotifyWebApi,
 ) {
     private val trackDao = database.likedTrackDao()
@@ -138,7 +138,7 @@ internal class LikedTracksSync(
 }
 
 internal class SavedAlbumsSync(
-    private val database: MonoDatabase,
+    private val database: PhonoDatabase,
     private val webApi: SpotifyWebApi,
 ) {
     private val albumDao = database.savedAlbumDao()
@@ -254,7 +254,7 @@ internal class SavedAlbumsSync(
 }
 
 internal class UserPlaylistsSync(
-    private val database: MonoDatabase,
+    private val database: PhonoDatabase,
     private val webApi: SpotifyWebApi,
 ) {
     // sort_index follows GET /me/playlists page order (Spotify library display order;

@@ -18,12 +18,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
-import com.lightphone.spotify.ui.components.MonoContentContainer
-import com.lightphone.spotify.ui.components.MonoSquareCheckbox
-import com.lightphone.spotify.ui.components.MonoStyledButton
+import com.lightphone.spotify.ui.components.PhonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoSquareCheckbox
+import com.lightphone.spotify.ui.components.PhonoStyledButton
 import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.tap
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
 
 @Composable
@@ -41,7 +41,7 @@ fun PlaylistPickerScreen(
         vm.loadPlaylistPicker(trackUri)
     }
 
-    MonoContentContainer(
+    PhonoContentContainer(
         title = "Add to playlist",
         hideBackButton = false,
         onBack = onBack,
@@ -56,12 +56,12 @@ fun PlaylistPickerScreen(
             StyledText(
                 state.statusMessage!!,
                 size = 14,
-                color = MonoColors.Placeholder,
+                color = PhonoColors.Placeholder,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
         if (state.error != null) {
-            StyledText(state.error!!, size = 14, color = MonoColors.Error)
+            StyledText(state.error!!, size = 14, color = PhonoColors.Error)
         }
         Column(Modifier.weight(1f)) {
             when {
@@ -82,7 +82,7 @@ fun PlaylistPickerScreen(
                     }
                 }
             }
-            MonoStyledButton(
+            PhonoStyledButton(
                 text = "New playlist",
                 onClick = onCreatePlaylist,
                 modifier = Modifier
@@ -114,7 +114,7 @@ private fun PlaylistPickerRow(
                 .padding(end = n(8)),
             contentAlignment = Alignment.Center,
         ) {
-            MonoSquareCheckbox(checked = selected, enabled = !disabled)
+            PhonoSquareCheckbox(checked = selected, enabled = !disabled)
         }
         Column(
             Modifier
@@ -125,14 +125,14 @@ private fun PlaylistPickerRow(
                 name,
                 size = 22,
                 lineHeight = 24,
-                color = if (disabled) MonoColors.DisabledIcon else MonoColors.Foreground,
+                color = if (disabled) PhonoColors.DisabledIcon else PhonoColors.Foreground,
                 maxLines = 1,
             )
             StyledText(
                 ownerName,
                 size = 16,
                 lineHeight = 18,
-                color = if (disabled) MonoColors.DisabledIcon else MonoColors.Foreground,
+                color = if (disabled) PhonoColors.DisabledIcon else PhonoColors.Foreground,
                 maxLines = 1,
             )
         }

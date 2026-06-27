@@ -26,7 +26,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
 import kotlin.math.abs
 import kotlin.math.max
@@ -37,7 +37,7 @@ import kotlinx.coroutines.flow.filterNotNull
 /**
  * Scrollbar geometry for [CustomScrollView] scrub-hold mode (decorative thumb).
  *
- * Grabbable drag uses [MonoScrollbarState] + [MonoDraggableScrollbarStrip] instead.
+ * Grabbable drag uses [PhonoScrollbarState] + [PhonoDraggableScrollbarStrip] instead.
  */
 data class ScrollbarLayout(
     val thumbHeight: Float,
@@ -52,7 +52,7 @@ data class ScrollbarLayout(
 }
 
 /** Percent-based scrollbar state (NowInAndroid / LazyColumn fast-scroll pattern). */
-data class MonoScrollbarState(
+data class PhonoScrollbarState(
     val thumbSizePercent: Float = 1f,
     val thumbMovedPercent: Float = 0f,
 ) {
@@ -101,12 +101,12 @@ fun LazyListState.computeScrollbarLayout(
 }
 
 /**
- * Derives [MonoScrollbarState] from list scroll position with sub-item interpolation
+ * Derives [PhonoScrollbarState] from list scroll position with sub-item interpolation
  * so the thumb moves smoothly between rows (NowInAndroid scrollbarState).
  */
 @Composable
-fun LazyListState.monoScrollbarState(itemsAvailable: Int): MonoScrollbarState {
-    var state by remember { mutableStateOf(MonoScrollbarState()) }
+fun LazyListState.phonoScrollbarState(itemsAvailable: Int): PhonoScrollbarState {
+    var state by remember { mutableStateOf(PhonoScrollbarState()) }
     LaunchedEffect(this, itemsAvailable) {
         snapshotFlow {
             if (itemsAvailable <= 0) return@snapshotFlow null
@@ -129,7 +129,7 @@ fun LazyListState.monoScrollbarState(itemsAvailable: Int): MonoScrollbarState {
                 ).toDouble()
             }.toFloat()
 
-            MonoScrollbarState(
+            PhonoScrollbarState(
                 thumbSizePercent = min(itemsVisible / itemsAvailable, 1f),
                 thumbMovedPercent = min(firstIndex / itemsAvailable, 1f),
             )
@@ -146,7 +146,7 @@ fun LazyListState.monoScrollbarState(itemsAvailable: Int): MonoScrollbarState {
  * Uses LaunchedEffect so scroll runs in a normal coroutine scope, not pointerInput.
  */
 @Composable
-fun rememberMonoScrollbarScroller(
+fun rememberPhonoScrollbarScroller(
     listState: LazyListState,
     itemsAvailable: Int,
 ): (Float) -> Unit {
@@ -185,12 +185,12 @@ fun rememberMonoScrollbarScroller(
  * Drag uses relative motion anchored to the thumb (does not jump to finger on grab).
  */
 @Composable
-fun MonoDraggableScrollbarStrip(
-    state: MonoScrollbarState,
+fun PhonoDraggableScrollbarStrip(
+    state: PhonoScrollbarState,
     onThumbMoved: (Float) -> Unit,
     minThumbPx: Float,
     modifier: Modifier = Modifier,
-    touchWidth: Dp = GRABBABLE_STRIP_TOUCH_WIDTH,
+    touchWidth: Dp = SCROLLBAR_SCREEN_GUTTER,
 ) {
     var trackHeightPx by remember { mutableFloatStateOf(0f) }
     var dragThumbMovedPercent by remember { mutableFloatStateOf(Float.NaN) }
@@ -256,7 +256,7 @@ fun MonoDraggableScrollbarStrip(
                 )
             },
     ) {
-        MonoGrabbableScrollbarVisual(
+        PhonoGrabbableScrollbarVisual(
             thumbY = thumbYPx,
             thumbHeight = thumbSizePx,
             modifier = Modifier
@@ -269,14 +269,14 @@ fun MonoDraggableScrollbarStrip(
 }
 
 @Composable
-private fun MonoGrabbableScrollbarVisual(
+private fun PhonoGrabbableScrollbarVisual(
     thumbY: Float,
     thumbHeight: Float,
     modifier: Modifier = Modifier,
     trackWidth: Dp = n(1),
     thumbWidth: Dp = n(5),
     thumbRightOverhang: Dp = n(2),
-    color: androidx.compose.ui.graphics.Color = MonoColors.Foreground,
+    color: androidx.compose.ui.graphics.Color = PhonoColors.Foreground,
 ) {
     val density = LocalDensity.current
     val trackWidthPx = with(density) { trackWidth.toPx() }
@@ -301,15 +301,15 @@ private fun MonoGrabbableScrollbarVisual(
 
 /** Decorative thumb for scrub-hold lists (Liked Songs / Albums). */
 @Composable
-fun MonoGrabbableScrollbar(
+fun PhonoGrabbableScrollbar(
     layout: ScrollbarLayout,
     modifier: Modifier = Modifier,
     trackWidth: Dp = n(1),
     thumbWidth: Dp = n(5),
     thumbRightOverhang: Dp = n(2),
-    color: androidx.compose.ui.graphics.Color = MonoColors.Foreground,
+    color: androidx.compose.ui.graphics.Color = PhonoColors.Foreground,
 ) {
-    MonoGrabbableScrollbarVisual(
+    PhonoGrabbableScrollbarVisual(
         thumbY = layout.thumbY,
         thumbHeight = layout.thumbHeight,
         modifier = modifier,

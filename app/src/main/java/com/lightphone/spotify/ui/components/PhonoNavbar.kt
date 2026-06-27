@@ -22,22 +22,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
 
 /** Icon row: vertical padding n(11) + icon n(48) + vertical padding n(11). */
-val MonoNavbarBarHeight: Dp = n(70)
+val PhonoNavbarBarHeight: Dp = n(70)
 
-val MonoNavbarOfflineStripHeight: Dp = n(18)
+val PhonoNavbarOfflineStripHeight: Dp = n(18)
 
-fun monoNavbarTotalHeight(showOfflineStrip: Boolean): Dp =
-    MonoNavbarBarHeight + if (showOfflineStrip) MonoNavbarOfflineStripHeight else 0.dp
+fun phonoNavbarTotalHeight(showOfflineStrip: Boolean): Dp =
+    PhonoNavbarBarHeight + if (showOfflineStrip) PhonoNavbarOfflineStripHeight else 0.dp
 
 @Composable
-fun MonoNavbar(
-    tabs: List<MonoTab>,
-    currentTab: MonoTab,
-    onTabSelected: (MonoTab) -> Unit,
+fun PhonoNavbar(
+    tabs: List<PhonoTab>,
+    currentTab: PhonoTab,
+    onTabSelected: (PhonoTab) -> Unit,
     statusMessage: String? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -45,7 +45,7 @@ fun MonoNavbar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(MonoColors.Background)
+                .background(PhonoColors.Background)
                 .padding(horizontal = n(20), vertical = n(11)),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
@@ -55,7 +55,7 @@ fun MonoNavbar(
                 Icon(
                     tab.icon,
                     contentDescription = tab.label,
-                    tint = if (active) MonoColors.Foreground else MonoColors.InactiveTab,
+                    tint = if (active) PhonoColors.Foreground else PhonoColors.InactiveTab,
                     modifier = Modifier
                         .size(n(48))
                         .tap { onTabSelected(tab) },
@@ -74,14 +74,14 @@ private fun OfflineStrip(message: String) {
         modifier = Modifier
             .fillMaxWidth()
             .height(n(18))
-            .background(MonoColors.OfflineStripBg),
+            .background(PhonoColors.OfflineStripBg),
         contentAlignment = Alignment.Center,
     ) {
-        StyledText(message, size = 12, color = MonoColors.OfflineStripFg)
+        StyledText(message, size = 12, color = PhonoColors.OfflineStripFg)
     }
 }
 
-enum class MonoTab(val route: String, val label: String, val icon: ImageVector) {
+enum class PhonoTab(val route: String, val label: String, val icon: ImageVector) {
     Liked("liked", "Liked Songs", Icons.Default.Favorite),
     Albums("albums", "Albums", Icons.Default.Album),
     Playlists("playlists", "Playlists", Icons.Default.QueueMusic),
@@ -89,10 +89,10 @@ enum class MonoTab(val route: String, val label: String, val icon: ImageVector) 
     Settings("settings", "Settings", Icons.Default.MoreHoriz),
 }
 
-val DefaultMonoTabs = listOf(
-    MonoTab.Liked,
-    MonoTab.Albums,
-    MonoTab.Playlists,
-    MonoTab.Search,
-    MonoTab.Settings,
+val DefaultPhonoTabs = listOf(
+    PhonoTab.Liked,
+    PhonoTab.Albums,
+    PhonoTab.Playlists,
+    PhonoTab.Search,
+    PhonoTab.Settings,
 )

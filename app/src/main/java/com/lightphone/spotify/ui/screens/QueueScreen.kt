@@ -24,13 +24,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.lightphone.spotify.playback.QueueUiItem
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
-import com.lightphone.spotify.ui.components.MonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoContentContainer
 import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.tap
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
 
 private val QueueArrowEndPadding = n(14)
+private val QueueArrowSize = n(44)
+private val QueueArrowSpacing = n(24)
+private const val QueueTrackTitleSize = 26
+private const val QueueTrackSubtitleSize = 16
+private const val QueueTrackSubtitleLineHeight = 18
 
 @Composable
 fun QueueScreen(
@@ -48,7 +53,7 @@ fun QueueScreen(
         queue.nextInQueue.isNotEmpty() ||
         queue.nextFromContext.isNotEmpty()
 
-    MonoContentContainer(
+    PhonoContentContainer(
         title = "Queue",
         hideBackButton = false,
         onBack = onBack,
@@ -139,14 +144,14 @@ private fun QueueSectionHeader(
         StyledText(
             title,
             size = 20,
-            color = MonoColors.Foreground,
+            color = PhonoColors.Foreground,
             modifier = Modifier.weight(1f),
         )
         if (actionLabel != null && onAction != null) {
             StyledText(
                 actionLabel,
                 size = 16,
-                color = MonoColors.Placeholder,
+                color = PhonoColors.Placeholder,
                 modifier = Modifier.tap(onClick = onAction),
             )
         }
@@ -158,19 +163,19 @@ private fun QueueTrackRow(item: QueueUiItem) {
     Column(Modifier.fillMaxWidth()) {
         StyledText(
             item.title,
-            size = 22,
-            lineHeight = 24,
-            color = MonoColors.Foreground,
+            size = QueueTrackTitleSize,
+            color = PhonoColors.Foreground,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
         StyledText(
             item.artists,
-            size = 16,
-            lineHeight = 18,
-            color = MonoColors.Placeholder,
+            size = QueueTrackSubtitleSize,
+            lineHeight = QueueTrackSubtitleLineHeight,
+            color = PhonoColors.Foreground,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(bottom = n(6)),
         )
     }
 }
@@ -185,28 +190,28 @@ private fun ReorderableQueueRow(
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.Top,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(
             Modifier
                 .weight(1f)
-                .padding(end = n(8)),
+                .padding(end = n(4)),
         ) {
             StyledText(
                 item.title,
-                size = 22,
-                lineHeight = 24,
-                color = MonoColors.Foreground,
+                size = QueueTrackTitleSize,
+                color = PhonoColors.Foreground,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             StyledText(
                 item.artists,
-                size = 16,
-                lineHeight = 18,
-                color = MonoColors.Placeholder,
+                size = QueueTrackSubtitleSize,
+                lineHeight = QueueTrackSubtitleLineHeight,
+                color = PhonoColors.Foreground,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(bottom = n(6)),
             )
         }
         Row(
@@ -216,18 +221,18 @@ private fun ReorderableQueueRow(
             Icon(
                 Icons.Default.KeyboardArrowUp,
                 contentDescription = "Move up",
-                tint = if (index > 0) MonoColors.Foreground else MonoColors.Placeholder,
+                tint = if (index > 0) PhonoColors.Foreground else PhonoColors.Placeholder,
                 modifier = Modifier
-                    .size(n(32))
+                    .size(QueueArrowSize)
                     .tap(enabled = index > 0, onClick = onMoveUp),
             )
-            Spacer(Modifier.width(n(4)))
+            Spacer(Modifier.width(QueueArrowSpacing))
             Icon(
                 Icons.Default.KeyboardArrowDown,
                 contentDescription = "Move down",
-                tint = if (index < total - 1) MonoColors.Foreground else MonoColors.Placeholder,
+                tint = if (index < total - 1) PhonoColors.Foreground else PhonoColors.Placeholder,
                 modifier = Modifier
-                    .size(n(32))
+                    .size(QueueArrowSize)
                     .tap(enabled = index < total - 1, onClick = onMoveDown),
             )
         }

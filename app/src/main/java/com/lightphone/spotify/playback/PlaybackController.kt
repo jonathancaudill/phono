@@ -17,7 +17,7 @@ import com.lightphone.spotify.data.SearchResultItem
 import com.lightphone.spotify.data.mapWebApiError
 import com.lightphone.spotify.data.local.LibraryRepository
 import com.lightphone.spotify.data.local.LikedTrackEntity
-import com.lightphone.spotify.data.local.MonoDatabase
+import com.lightphone.spotify.data.local.PhonoDatabase
 import com.lightphone.spotify.data.PlaylistDetailResult
 import com.lightphone.spotify.data.SpotifyPlaylistDetail
 import com.lightphone.spotify.data.SpotifyPlaylistSimple
@@ -101,7 +101,7 @@ class PlaybackController private constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val webApi = SpotifyWebApi(webApiAuth)
-    private val database = MonoDatabase.get(appContext)
+    private val database = PhonoDatabase.get(appContext)
     val libraryRepository = LibraryRepository(database, webApi)
     private val repository = SpotifyRepository(webApi, libraryRepository)
 

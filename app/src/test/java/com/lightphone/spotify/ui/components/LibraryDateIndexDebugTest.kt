@@ -16,7 +16,7 @@ class LibraryDateIndexDebugTest {
         }
         val line =
             """{"sessionId":"0d7c80","timestamp":${System.currentTimeMillis()},"location":"LibraryDateIndexDebugTest","message":"$message","hypothesisId":"$hypothesisId","runId":"$runId","data":{$dataFields}}"""
-        File("/Users/jonathancaudill/Programming/Mono/.cursor/debug-0d7c80.log")
+        File("/Users/jonathancaudill/Programming/Phono/.cursor/debug-0d7c80.log")
             .appendText(line + "\n")
     }
 

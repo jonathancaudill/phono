@@ -27,10 +27,10 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import com.lightphone.spotify.ui.AppViewModel
-import com.lightphone.spotify.ui.components.MonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoContentContainer
 import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.tap
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.PublicSans
 import com.lightphone.spotify.ui.theme.n
 import com.lightphone.spotify.ui.theme.nSp
@@ -42,7 +42,7 @@ fun SearchScreen(
 ) {
     var query by rememberSaveable { mutableStateOf("") }
 
-    MonoContentContainer(
+    PhonoContentContainer(
         title = "Search",
         hideBackButton = true,
         rightIcon = Icons.Default.Check,
@@ -60,11 +60,11 @@ fun SearchScreen(
                         vm.updateSearchQuery(it)
                     },
                     textStyle = TextStyle(
-                        color = MonoColors.Foreground,
+                        color = PhonoColors.Foreground,
                         fontSize = nSp(24),
                         fontFamily = PublicSans,
                     ),
-                    cursorBrush = SolidColor(MonoColors.Foreground),
+                    cursorBrush = SolidColor(PhonoColors.Foreground),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     keyboardActions = KeyboardActions(onSearch = { if (query.isNotBlank()) onSubmit(query) }),
@@ -77,7 +77,7 @@ fun SearchScreen(
                                 StyledText(
                                     "Search for something!",
                                     size = 24,
-                                    color = MonoColors.Placeholder,
+                                    color = PhonoColors.Placeholder,
                                 )
                             }
                             inner()
@@ -93,7 +93,7 @@ fun SearchScreen(
                         Icon(
                             Icons.Default.Clear,
                             contentDescription = "Clear",
-                            tint = MonoColors.Foreground,
+                            tint = PhonoColors.Foreground,
                             modifier = Modifier.size(n(24)),
                         )
                     }
@@ -103,7 +103,7 @@ fun SearchScreen(
                 Modifier
                     .fillMaxWidth()
                     .height(n(1))
-                    .background(MonoColors.Foreground),
+                    .background(PhonoColors.Foreground),
             )
         }
     }

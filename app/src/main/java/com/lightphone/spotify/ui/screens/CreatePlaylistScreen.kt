@@ -16,11 +16,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import com.lightphone.spotify.ui.AppViewModel
-import com.lightphone.spotify.ui.components.MonoContentContainer
-import com.lightphone.spotify.ui.components.MonoStyledButton
-import com.lightphone.spotify.ui.components.MonoToggleSwitch
+import com.lightphone.spotify.ui.components.PhonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoStyledButton
+import com.lightphone.spotify.ui.components.PhonoToggleSwitch
 import com.lightphone.spotify.ui.components.StyledText
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.PublicSans
 import com.lightphone.spotify.ui.theme.n
 import com.lightphone.spotify.ui.theme.nSp
@@ -35,7 +35,7 @@ fun CreatePlaylistScreen(
     var name by remember { mutableStateOf("") }
     var isPublic by remember { mutableStateOf(false) }
 
-    MonoContentContainer(
+    PhonoContentContainer(
         title = "New playlist",
         hideBackButton = false,
         onBack = onBack,
@@ -44,28 +44,28 @@ fun CreatePlaylistScreen(
         modifier = Modifier.fillMaxSize(),
     ) {
         Column(Modifier.fillMaxWidth()) {
-            StyledText("Name", size = 14, color = MonoColors.Placeholder)
+            StyledText("Name", size = 14, color = PhonoColors.Placeholder)
             Spacer(Modifier.height(n(8)))
             BasicTextField(
                 value = name,
                 onValueChange = { name = it },
                 textStyle = TextStyle(
-                    color = MonoColors.Foreground,
+                    color = PhonoColors.Foreground,
                     fontSize = nSp(22),
                     fontFamily = PublicSans,
                 ),
-                cursorBrush = SolidColor(MonoColors.Foreground),
+                cursorBrush = SolidColor(PhonoColors.Foreground),
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
             Spacer(Modifier.height(n(20)))
-            MonoToggleSwitch("Public playlist", isPublic, onCheckedChange = { isPublic = it })
+            PhonoToggleSwitch("Public playlist", isPublic, onCheckedChange = { isPublic = it })
             if (state.error != null) {
                 Spacer(Modifier.height(n(12)))
-                StyledText(state.error!!, size = 14, color = MonoColors.Error)
+                StyledText(state.error!!, size = 14, color = PhonoColors.Error)
             }
             Spacer(Modifier.height(n(24)))
-            MonoStyledButton(
+            PhonoStyledButton(
                 text = if (state.creating) "Creating…" else "Create",
                 onClick = {
                     vm.createPlaylist(name.trim(), isPublic) { id, title ->

@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.first
 import java.time.Instant
 
 class LibraryRepository(
-    private val database: MonoDatabase,
+    private val database: PhonoDatabase,
     private val webApi: SpotifyWebApi,
 ) {
     private val trackDao = database.likedTrackDao()

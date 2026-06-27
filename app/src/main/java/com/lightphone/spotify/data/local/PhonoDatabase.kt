@@ -18,7 +18,7 @@ import androidx.room.TypeConverters
     exportSchema = false,
 )
 @TypeConverters(LibraryResourceConverter::class)
-abstract class MonoDatabase : RoomDatabase() {
+abstract class PhonoDatabase : RoomDatabase() {
     abstract fun likedTrackDao(): LikedTrackDao
     abstract fun savedAlbumDao(): SavedAlbumDao
     abstract fun playlistDao(): PlaylistDao
@@ -26,14 +26,14 @@ abstract class MonoDatabase : RoomDatabase() {
 
     companion object {
         @Volatile
-        private var instance: MonoDatabase? = null
+        private var instance: PhonoDatabase? = null
 
-        fun get(context: Context): MonoDatabase {
+        fun get(context: Context): PhonoDatabase {
             return instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
-                    MonoDatabase::class.java,
-                    "mono_library.db",
+                    PhonoDatabase::class.java,
+                    "phono_library.db",
                 )
                     .fallbackToDestructiveMigration()
                     .build().also { instance = it }

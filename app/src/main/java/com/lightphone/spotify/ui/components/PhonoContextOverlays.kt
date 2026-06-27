@@ -17,7 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import com.lightphone.spotify.ui.ContextMenuAction
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
 import kotlinx.coroutines.delay
 
@@ -28,22 +28,22 @@ private val OverlayBottomInset = n(30)
 private const val ContextMenuItemFontSize = 26
 private const val ContextMenuItemLineHeight = 50
 
-data class MonoContextMenuItem(
+data class PhonoContextMenuItem(
     val label: String,
     val action: ContextMenuAction,
 )
 
 @Composable
-fun MonoContextMenuOverlay(
-    items: List<MonoContextMenuItem>,
-    onItemClick: (MonoContextMenuItem) -> Unit,
+fun PhonoContextMenuOverlay(
+    items: List<PhonoContextMenuItem>,
+    onItemClick: (PhonoContextMenuItem) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MonoColors.Background)
+            .background(PhonoColors.Background)
             .tap(onClick = onDismiss),
     ) {
         Column(
@@ -57,7 +57,7 @@ fun MonoContextMenuOverlay(
                     text = item.label,
                     size = ContextMenuItemFontSize,
                     lineHeight = ContextMenuItemLineHeight,
-                    color = MonoColors.Foreground,
+                    color = PhonoColors.Foreground,
                     modifier = Modifier.tap { onItemClick(item) },
                 )
             }
@@ -72,7 +72,7 @@ fun MonoContextMenuOverlay(
             Icon(
                 Icons.Default.Close,
                 contentDescription = "Dismiss",
-                tint = MonoColors.Foreground,
+                tint = PhonoColors.Foreground,
                 modifier = Modifier.size(n(32)),
             )
         }
@@ -80,7 +80,7 @@ fun MonoContextMenuOverlay(
 }
 
 @Composable
-fun MonoCopiedOverlay(
+fun PhonoCopiedOverlay(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     autoDismissMs: Long = 1750L,
@@ -92,21 +92,21 @@ fun MonoCopiedOverlay(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MonoColors.Background)
+            .background(PhonoColors.Background)
             .tap(onClick = onDismiss),
         contentAlignment = Alignment.Center,
     ) {
         StyledText(
             text = "copied",
             size = 30,
-            color = MonoColors.Foreground,
+            color = PhonoColors.Foreground,
             textAlign = TextAlign.Center,
         )
     }
 }
 
 @Composable
-fun MonoDeleteConfirmOverlay(
+fun PhonoDeleteConfirmOverlay(
     message: String,
     onConfirm: () -> Unit,
     onCancel: () -> Unit,
@@ -116,7 +116,7 @@ fun MonoDeleteConfirmOverlay(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MonoColors.Background),
+            .background(PhonoColors.Background),
     ) {
         Box(
             modifier = Modifier
@@ -129,14 +129,14 @@ fun MonoDeleteConfirmOverlay(
             Icon(
                 Icons.AutoMirrored.Filled.ArrowBackIos,
                 contentDescription = "Cancel",
-                tint = MonoColors.Foreground,
+                tint = PhonoColors.Foreground,
                 modifier = Modifier.size(n(28)),
             )
         }
         StyledText(
             text = message,
             size = 18,
-            color = MonoColors.Foreground,
+            color = PhonoColors.Foreground,
             textAlign = TextAlign.Center,
             modifier = Modifier
                 .align(Alignment.Center)
@@ -145,7 +145,7 @@ fun MonoDeleteConfirmOverlay(
         StyledText(
             text = confirmText,
             size = 40,
-            color = MonoColors.Foreground,
+            color = PhonoColors.Foreground,
             textAlign = TextAlign.Center,
             modifier = Modifier
                 .align(Alignment.BottomCenter)

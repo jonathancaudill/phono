@@ -22,13 +22,13 @@ import androidx.compose.ui.text.style.TextAlign
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.data.local.toTrackMetadata
 import com.lightphone.spotify.ui.components.LibraryInfiniteList
-import com.lightphone.spotify.ui.components.MonoContentContainer
-import com.lightphone.spotify.ui.components.MonoMediaListItem
-import com.lightphone.spotify.ui.components.MonoSwipeToActionRow
+import com.lightphone.spotify.ui.components.PhonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoMediaListItem
+import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
 import com.lightphone.spotify.ui.components.ScrollbarMode
 import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.buildLibraryDateIndex
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
 import com.lightphone.spotify.ui.trackIdFromUri
 
@@ -50,7 +50,7 @@ fun LikedSongsScreen(
         buildLibraryDateIndex(state.items) { it.added_at }
     }
 
-    MonoContentContainer(
+    PhonoContentContainer(
         title = "Liked Songs",
         hideBackButton = true,
         rightIcon = Icons.Default.GraphicEq,
@@ -96,10 +96,10 @@ fun LikedSongsScreen(
                             .weight(1f)
                             .fillMaxWidth(),
                     ) { index, track ->
-                        MonoSwipeToActionRow(
+                        PhonoSwipeToActionRow(
                             onSwipeAction = { vm.addTrackToQueue(track.toTrackMetadata()) },
                         ) {
-                            MonoMediaListItem(
+                            PhonoMediaListItem(
                                 primaryText = track.title,
                                 secondaryText = track.artists,
                                 showImage = false,
@@ -125,7 +125,7 @@ internal fun LibraryPartialSyncBanner(message: String) {
     StyledText(
         message,
         size = 14,
-        color = MonoColors.Foreground,
+        color = PhonoColors.Foreground,
         textAlign = TextAlign.Center,
         modifier = Modifier
             .fillMaxWidth()
@@ -139,7 +139,7 @@ internal fun EmptyListMessage(message: String) {
         StyledText(
             message,
             size = 16,
-            color = MonoColors.Foreground,
+            color = PhonoColors.Foreground,
             textAlign = TextAlign.Center,
         )
     }

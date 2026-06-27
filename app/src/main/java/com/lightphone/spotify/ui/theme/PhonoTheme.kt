@@ -10,11 +10,11 @@ import androidx.compose.ui.text.font.FontWeight
 import com.lightphone.spotify.R
 
 /**
- * Palette mirrors the LightOS template / mono (black canvas, white ink, a single
+ * Palette mirrors the LightOS template / phono (black canvas, white ink, a single
  * muted grey for inactive tabs, a darker grey image placeholder). These are the
  * only colors the reference uses.
  */
-object MonoColors {
+object PhonoColors {
     val Background = Color.Black
     val Foreground = Color.White
     val InactiveTab = Color(0xFF6E6E6E)
@@ -33,15 +33,15 @@ val PublicSans = FontFamily(
 )
 
 @Composable
-fun MonoTheme(content: @Composable () -> Unit) {
+fun PhonoTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
-            background = MonoColors.Background,
-            onBackground = MonoColors.Foreground,
-            surface = MonoColors.Background,
-            onSurface = MonoColors.Foreground,
-            primary = MonoColors.Foreground,
-            onPrimary = MonoColors.Background,
+            background = PhonoColors.Background,
+            onBackground = PhonoColors.Foreground,
+            surface = PhonoColors.Background,
+            onSurface = PhonoColors.Foreground,
+            primary = PhonoColors.Foreground,
+            onPrimary = PhonoColors.Background,
         ),
         content = content,
     )

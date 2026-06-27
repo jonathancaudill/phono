@@ -1,4 +1,4 @@
-# AGENTS.md — mono: Unofficial Spotify Client for Light Phone III
+# AGENTS.md — phono: Unofficial Spotify Client for Light Phone III
 
 Read this entire file before changing anything. This project touches Spotify's internal
 protocols, a patched fork of librespot, and a **dual authentication** scheme (Keymaster for
@@ -194,7 +194,7 @@ Exposed via UniFFI to Kotlin. `MediaSession` / Media3 for lock-screen controls a
 ## Reference Clients
 
 - **[Echo](https://github.com/vandamd/echo)** (Vandam Dinh) — Light Phone Spotify UX, Web API
-  metadata patterns, dev-app setup flow. mono's UI descends from Light Template.
+  metadata patterns, dev-app setup flow. phono's UI descends from Light Template.
 - **psst** — librespot playback/session reference; search API structure (single combined `/search`).
 - **librespot** — protocol source of truth for session, Login5, spclient, oboe playback.
 - **Jetispot** — informative for native Mercury/collection-v2 approaches we deliberately do **not**

@@ -23,7 +23,7 @@ import androidx.compose.ui.unit.Dp
 import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
 import coil.request.ImageRequest
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
 
 /**
@@ -31,7 +31,7 @@ import com.lightphone.spotify.ui.theme.n
  * Used on Now Playing only; library/search/detail lists are text-only.
  */
 @Composable
-fun MonoFallbackImage(
+fun PhonoFallbackImage(
     imageUrl: String?,
     modifier: Modifier = Modifier,
     placeholderIcon: ImageVector = Icons.Default.MusicNote,
@@ -43,11 +43,11 @@ fun MonoFallbackImage(
     decodeSize: Dp? = null,
 ) {
     var failed by remember(imageUrl) { mutableStateOf(false) }
-    val iconTint = if (disabled) MonoColors.DisabledIcon else MonoColors.Foreground
+    val iconTint = if (disabled) PhonoColors.DisabledIcon else PhonoColors.Foreground
 
     if (imageUrl.isNullOrBlank() || failed) {
         Box(
-            modifier = modifier.background(MonoColors.PlaceholderBg),
+            modifier = modifier.background(PhonoColors.PlaceholderBg),
             contentAlignment = Alignment.Center,
         ) {
             if (placeholderText != null) {
@@ -81,7 +81,7 @@ fun MonoFallbackImage(
         AsyncImage(
             model = request,
             contentDescription = contentDescription,
-            modifier = modifier.background(MonoColors.PlaceholderBg),
+            modifier = modifier.background(PhonoColors.PlaceholderBg),
             contentScale = ContentScale.Crop,
             onState = { state ->
                 if (state is AsyncImagePainter.State.Error) failed = true
@@ -91,12 +91,12 @@ fun MonoFallbackImage(
 }
 
 @Composable
-fun MonoDetailCover(
+fun PhonoDetailCover(
     imageUrl: String?,
     modifier: Modifier = Modifier,
     placeholderIcon: ImageVector = Icons.Default.MusicNote,
 ) {
-    MonoFallbackImage(
+    PhonoFallbackImage(
         imageUrl = imageUrl,
         modifier = modifier.fillMaxSize(),
         placeholderIcon = placeholderIcon,

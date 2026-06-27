@@ -44,7 +44,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Text
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.PublicSans
 import com.lightphone.spotify.ui.theme.n
 import com.lightphone.spotify.ui.theme.nSp
@@ -95,7 +95,7 @@ fun StyledText(
     modifier: Modifier = Modifier,
     size: Number = 16,
     lineHeight: Number? = null,
-    color: Color = MonoColors.Foreground,
+    color: Color = PhonoColors.Foreground,
     maxLines: Int = Int.MAX_VALUE,
     overflow: TextOverflow = TextOverflow.Clip,
     textAlign: TextAlign? = null,
@@ -117,7 +117,7 @@ fun StyledText(
 }
 
 @Composable
-fun MonoHeader(
+fun PhonoHeader(
     title: String? = null,
     modifier: Modifier = Modifier,
     hideBackButton: Boolean = false,
@@ -134,7 +134,7 @@ fun MonoHeader(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .background(MonoColors.Background)
+            .background(PhonoColors.Background)
             .padding(horizontal = n(22), vertical = n(5)),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -159,7 +159,7 @@ fun MonoHeader(
                 title != null -> StyledText(
                     text = title,
                     size = 20,
-                    color = MonoColors.Foreground,
+                    color = PhonoColors.Foreground,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.Center,
@@ -177,7 +177,7 @@ fun MonoHeader(
             rightLoading -> Box(Modifier.size(n(32)), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(n(20)),
-                    color = MonoColors.Foreground,
+                    color = PhonoColors.Foreground,
                     strokeWidth = 2.dp,
                 )
             }
@@ -198,17 +198,17 @@ private fun HeaderIconSlot(icon: ImageVector, onClick: () -> Unit) {
             .tap(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, contentDescription = null, tint = MonoColors.Foreground, modifier = Modifier.size(n(28)))
+        Icon(icon, contentDescription = null, tint = PhonoColors.Foreground, modifier = Modifier.size(n(28)))
     }
 }
 
 /**
  * Screen frame: black canvas, optional header, then a content area inset by
  * [horizontalPadding] / [topPadding] with [contentGap] between stacked children.
- * Mirrors mono's ContentContainer (the scroll view itself lives inside).
+ * Mirrors phono's ContentContainer (the scroll view itself lives inside).
  */
 @Composable
-fun MonoContentContainer(
+fun PhonoContentContainer(
     title: String? = null,
     modifier: Modifier = Modifier,
     hideBackButton: Boolean = true,
@@ -229,10 +229,10 @@ fun MonoContentContainer(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(MonoColors.Background),
+            .background(PhonoColors.Background),
     ) {
         if (title != null || titleContent != null) {
-            MonoHeader(
+            PhonoHeader(
                 title = title,
                 hideBackButton = hideBackButton,
                 onBack = onBack,
@@ -260,14 +260,14 @@ fun MonoContentContainer(
 }
 
 @Composable
-fun MonoSquareCheckbox(
+fun PhonoSquareCheckbox(
     checked: Boolean,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
-    val borderColor = if (enabled) MonoColors.Foreground else MonoColors.DisabledIcon
-    val fillColor = if (enabled) MonoColors.Foreground else MonoColors.DisabledIcon
-    val checkColor = MonoColors.Background
+    val borderColor = if (enabled) PhonoColors.Foreground else PhonoColors.DisabledIcon
+    val fillColor = if (enabled) PhonoColors.Foreground else PhonoColors.DisabledIcon
+    val checkColor = PhonoColors.Background
     Box(
         modifier = modifier
             .size(n(20))
@@ -287,7 +287,7 @@ fun MonoSquareCheckbox(
 }
 
 @Composable
-fun MonoMediaListItem(
+fun PhonoMediaListItem(
     primaryText: String,
     modifier: Modifier = Modifier,
     secondaryText: String? = null,
@@ -308,7 +308,7 @@ fun MonoMediaListItem(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (showImage) {
-            MonoFallbackImage(
+            PhonoFallbackImage(
                 imageUrl = imageUrl,
                 placeholderIcon = placeholderIcon,
                 placeholderIconSize = n(24),
@@ -328,7 +328,7 @@ fun MonoMediaListItem(
                 primaryText,
                 size = 22,
                 lineHeight = 24,
-                color = if (disabled) MonoColors.DisabledIcon else MonoColors.Foreground,
+                color = if (disabled) PhonoColors.DisabledIcon else PhonoColors.Foreground,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -337,7 +337,7 @@ fun MonoMediaListItem(
                     secondaryText,
                     size = 16,
                     lineHeight = 18,
-                    color = if (disabled) MonoColors.DisabledIcon else MonoColors.Foreground,
+                    color = if (disabled) PhonoColors.DisabledIcon else PhonoColors.Foreground,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -349,7 +349,7 @@ fun MonoMediaListItem(
 private val TrackListLeadingWidth = n(56)
 private val TrackEditReorderEndPadding = n(14)
 
-data class MonoTrackEditActions(
+data class PhonoTrackEditActions(
     val mutating: Boolean = false,
     val canMoveUp: Boolean,
     val canMoveDown: Boolean,
@@ -359,7 +359,7 @@ data class MonoTrackEditActions(
 )
 
 @Composable
-fun MonoTrackListItem(
+fun PhonoTrackListItem(
     trackNumber: Int? = null,
     name: String,
     artists: String,
@@ -367,7 +367,7 @@ fun MonoTrackListItem(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
-    editActions: MonoTrackEditActions? = null,
+    editActions: PhonoTrackEditActions? = null,
 ) {
     val interactiveModifier = if (editActions == null) {
         Modifier.tapWithLongPress(onClick = onClick, onLongClick = onLongClick)
@@ -393,9 +393,9 @@ fun MonoTrackListItem(
                         Icons.Default.Cancel,
                         contentDescription = "Remove track",
                         tint = if (!editActions.mutating) {
-                            MonoColors.Foreground
+                            PhonoColors.Foreground
                         } else {
-                            MonoColors.DisabledIcon
+                            PhonoColors.DisabledIcon
                         },
                         modifier = Modifier
                             .size(n(20))
@@ -407,7 +407,7 @@ fun MonoTrackListItem(
                 StyledText(
                     "$trackNumber.",
                     size = 26,
-                    color = MonoColors.Foreground,
+                    color = PhonoColors.Foreground,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
                         .width(TrackListLeadingWidth)
@@ -423,7 +423,7 @@ fun MonoTrackListItem(
             StyledText(
                 name,
                 size = 26,
-                color = MonoColors.Foreground,
+                color = PhonoColors.Foreground,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -431,7 +431,7 @@ fun MonoTrackListItem(
                 "$artists \u00B7 ${formatDuration(durationMs)}",
                 size = 16,
                 lineHeight = 18,
-                color = MonoColors.Foreground,
+                color = PhonoColors.Foreground,
                 modifier = Modifier.padding(bottom = n(6)),
             )
         }
@@ -446,7 +446,7 @@ fun MonoTrackListItem(
                 Icon(
                     Icons.Default.KeyboardArrowUp,
                     contentDescription = "Move up",
-                    tint = if (upEnabled) MonoColors.Foreground else MonoColors.Placeholder,
+                    tint = if (upEnabled) PhonoColors.Foreground else PhonoColors.Placeholder,
                     modifier = Modifier
                         .size(n(32))
                         .tap(enabled = upEnabled, onClick = editActions.onMoveUp),
@@ -456,7 +456,7 @@ fun MonoTrackListItem(
                 Icon(
                     Icons.Default.KeyboardArrowDown,
                     contentDescription = "Move down",
-                    tint = if (downEnabled) MonoColors.Foreground else MonoColors.Placeholder,
+                    tint = if (downEnabled) PhonoColors.Foreground else PhonoColors.Placeholder,
                     modifier = Modifier
                         .size(n(32))
                         .tap(enabled = downEnabled, onClick = editActions.onMoveDown),
@@ -467,7 +467,7 @@ fun MonoTrackListItem(
 }
 
 @Composable
-fun MonoStyledButton(
+fun PhonoStyledButton(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -476,7 +476,7 @@ fun MonoStyledButton(
     StyledText(
         text = text,
         size = 30,
-        color = MonoColors.Foreground,
+        color = PhonoColors.Foreground,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
         textDecoration = if (selected) TextDecoration.Underline else null,
@@ -485,7 +485,7 @@ fun MonoStyledButton(
 }
 
 @Composable
-fun MonoToggleSwitch(
+fun PhonoToggleSwitch(
     label: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
@@ -503,20 +503,20 @@ fun MonoToggleSwitch(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (checked) {
-                Box(Modifier.width(n(14.5)).height(n(2.22)).background(MonoColors.Foreground))
-                Box(Modifier.size(n(9.8)).background(MonoColors.Foreground, CircleShape))
+                Box(Modifier.width(n(14.5)).height(n(2.22)).background(PhonoColors.Foreground))
+                Box(Modifier.size(n(9.8)).background(PhonoColors.Foreground, CircleShape))
             } else {
-                Box(Modifier.size(n(9.8)).border(n(2.5), MonoColors.Foreground, CircleShape))
-                Box(Modifier.width(n(14.5)).height(n(2.22)).background(MonoColors.Foreground))
+                Box(Modifier.size(n(9.8)).border(n(2.5), PhonoColors.Foreground, CircleShape))
+                Box(Modifier.width(n(14.5)).height(n(2.22)).background(PhonoColors.Foreground))
             }
         }
-        StyledText(label, size = 30, color = MonoColors.Foreground, modifier = Modifier.weight(1f))
+        StyledText(label, size = 30, color = PhonoColors.Foreground, modifier = Modifier.weight(1f))
     }
 }
 
 /** Two-line selector row (label above, current value below) — template's SelectorButton. */
 @Composable
-fun MonoSelectorButton(
+fun PhonoSelectorButton(
     label: String,
     value: String,
     onClick: () -> Unit,

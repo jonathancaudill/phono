@@ -23,7 +23,7 @@ import com.lightphone.spotify.data.local.SavedAlbumEntity
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ffi.NormalizationType
 import com.lightphone.spotify.ffi.StreamingQuality
-import com.lightphone.spotify.ui.components.MonoContextMenuItem
+import com.lightphone.spotify.ui.components.PhonoContextMenuItem
 import com.lightphone.spotify.playback.PlaybackController
 import com.lightphone.spotify.playback.PlaybackUiState
 import com.lightphone.spotify.playback.SettingsSnapshot
@@ -1119,21 +1119,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _contextMenu.update { it.copy(navigateToPlaylistPickerUri = null) }
     }
 
-    fun contextMenuItemsFor(target: ContextMenuTarget, currentUserId: String?): List<MonoContextMenuItem> =
+    fun contextMenuItemsFor(target: ContextMenuTarget, currentUserId: String?): List<PhonoContextMenuItem> =
         when (target) {
             is ContextMenuTarget.Track -> listOf(
-                MonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink),
-                MonoContextMenuItem("Add To Playlists", ContextMenuAction.AddToPlaylists),
-                MonoContextMenuItem("Remove From Library", ContextMenuAction.RemoveFromLibrary),
+                PhonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink),
+                PhonoContextMenuItem("Add To Playlists", ContextMenuAction.AddToPlaylists),
+                PhonoContextMenuItem("Remove From Library", ContextMenuAction.RemoveFromLibrary),
             )
             is ContextMenuTarget.Album -> listOf(
-                MonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink),
-                MonoContextMenuItem("Remove From Library", ContextMenuAction.RemoveFromLibrary),
+                PhonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink),
+                PhonoContextMenuItem("Remove From Library", ContextMenuAction.RemoveFromLibrary),
             )
             is ContextMenuTarget.Playlist -> buildList {
-                add(MonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink))
+                add(PhonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink))
                 if (currentUserId != null && target.ownerId == currentUserId) {
-                    add(MonoContextMenuItem("Delete Playlist", ContextMenuAction.DeletePlaylist))
+                    add(PhonoContextMenuItem("Delete Playlist", ContextMenuAction.DeletePlaylist))
                 }
             }
         }

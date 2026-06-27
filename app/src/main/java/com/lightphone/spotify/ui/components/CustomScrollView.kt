@@ -32,14 +32,29 @@ import androidx.compose.ui.input.pointer.AwaitPointerEventScope
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.lightphone.spotify.ui.theme.n
 import kotlinx.coroutines.launch
 import kotlin.math.max
+
+/** Lets the scroll surface occupy [PhonoContentContainer]'s right margin for the scrollbar gutter. */
+private fun Modifier.extendIntoEndGutter(gutter: Dp): Modifier = layout { measurable, constraints ->
+    val gutterPx = gutter.roundToPx()
+    val placeable = measurable.measure(
+        constraints.copy(maxWidth = constraints.maxWidth + gutterPx),
+    )
+    layout(placeable.width, placeable.height) {
+        placeable.place(0, 0)
+    }
+}
 
 /** How the right-edge scrollbar strip responds to touch. */
 enum class ScrollbarMode {
@@ -50,7 +65,7 @@ enum class ScrollbarMode {
 }
 
 /**
- * The standard scroll surface, ported from mono's CustomScrollView:
+ * The standard scroll surface, ported from phono's CustomScrollView:
  *
  *  - Overscroll is disabled (`LocalOverscrollConfiguration provides null`) so
  *    list items never stretch/squish at the edges — the out-of-the-box Compose
@@ -81,13 +96,19 @@ fun CustomScrollView(
     scrollbarMode: ScrollbarMode = ScrollbarMode.Grabbable,
     onScrubToIndex: suspend (Int) -> Unit = {},
     onScrubJumpChange: (Boolean) -> Unit = {},
+    /** Width of [PhonoContentContainer]'s end inset; scrollbar lives in this gutter at the screen edge. */
+    screenEdgeGutter: Dp = SCROLLBAR_SCREEN_GUTTER,
     content: LazyListScope.() -> Unit,
 ) {
     val scrubIndex = dateIndex?.takeIf { !it.isEmpty }
     val alphaScrubIndex = alphaIndex?.takeIf { !it.isEmpty }
     val scrubController = remember(scrubIndex, alphaScrubIndex) { ScrubController() }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .extendIntoEndGutter(screenEdgeGutter),
+    ) {
         // List + scrollbar — never reads scrubController.overlayOpen (avoids LazyColumn recompose).
         CustomScrollListBody(
             state = state,
@@ -101,6 +122,7 @@ fun CustomScrollView(
             scrubController = scrubController,
             onScrubToIndex = onScrubToIndex,
             onScrubJumpChange = onScrubJumpChange,
+            screenEdgeGutter = screenEdgeGutter,
             content = content,
         )
 
@@ -109,6 +131,7 @@ fun CustomScrollView(
             LibraryScrubVisuals(
                 controller = scrubController,
                 dateIndex = scrubIndex,
+                screenEdgeGutter = screenEdgeGutter,
                 modifier = Modifier.zIndex(2f),
             )
         }
@@ -116,6 +139,7 @@ fun CustomScrollView(
             LibraryAlphaScrubVisuals(
                 controller = scrubController,
                 alphaIndex = alphaScrubIndex,
+                screenEdgeGutter = screenEdgeGutter,
                 modifier = Modifier.zIndex(2f),
             )
         }
@@ -136,6 +160,7 @@ private fun CustomScrollListBody(
     scrubController: ScrubController,
     onScrubToIndex: suspend (Int) -> Unit,
     onScrubJumpChange: (Boolean) -> Unit,
+    screenEdgeGutter: Dp,
     content: LazyListScope.() -> Unit,
 ) {
     var containerWidthPx by remember { mutableFloatStateOf(0f) }
@@ -143,12 +168,19 @@ private fun CustomScrollListBody(
 
     val scrubEnabled = scrubIndex != null || alphaScrubIndex != null
     val scrubHoldOnly = scrollbarMode == ScrollbarMode.ScrubHoldOnly
-    val touchStripWidth = if (scrubHoldOnly) SCRUBBAR_TOUCH_WIDTH else GRABBABLE_STRIP_TOUCH_WIDTH
+    val touchStripWidth = screenEdgeGutter
     val scrollIndex = state.firstVisibleItemIndex
     val minThumbPx = with(LocalDensity.current) { n(20).toPx() }
     val scrollScope = rememberCoroutineScope()
     val density = LocalDensity.current
+    val layoutDirection = LocalLayoutDirection.current
     val touchStripWidthPx = with(density) { touchStripWidth.toPx() }
+    val listContentPadding = PaddingValues(
+        start = contentPadding.calculateStartPadding(layoutDirection),
+        top = contentPadding.calculateTopPadding(),
+        end = contentPadding.calculateEndPadding(layoutDirection) + screenEdgeGutter,
+        bottom = contentPadding.calculateBottomPadding(),
+    )
 
     DisposableEffect(Unit) {
         onDispose { onScrubJumpChange(false) }
@@ -176,7 +208,7 @@ private fun CustomScrollListBody(
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 state = state,
-                contentPadding = contentPadding,
+                contentPadding = listContentPadding,
                 verticalArrangement = verticalArrangement,
                 content = content,
             )
@@ -297,7 +329,7 @@ private fun CustomScrollListBody(
                         }
                     },
             ) {
-                MonoGrabbableScrollbar(
+                PhonoGrabbableScrollbar(
                     layout = metrics,
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
@@ -307,13 +339,14 @@ private fun CustomScrollListBody(
                 )
             }
         } else if (!scrubHoldOnly && itemsAvailable > 0) {
-            val scrollbarState = state.monoScrollbarState(itemsAvailable)
-            val onThumbMoved = rememberMonoScrollbarScroller(state, itemsAvailable)
+            val scrollbarState = state.phonoScrollbarState(itemsAvailable)
+            val onThumbMoved = rememberPhonoScrollbarScroller(state, itemsAvailable)
             if (scrollbarState.thumbTrackSizePercent > 0f) {
-                MonoDraggableScrollbarStrip(
+                PhonoDraggableScrollbarStrip(
                     state = scrollbarState,
                     onThumbMoved = onThumbMoved,
                     minThumbPx = minThumbPx,
+                    touchWidth = screenEdgeGutter,
                     modifier = Modifier
                         .zIndex(3f)
                         .align(Alignment.TopEnd),

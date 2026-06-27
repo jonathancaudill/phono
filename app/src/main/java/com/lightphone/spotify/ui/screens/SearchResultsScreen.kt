@@ -29,12 +29,12 @@ import com.lightphone.spotify.data.SearchResults
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
-import com.lightphone.spotify.ui.components.MonoContentContainer
-import com.lightphone.spotify.ui.components.MonoSwipeToActionRow
+import com.lightphone.spotify.ui.components.PhonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
 import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.tap
 import com.lightphone.spotify.ui.components.tapWithLongPress
-import com.lightphone.spotify.ui.theme.MonoColors
+import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -55,7 +55,7 @@ fun SearchResultsScreen(
         vm.submitSearch(query)
     }
 
-    MonoContentContainer(
+    PhonoContentContainer(
         title = "Results for $query",
         hideBackButton = false,
         onBack = onBack,
@@ -88,7 +88,7 @@ fun SearchResultsScreen(
                         CustomScrollView(verticalArrangement = Arrangement.spacedBy(n(8))) {
                             items(items, key = { "${it::class.simpleName}-${it.id}" }) { item ->
                                 when (item) {
-                                    is SearchResultItem.Track -> MonoSwipeToActionRow(
+                                    is SearchResultItem.Track -> PhonoSwipeToActionRow(
                                         onSwipeAction = {
                                             vm.addTrackToQueue(item.track.toMetadata())
                                         },
@@ -216,7 +216,7 @@ private fun SearchFilterChip(
 ) {
     Box(
         modifier = Modifier
-            .background(if (active) MonoColors.Foreground else MonoColors.PlaceholderBg)
+            .background(if (active) PhonoColors.Foreground else PhonoColors.PlaceholderBg)
             .tap { onSelect(filter) }
             .padding(horizontal = n(14), vertical = n(8)),
     ) {
@@ -224,7 +224,7 @@ private fun SearchFilterChip(
             filter.label,
             size = 16,
             lineHeight = 18,
-            color = if (active) MonoColors.Background else MonoColors.Foreground,
+            color = if (active) PhonoColors.Background else PhonoColors.Foreground,
             maxLines = 1,
         )
     }
@@ -252,7 +252,7 @@ private fun SearchResultRow(
                 item.title,
                 size = 22,
                 lineHeight = 24,
-                color = MonoColors.Foreground,
+                color = PhonoColors.Foreground,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -260,7 +260,7 @@ private fun SearchResultRow(
                 item.subtitle,
                 size = 16,
                 lineHeight = 18,
-                color = MonoColors.Foreground,
+                color = PhonoColors.Foreground,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
