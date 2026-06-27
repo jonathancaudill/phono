@@ -9,6 +9,9 @@ import com.lightphone.spotify.ui.theme.n
 /**
  * Text-only library list: LazyColumn rows = loaded Room items only.
  * Virtual scrollbar reflects [remoteTotal]; a one-screen footer runway softens the loaded edge.
+ *
+ * Uses draggable thumb tracking by default. Pass [ScrollbarMode.ScrubHoldOnly] only on
+ * Liked Songs and Albums (date scrub tabs).
  */
 @Composable
 fun <T> LibraryInfiniteList(
@@ -23,6 +26,7 @@ fun <T> LibraryInfiniteList(
     modifier: Modifier = Modifier,
     dateIndex: LibraryDateIndex? = null,
     alphaIndex: LibraryAlphaIndex? = null,
+    scrollbarMode: ScrollbarMode = ScrollbarMode.Grabbable,
     onScrubToIndex: suspend (Int) -> Unit = {},
     onScrubJumpChange: (Boolean) -> Unit = {},
     itemContent: @Composable (index: Int, item: T) -> Unit,
@@ -43,6 +47,7 @@ fun <T> LibraryInfiniteList(
         hasMoreItems = hasMore,
         dateIndex = dateIndex,
         alphaIndex = alphaIndex,
+        scrollbarMode = scrollbarMode,
         onScrubToIndex = onScrubToIndex,
         onScrubJumpChange = onScrubJumpChange,
     ) {

@@ -1,12 +1,16 @@
 package com.lightphone.spotify.ui.components
 
+import android.os.Build
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
@@ -14,16 +18,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.lightphone.spotify.debug.DebugSessionLog
 import com.lightphone.spotify.ui.theme.MonoColors
 import com.lightphone.spotify.ui.theme.n
-import kotlin.math.roundToInt
+import com.lightphone.spotify.ui.theme.nSp
+import kotlin.math.abs
 
 internal val SCRUBBAR_TOUCH_WIDTH: Dp = n(24)
-internal val SCRUB_YEARS_COLUMN_WIDTH: Dp = n(48)
-internal val SCRUB_MONTHS_COLUMN_WIDTH: Dp = n(96)
+internal val GRABBABLE_STRIP_TOUCH_WIDTH: Dp = n(72)
+internal val SCRUB_YEARS_COLUMN_WIDTH: Dp = n(56)
+internal val SCRUB_MONTHS_COLUMN_WIDTH: Dp = n(168)
 private val SCRUB_COLUMN_GAP: Dp = n(20)
 
 internal enum class ScrubColumn {
@@ -32,8 +42,13 @@ internal enum class ScrubColumn {
     Scrollbar,
 }
 
-internal fun scrubColumnAt(xPx: Float, totalWidthPx: Float, density: Float): ScrubColumn {
-    val scrollbarW = SCRUBBAR_TOUCH_WIDTH.value * density
+internal fun scrubColumnAt(
+    xPx: Float,
+    totalWidthPx: Float,
+    density: Float,
+    stripWidthDp: Dp = SCRUBBAR_TOUCH_WIDTH,
+): ScrubColumn {
+    val scrollbarW = stripWidthDp.value * density
     val yearsW = SCRUB_YEARS_COLUMN_WIDTH.value * density
     val monthsW = SCRUB_MONTHS_COLUMN_WIDTH.value * density
     val yearsLeft = totalWidthPx - scrollbarW - yearsW
@@ -44,13 +59,6 @@ internal fun scrubColumnAt(xPx: Float, totalWidthPx: Float, density: Float): Scr
         xPx >= monthsLeft -> ScrubColumn.Months
         else -> ScrubColumn.Months
     }
-}
-
-internal fun indexForVerticalPosition(yPx: Float, count: Int, heightPx: Float): Int {
-    if (count <= 0) return 0
-    if (count == 1) return 0
-    val fraction = (yPx / heightPx).coerceIn(0f, 1f)
-    return (fraction * (count - 1)).roundToInt()
 }
 
 /** Scrim + labels only — composed separately from the LazyColumn so open/close is instant. */
@@ -95,6 +103,7 @@ internal fun updateAlphaScrubSelection(
         yPx = yPx,
         count = alphaIndex.letters.size,
         heightPx = heightPx,
+        zoneFraction = null,
     )
     val letter = alphaIndex.letters[letterIndex]
     return alphaIndex.sections.firstOrNull { it.letter == letter } ?: alphaIndex.sections.first()
@@ -123,7 +132,6 @@ internal fun LibraryScrubVisuals(
                 .align(Alignment.TopEnd)
                 .fillMaxHeight()
                 .padding(end = SCRUBBAR_TOUCH_WIDTH),
-            horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             val monthsInYear = dateIndex.monthsForYear(selection.selectedYear)
@@ -144,23 +152,92 @@ internal fun LibraryScrubVisuals(
                 ),
             )
             // #endregion
-            ScrubLabelColumn(
+            ScrubWheelColumn(
                 labels = monthsInYear.map { monthLabel(it.month) },
                 selectedIndex = selection.selectedMonth?.let { selected ->
                     monthsInYear.indexOfFirst { it.month == selected.month }
                 }?.takeIf { it >= 0 },
+                centerTextSize = 24,
                 modifier = Modifier.width(SCRUB_MONTHS_COLUMN_WIDTH),
             )
             Spacer(Modifier.width(SCRUB_COLUMN_GAP))
-            ScrubLabelColumn(
+            ScrubWheelColumn(
                 labels = dateIndex.years.map { it.toString() },
                 selectedIndex = dateIndex.years.indexOf(selection.selectedYear).takeIf { it >= 0 },
+                centerTextSize = 22,
                 modifier = Modifier.width(SCRUB_YEARS_COLUMN_WIDTH),
             )
         }
     }
 }
 
+@Composable
+private fun ScrubWheelColumn(
+    labels: List<String>,
+    selectedIndex: Int?,
+    centerTextSize: Int,
+    modifier: Modifier = Modifier,
+) {
+    if (labels.isEmpty() || selectedIndex == null) return
+
+    Box(
+        modifier = modifier.fillMaxHeight(),
+        contentAlignment = Alignment.CenterEnd,
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.TopEnd,
+        ) {
+            val density = LocalDensity.current
+            val visibleItems = scrubWheelVisibleItems(
+                selectedIndex = selectedIndex,
+                count = labels.size,
+            )
+            val slotCount = SCRUB_WHEEL_VISIBLE_COUNT
+
+            visibleItems.forEach { (itemIndex, slotIndex) ->
+                val slotFraction = if (slotCount > 1) {
+                    slotIndex.toFloat() / (slotCount - 1)
+                } else {
+                    0.5f
+                }
+                val slotCenterY = maxHeight * slotFraction
+                val distanceFromCenter = abs(slotIndex - SCRUB_WHEEL_CENTER_SLOT)
+                val (textSize, alpha, blurRadiusDp) = when (distanceFromCenter) {
+                    0 -> Triple(centerTextSize, 1f, 0.dp)
+                    1 -> Triple(centerTextSize - 4, 0.5f, 0.dp)
+                    2 -> Triple(centerTextSize - 5, 0.35f, 0.dp)
+                    else -> Triple(centerTextSize - 6, 0.25f, 3.dp)
+                }
+                val textColor = if (distanceFromCenter == 0) {
+                    MonoColors.Foreground
+                } else {
+                    MonoColors.InactiveTab
+                }
+                val blurRadiusPx = with(density) { blurRadiusDp.toPx() }
+                val lineHeight = with(density) { nSp(textSize).toDp() }
+
+                StyledText(
+                    text = labels[itemIndex],
+                    size = textSize,
+                    color = textColor,
+                    maxLines = 1,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(y = slotCenterY - lineHeight / 2)
+                        .graphicsLayer {
+                            this.alpha = alpha
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && blurRadiusPx > 0f) {
+                                renderEffect = BlurEffect(blurRadiusPx, blurRadiusPx)
+                            }
+                        },
+                )
+            }
+        }
+    }
+}
+
+/** Legacy all-labels column — still used by alpha scrub. */
 @Composable
 private fun ScrubLabelColumn(
     labels: List<String>,

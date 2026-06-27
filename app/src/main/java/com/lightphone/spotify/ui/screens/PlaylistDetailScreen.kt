@@ -32,7 +32,6 @@ import com.lightphone.spotify.ui.components.MonoContentContainer
 import com.lightphone.spotify.ui.components.MonoSwipeToActionRow
 import com.lightphone.spotify.ui.components.MonoTrackEditActions
 import com.lightphone.spotify.ui.components.MonoTrackListItem
-import com.lightphone.spotify.ui.components.buildLibraryDateIndex
 import com.lightphone.spotify.ui.theme.MonoColors
 import com.lightphone.spotify.ui.theme.PublicSans
 import com.lightphone.spotify.ui.theme.n
@@ -66,9 +65,6 @@ fun PlaylistDetailScreen(
 
     val title = state.detail?.name ?: fallbackTitle
     val tracks = state.tracks
-    val dateIndex = remember(tracks) {
-        buildLibraryDateIndex(tracks) { it.addedAt }
-    }
 
     MonoContentContainer(
         title = title,
@@ -113,10 +109,6 @@ fun PlaylistDetailScreen(
                 else -> CustomScrollView(
                     state = listState,
                     loadedItemCount = tracks.size,
-                    dateIndex = dateIndex,
-                    onScrubToIndex = { index ->
-                        if (index in tracks.indices) listState.scrollToItem(index)
-                    },
                 ) {
                     itemsIndexed(tracks, key = { index, row -> row.uri.ifBlank { "$index" } }) { index, row ->
                         val track = row.track

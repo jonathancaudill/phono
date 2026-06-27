@@ -1,23 +1,43 @@
 package com.lightphone.spotify.ui.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyListItemInfo
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import com.lightphone.spotify.ui.theme.MonoColors
 import com.lightphone.spotify.ui.theme.n
-import androidx.compose.foundation.lazy.LazyListState
+import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 
 /**
- * Scrollbar geometry for a [LazyListState], used by [CustomScrollView] and drag-to-scrub.
+ * Scrollbar geometry for [CustomScrollView] scrub-hold mode (decorative thumb).
  *
- * [virtualItemCount] lets infinite library lists reflect the remote total in thumb size;
- * [loadedItemCount] caps how far drag scrub can scroll until more pages arrive.
+ * Grabbable drag uses [MonoScrollbarState] + [MonoDraggableScrollbarStrip] instead.
  */
 data class ScrollbarLayout(
     val thumbHeight: Float,
@@ -26,7 +46,18 @@ data class ScrollbarLayout(
     val viewport: Float,
     val avgItemSize: Float,
     val itemTotal: Int,
-)
+) {
+    val thumbTravel: Float get() = (viewport - thumbHeight).coerceAtLeast(0f)
+    val maxScrollPx: Float get() = (contentHeight - viewport).coerceAtLeast(0f)
+}
+
+/** Percent-based scrollbar state (NowInAndroid / LazyColumn fast-scroll pattern). */
+data class MonoScrollbarState(
+    val thumbSizePercent: Float = 1f,
+    val thumbMovedPercent: Float = 0f,
+) {
+    val thumbTrackSizePercent: Float get() = (1f - thumbSizePercent).coerceAtLeast(0f)
+}
 
 fun LazyListState.computeScrollbarLayout(
     loadedItemCount: Int? = null,
@@ -49,13 +80,11 @@ fun LazyListState.computeScrollbarLayout(
     val visibleSize = visible.sumOf { it.size }.toFloat()
     if (contentHeight <= viewport && visibleSize <= viewport) return null
 
-    val first = visible.first()
-    val scrollPx = avgItemSize * first.index - first.offset
-
+    val scrollPx = firstVisibleItemIndex * avgItemSize + firstVisibleItemScrollOffset
     val thumbHeight = max((viewport * viewport) / contentHeight, minThumbPx)
     val maxScroll = contentHeight - viewport
     val thumbTravel = viewport - thumbHeight
-    val thumbY = if (maxScroll > 0f) {
+    val thumbY = if (maxScroll > 0f && thumbTravel > 0f) {
         ((scrollPx / maxScroll) * thumbTravel).coerceIn(0f, thumbTravel)
     } else {
         0f
@@ -72,32 +101,177 @@ fun LazyListState.computeScrollbarLayout(
 }
 
 /**
- * Maps a Y position on the scrollbar strip to a [LazyListState] scroll position.
- * [stripY] is relative to the top of the touch strip (not the thumb center offset).
+ * Derives [MonoScrollbarState] from list scroll position with sub-item interpolation
+ * so the thumb moves smoothly between rows (NowInAndroid scrollbarState).
  */
-suspend fun LazyListState.scrollToStripY(
-    stripY: Float,
-    stripHeight: Float,
-    layout: ScrollbarLayout,
-    loadedItemCount: Int? = null,
-) {
-    val thumbTravel = stripHeight - layout.thumbHeight
-    if (thumbTravel <= 0f) return
-    val thumbY = (stripY - layout.thumbHeight / 2f).coerceIn(0f, thumbTravel)
-    val maxScroll = layout.contentHeight - layout.viewport
-    if (maxScroll <= 0f) return
-    val scrollPx = (thumbY / thumbTravel) * maxScroll
-    val maxIndex = loadedItemCount?.minus(1)?.coerceAtLeast(0)
-        ?: max(layout.itemTotal - 1, 0)
-    val index = (scrollPx / layout.avgItemSize).toInt().coerceIn(0, maxIndex)
-    val offset = (scrollPx - index * layout.avgItemSize).toInt().coerceAtLeast(0)
-    scroll { scrollToItem(index, offset) }
+@Composable
+fun LazyListState.monoScrollbarState(itemsAvailable: Int): MonoScrollbarState {
+    var state by remember { mutableStateOf(MonoScrollbarState()) }
+    LaunchedEffect(this, itemsAvailable) {
+        snapshotFlow {
+            if (itemsAvailable <= 0) return@snapshotFlow null
+
+            val visibleItemsInfo = layoutInfo.visibleItemsInfo
+            if (visibleItemsInfo.isEmpty()) return@snapshotFlow null
+
+            val firstIndex = min(
+                a = interpolateFirstItemIndex(visibleItemsInfo),
+                b = itemsAvailable.toFloat(),
+            )
+            if (firstIndex.isNaN()) return@snapshotFlow null
+
+            val itemsVisible = visibleItemsInfo.sumOf { itemInfo ->
+                itemVisibilityPercentage(
+                    itemSize = itemInfo.size,
+                    itemStartOffset = itemInfo.offset,
+                    viewportStartOffset = layoutInfo.viewportStartOffset,
+                    viewportEndOffset = layoutInfo.viewportEndOffset,
+                ).toDouble()
+            }.toFloat()
+
+            MonoScrollbarState(
+                thumbSizePercent = min(itemsVisible / itemsAvailable, 1f),
+                thumbMovedPercent = min(firstIndex / itemsAvailable, 1f),
+            )
+        }
+            .filterNotNull()
+            .distinctUntilChanged()
+            .collect { state = it }
+    }
+    return state
 }
 
-/** Visual track + thumb for the Mono list scrollbar (1px track, 5px thumb). */
+/**
+ * Bridges thumb drag percentage back to [LazyListState.scrollToItem].
+ * Uses LaunchedEffect so scroll runs in a normal coroutine scope, not pointerInput.
+ */
 @Composable
-fun MonoGrabbableScrollbar(
-    layout: ScrollbarLayout,
+fun rememberMonoScrollbarScroller(
+    listState: LazyListState,
+    itemsAvailable: Int,
+): (Float) -> Unit {
+    var thumbMovedPercent by remember { mutableFloatStateOf(Float.NaN) }
+    val itemCount by rememberUpdatedState(itemsAvailable)
+    val state by rememberUpdatedState(listState)
+
+    LaunchedEffect(state, thumbMovedPercent) {
+        if (thumbMovedPercent.isNaN()) return@LaunchedEffect
+        val totalItems = state.layoutInfo.totalItemsCount
+        if (totalItems <= 0) return@LaunchedEffect
+
+        val maxLazyIndex = (totalItems - 1).coerceAtLeast(0)
+        val exactPosition = itemCount * thumbMovedPercent
+        val targetIndex = exactPosition.toInt().coerceIn(0, maxLazyIndex)
+        val remainder = exactPosition - targetIndex
+
+        val avgItemSize = state.layoutInfo.visibleItemsInfo
+            .map { it.size }
+            .average()
+            .toFloat()
+            .takeIf { it > 0f }
+        val scrollOffset = if (avgItemSize != null) {
+            (remainder * avgItemSize).toInt().coerceAtLeast(0)
+        } else {
+            0
+        }
+        state.scrollToItem(targetIndex, scrollOffset)
+    }
+
+    return remember { { percent: Float -> thumbMovedPercent = percent } }
+}
+
+/**
+ * Right-edge grabbable scrollbar: wide touch strip, narrow visual track.
+ * Drag uses relative motion anchored to the thumb (does not jump to finger on grab).
+ */
+@Composable
+fun MonoDraggableScrollbarStrip(
+    state: MonoScrollbarState,
+    onThumbMoved: (Float) -> Unit,
+    minThumbPx: Float,
+    modifier: Modifier = Modifier,
+    touchWidth: Dp = GRABBABLE_STRIP_TOUCH_WIDTH,
+) {
+    var trackHeightPx by remember { mutableFloatStateOf(0f) }
+    var dragThumbMovedPercent by remember { mutableFloatStateOf(Float.NaN) }
+
+    val currentState = rememberUpdatedState(state)
+    val movedPercent = if (dragThumbMovedPercent.isNaN()) {
+        state.thumbMovedPercent
+    } else {
+        dragThumbMovedPercent
+    }
+
+    val thumbSizePx = max(state.thumbSizePercent * trackHeightPx, minThumbPx)
+    val thumbTravelPercent = movedPercent.coerceIn(0f, state.thumbTrackSizePercent)
+    val trackSizePx = if (state.thumbTrackSizePercent > 0f) {
+        (trackHeightPx - thumbSizePx) / state.thumbTrackSizePercent
+    } else {
+        trackHeightPx
+    }
+    val thumbYPx = trackSizePx * thumbTravelPercent
+
+    Box(
+        modifier = modifier
+            .width(touchWidth)
+            .fillMaxHeight()
+            .onSizeChanged { trackHeightPx = it.height.toFloat() }
+            .pointerInput(Unit) {
+                var dragThumbCenterY = Float.NaN
+                detectVerticalDragGestures(
+                    onDragStart = {
+                        val s = currentState.value
+                        val sizePx = max(s.thumbSizePercent * trackHeightPx, minThumbPx)
+                        val travelPx = (trackHeightPx - sizePx).coerceAtLeast(0f)
+                        val travelPercent = s.thumbMovedPercent.coerceIn(0f, s.thumbTrackSizePercent)
+                        val trackSizePx = if (s.thumbTrackSizePercent > 0f) {
+                            travelPx / s.thumbTrackSizePercent
+                        } else {
+                            trackHeightPx
+                        }
+                        val yPx = trackSizePx * travelPercent
+                        dragThumbCenterY = yPx + sizePx / 2f
+                    },
+                    onDragEnd = {
+                        dragThumbCenterY = Float.NaN
+                        dragThumbMovedPercent = Float.NaN
+                    },
+                    onDragCancel = {
+                        dragThumbCenterY = Float.NaN
+                        dragThumbMovedPercent = Float.NaN
+                    },
+                    onVerticalDrag = { change, dragAmount ->
+                        if (dragThumbCenterY.isNaN() || trackHeightPx <= 0f) return@detectVerticalDragGestures
+                        dragThumbCenterY += dragAmount
+                        val s = currentState.value
+                        val sizePx = max(s.thumbSizePercent * trackHeightPx, minThumbPx)
+                        val travelPx = (trackHeightPx - sizePx).coerceAtLeast(0f)
+                        if (travelPx <= 0f) return@detectVerticalDragGestures
+                        val travelFraction =
+                            ((dragThumbCenterY - sizePx / 2f) / travelPx).coerceIn(0f, 1f)
+                        dragThumbMovedPercent = travelFraction
+                        onThumbMoved(travelFraction)
+                        change.consume()
+                    },
+                )
+            },
+    ) {
+        MonoGrabbableScrollbarVisual(
+            thumbY = thumbYPx,
+            thumbHeight = thumbSizePx,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .width(SCRUBBAR_TOUCH_WIDTH)
+                .padding(end = n(2)),
+        )
+    }
+}
+
+@Composable
+private fun MonoGrabbableScrollbarVisual(
+    thumbY: Float,
+    thumbHeight: Float,
     modifier: Modifier = Modifier,
     trackWidth: Dp = n(1),
     thumbWidth: Dp = n(5),
@@ -119,8 +293,67 @@ fun MonoGrabbableScrollbar(
         )
         drawRect(
             color = color,
-            topLeft = Offset(thumbLeft, layout.thumbY),
-            size = Size(thumbWidthPx, layout.thumbHeight),
+            topLeft = Offset(thumbLeft, thumbY),
+            size = Size(thumbWidthPx, thumbHeight),
         )
     }
+}
+
+/** Decorative thumb for scrub-hold lists (Liked Songs / Albums). */
+@Composable
+fun MonoGrabbableScrollbar(
+    layout: ScrollbarLayout,
+    modifier: Modifier = Modifier,
+    trackWidth: Dp = n(1),
+    thumbWidth: Dp = n(5),
+    thumbRightOverhang: Dp = n(2),
+    color: androidx.compose.ui.graphics.Color = MonoColors.Foreground,
+) {
+    MonoGrabbableScrollbarVisual(
+        thumbY = layout.thumbY,
+        thumbHeight = layout.thumbHeight,
+        modifier = modifier,
+        trackWidth = trackWidth,
+        thumbWidth = thumbWidth,
+        thumbRightOverhang = thumbRightOverhang,
+        color = color,
+    )
+}
+
+private fun LazyListState.interpolateFirstItemIndex(
+    visibleItems: List<LazyListItemInfo>,
+): Float {
+    if (visibleItems.isEmpty()) return 0f
+
+    val firstItem = visibleItems.first()
+    val firstItemIndex = firstItem.index
+    if (firstItemIndex < 0) return Float.NaN
+
+    val firstItemSize = firstItem.size
+    if (firstItemSize == 0) return Float.NaN
+
+    val offsetPercentage = abs(firstItem.offset.toFloat()) / firstItemSize
+    val nextItem = visibleItems.getOrNull(1) ?: return firstItemIndex + offsetPercentage
+    val nextItemIndex = nextItem.index
+
+    return firstItemIndex + ((nextItemIndex - firstItemIndex) * offsetPercentage)
+}
+
+private fun itemVisibilityPercentage(
+    itemSize: Int,
+    itemStartOffset: Int,
+    viewportStartOffset: Int,
+    viewportEndOffset: Int,
+): Float {
+    if (itemSize == 0) return 0f
+    val itemEnd = itemStartOffset + itemSize
+    val startOffset = when {
+        itemStartOffset > viewportStartOffset -> 0
+        else -> abs(abs(viewportStartOffset) - abs(itemStartOffset))
+    }
+    val endOffset = when {
+        itemEnd < viewportEndOffset -> 0
+        else -> abs(abs(itemEnd) - abs(viewportEndOffset))
+    }
+    return (itemSize - startOffset - endOffset).toFloat() / itemSize.toFloat()
 }

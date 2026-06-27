@@ -25,6 +25,7 @@ import com.lightphone.spotify.ui.components.LibraryInfiniteList
 import com.lightphone.spotify.ui.components.MonoContentContainer
 import com.lightphone.spotify.ui.components.MonoMediaListItem
 import com.lightphone.spotify.ui.components.MonoSwipeToActionRow
+import com.lightphone.spotify.ui.components.ScrollbarMode
 import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.buildLibraryDateIndex
 import com.lightphone.spotify.ui.theme.MonoColors
@@ -86,6 +87,7 @@ fun LikedSongsScreen(
                         itemKey = { it.uri },
                         onEnsureBufferAhead = vm::ensureLikedTracksBufferAhead,
                         dateIndex = dateIndex,
+                        scrollbarMode = ScrollbarMode.ScrubHoldOnly,
                         onScrubToIndex = { index -> vm.scrollLikedTracksToIndex(listState, index) },
                         onScrubJumpChange = { active ->
                             if (active) vm.onScrubJumpStart() else vm.onScrubJumpEnd()
