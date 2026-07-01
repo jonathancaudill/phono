@@ -38,7 +38,7 @@ fun ArtistDetailScreen(
 
     LaunchedEffect(artistId) { vm.loadArtistDetail(artistId) }
 
-    val artist = state.artist
+    val artist = state.artist?.takeIf { it.id == artistId }
 
     PhonoContentContainer(
         title = artist?.name ?: "Artist",

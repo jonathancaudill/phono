@@ -48,7 +48,6 @@ import com.lightphone.spotify.ui.screens.SearchScreen
 import com.lightphone.spotify.ui.screens.SettingsScreen
 import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.PhonoTheme
-import java.net.URLDecoder
 
 private const val OverlayRoot = "overlay_root"
 
@@ -85,25 +84,33 @@ private fun MainNavigation(vm: AppViewModel) {
 
     val currentTab = DefaultPhonoTabs.firstOrNull { it.route == tabRoute } ?: PhonoTab.Liked
     val showOverlayLayer = overlayRoute != null && overlayRoute != OverlayRoot
-    val showOfflineStrip = !playback.networkOnline
+    val navbarStatusMessage = when {
+        playback.sessionExpired -> null
+        playback.reconnecting -> "Reconnecting…"
+        !playback.networkOnline -> "Device offline"
+        else -> null
+    }
+    val showSessionBanner = playback.sessionExpired && playback.statusMessage != null
 
     Column(
         Modifier
             .fillMaxSize()
             .background(PhonoColors.Background),
     ) {
-        playback.statusMessage?.let { msg ->
-            StyledText(
-                msg,
-                size = 14,
-                color = PhonoColors.Warning,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = n(12), vertical = n(4)),
-            )
+        if (showSessionBanner) {
+            playback.statusMessage?.let { msg ->
+                StyledText(
+                    msg,
+                    size = 14,
+                    color = PhonoColors.Warning,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = n(12), vertical = n(4)),
+                )
+            }
         }
         playback.error?.let { err ->
-            if (playback.statusMessage == null) {
+            if (!showSessionBanner) {
                 StyledText(
                     err,
                     size = 14,
@@ -187,7 +194,7 @@ private fun MainNavigation(vm: AppViewModel) {
                             restoreState = true
                         }
                     },
-                    statusMessage = if (showOfflineStrip) "Device offline" else null,
+                    statusMessage = navbarStatusMessage,
                 )
             }
 
@@ -251,7 +258,7 @@ private fun NavGraphBuilder.overlayDestinations(
         route = Routes.SearchResults,
         arguments = listOf(navArgument("query") { type = NavType.StringType }),
     ) { entry ->
-        val query = URLDecoder.decode(entry.arguments?.getString("query").orEmpty(), Charsets.UTF_8.name())
+        val query = entry.arguments?.getString("query").orEmpty()
         SearchResultsScreen(
             vm = vm,
             query = query,
@@ -277,10 +284,7 @@ private fun NavGraphBuilder.overlayDestinations(
         ),
     ) { entry ->
         val albumId = entry.arguments?.getString("albumId").orEmpty()
-        val title = URLDecoder.decode(
-            entry.arguments?.getString("title").orEmpty(),
-            Charsets.UTF_8.name(),
-        )
+        val title = entry.arguments?.getString("title").orEmpty()
         AlbumDetailScreen(
             vm = vm,
             albumId = albumId,
@@ -301,10 +305,7 @@ private fun NavGraphBuilder.overlayDestinations(
         ),
     ) { entry ->
         val playlistId = entry.arguments?.getString("playlistId").orEmpty()
-        val title = URLDecoder.decode(
-            entry.arguments?.getString("title").orEmpty(),
-            Charsets.UTF_8.name(),
-        )
+        val title = entry.arguments?.getString("title").orEmpty()
         PlaylistDetailScreen(
             vm = vm,
             playlistId = playlistId,
@@ -330,10 +331,7 @@ private fun NavGraphBuilder.overlayDestinations(
         route = Routes.PlaylistPicker,
         arguments = listOf(navArgument("trackUri") { type = NavType.StringType }),
     ) { entry ->
-        val trackUri = URLDecoder.decode(
-            entry.arguments?.getString("trackUri").orEmpty(),
-            Charsets.UTF_8.name(),
-        )
+        val trackUri = entry.arguments?.getString("trackUri").orEmpty()
         PlaylistPickerScreen(
             vm = vm,
             trackUri = trackUri,

@@ -3,7 +3,9 @@ package com.lightphone.spotify.ui.components
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,10 +25,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.unit.IntOffset
 import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -41,7 +46,8 @@ fun PhonoSwipeToActionRow(
 ) {
     val actionWidth = n(48)
     val actionWidthPx = with(LocalDensity.current) { actionWidth.toPx() }
-    val threshold = actionWidthPx * 0.28f
+    val threshold = actionWidthPx * 0.6f
+    val touchSlop = LocalViewConfiguration.current.touchSlop
     var dragOffset by remember { mutableFloatStateOf(0f) }
     var isDragging by remember { mutableStateOf(false) }
     val animatedOffset by animateFloatAsState(
@@ -56,20 +62,43 @@ fun PhonoSwipeToActionRow(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .pointerInput(actionWidthPx) {
-                detectHorizontalDragGestures(
-                    onDragStart = { isDragging = true },
-                    onDragEnd = {
-                        if (dragOffset >= threshold) {
-                            onSwipeAction()
+            .pointerInput(actionWidthPx, touchSlop) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var totalDx = 0f
+                    var totalDy = 0f
+                    var horizontalLocked = false
+                    var verticalLocked = false
+
+                    drag(down.id) { change ->
+                        val delta = change.positionChange()
+                        if (!horizontalLocked && !verticalLocked) {
+                            totalDx += delta.x
+                            totalDy += delta.y
+                            if (abs(totalDx) > touchSlop || abs(totalDy) > touchSlop) {
+                                when {
+                                    abs(totalDx) > abs(totalDy) * 1.5f -> {
+                                        horizontalLocked = true
+                                        isDragging = true
+                                    }
+                                    abs(totalDy) > abs(totalDx) * 1.5f -> {
+                                        verticalLocked = true
+                                    }
+                                }
+                            }
                         }
-                        dragOffset = 0f
-                        isDragging = false
-                    },
-                    onHorizontalDrag = { _, amount ->
-                        dragOffset = (dragOffset + amount).coerceIn(0f, actionWidthPx)
-                    },
-                )
+                        if (horizontalLocked) {
+                            change.consume()
+                            dragOffset = (dragOffset + delta.x).coerceIn(0f, actionWidthPx)
+                        }
+                    }
+
+                    if (horizontalLocked && dragOffset >= threshold) {
+                        onSwipeAction()
+                    }
+                    dragOffset = 0f
+                    isDragging = false
+                }
             },
     ) {
         Box(

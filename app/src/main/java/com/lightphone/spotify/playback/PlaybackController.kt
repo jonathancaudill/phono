@@ -15,6 +15,7 @@ import com.lightphone.spotify.data.AlbumDetailResult
 import com.lightphone.spotify.data.ArtistDetailResult
 import com.lightphone.spotify.data.SearchResultItem
 import com.lightphone.spotify.data.mapWebApiError
+import com.lightphone.spotify.data.local.DetailCacheRepository
 import com.lightphone.spotify.data.local.LibraryRepository
 import com.lightphone.spotify.data.local.LikedTrackEntity
 import com.lightphone.spotify.data.local.PhonoDatabase
@@ -31,6 +32,7 @@ import com.lightphone.spotify.ffi.LibrespotEngine
 import com.lightphone.spotify.data.webapi.SpotifyWebApi
 import com.lightphone.spotify.data.webapi.WebApiAuth
 import com.lightphone.spotify.ffi.NormalizationType
+import kotlinx.serialization.json.Json
 import com.lightphone.spotify.ffi.PlayerEventListener
 import com.lightphone.spotify.ffi.SpotifyException
 import com.lightphone.spotify.ffi.RepeatMode
@@ -103,7 +105,11 @@ class PlaybackController private constructor(
     private val webApi = SpotifyWebApi(webApiAuth)
     private val database = PhonoDatabase.get(appContext)
     val libraryRepository = LibraryRepository(database, webApi)
-    private val repository = SpotifyRepository(webApi, libraryRepository)
+    private val detailCache = DetailCacheRepository(
+        database,
+        Json { ignoreUnknownKeys = true },
+    )
+    private val repository = SpotifyRepository(webApi, libraryRepository, detailCache)
 
     /** uri -> metadata, populated when a list is played so the now-playing bar
      *  and MediaSession have title/artist/art without any extra network call. */
@@ -166,6 +172,10 @@ class PlaybackController private constructor(
             scope.launch {
                 _state.update {
                     recomputeStatusMessage(it.copy(networkOnline = true, sessionExpired = false))
+                }
+                val current = _state.value
+                if (current.reconnecting || !current.connected) {
+                    runCatching { engine.forceReconnectCheck() }
                 }
             }
         }
@@ -386,6 +396,7 @@ class PlaybackController private constructor(
         onStateChanged?.invoke()
     }
     fun refreshQueue() {
+        if (_state.value.reconnecting) return
         val snapshot = engine.getQueue()
         val queue = QueueViewState(
             nowPlaying = snapshot.nowPlayingUri?.let { uriToQueueItem(normalizeUri(it)) },
@@ -720,6 +731,18 @@ class PlaybackController private constructor(
             repository.isTrackSaved(uri)
         }
 
+    suspend fun isSavedAlbumCached(albumId: String): Boolean =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            repository.isSavedAlbumCached(albumId)
+        }
+
+    suspend fun playlistsContainingTrack(
+        trackUri: String,
+        playlistIds: List<String>,
+    ): Set<String> = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        repository.playlistsContainingTrack(trackUri, playlistIds)
+    }
+
     suspend fun isLikedTrackCached(uri: String): Boolean =
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             libraryRepository.isLikedTrackCached(uri)
@@ -833,7 +856,23 @@ class PlaybackController private constructor(
 
     override fun onTrackChanged(uri: String) {
         val normalized = normalizeUri(uri)
-        _state.update { it.copy(currentUri = normalized, isLoading = false, error = null) }
+        val cached = trackMetadata[normalized]
+        _state.update {
+            it.copy(
+                currentUri = normalized,
+                isLoading = false,
+                error = null,
+                title = cached?.title ?: it.title,
+                artist = cached?.artists ?: it.artist,
+                artUrl = cached?.artUrl ?: it.artUrl,
+                albumId = cached?.albumId ?: it.albumId,
+                durationMs = if (cached != null && cached.durationMs > 0) {
+                    cached.durationMs
+                } else {
+                    it.durationMs
+                },
+            )
+        }
         syncPlaybackModes()
         fetchMetadata(normalized)
         refreshQueue()
@@ -875,6 +914,7 @@ class PlaybackController private constructor(
 
     override fun onConnectionRestored() {
         _state.update { recomputeStatusMessage(it.copy(connected = true, reconnecting = false)) }
+        refreshQueue()
     }
 
     override fun onError(message: String) {
@@ -891,11 +931,6 @@ class PlaybackController private constructor(
         if (cached != null) {
             applyTrackMetadata(cached)
             if (cached.artUrl != null) return
-        } else {
-            _state.update {
-                it.copy(title = null, artist = null, artUrl = null, albumId = null, durationMs = 0)
-            }
-            onStateChanged?.invoke()
         }
         enrichNowPlayingFromWebApi(normalized)
     }

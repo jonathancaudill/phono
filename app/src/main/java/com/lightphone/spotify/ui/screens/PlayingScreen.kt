@@ -1,8 +1,11 @@
 package com.lightphone.spotify.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -187,22 +190,38 @@ private fun ProgressBar(playback: PlaybackUiState, onSeek: (Long) -> Unit) {
         lastDurationMs = playback.durationMs
     }
     val duration = (if (playback.durationMs > 0L) playback.durationMs else lastDurationMs).coerceAtLeast(1)
-    val progress = (playback.positionMs.toFloat() / duration).coerceIn(0f, 1f)
+
+    var scrubPositionMs by remember(playback.currentUri) { mutableLongStateOf(-1L) }
+    val displayPositionMs = if (scrubPositionMs >= 0L) scrubPositionMs else playback.positionMs
+    val displayProgress = (displayPositionMs.toFloat() / duration).coerceIn(0f, 1f)
 
     Column(
-        Modifier.fillMaxWidth(),
+        Modifier
+            .fillMaxWidth(0.9f)
+            .defaultMinSize(minHeight = n(40))
+            .pointerInput(duration) {
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    down.consume()
+                    fun seekAt(x: Float) {
+                        val fraction = (x / size.width).coerceIn(0f, 1f)
+                        scrubPositionMs = (duration * fraction).toLong()
+                    }
+                    seekAt(down.position.x)
+                    drag(down.id) { change ->
+                        change.consume()
+                        seekAt(change.position.x)
+                    }
+                    onSeek(scrubPositionMs.coerceAtLeast(0L))
+                    scrubPositionMs = -1L
+                }
+            },
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         BoxWithConstraints(
             Modifier
-                .fillMaxWidth(0.9f)
-                .height(n(6))
-                .pointerInput(duration) {
-                    detectTapGestures { offset ->
-                        val fraction = (offset.x / size.width).coerceIn(0f, 1f)
-                        onSeek((duration * fraction).toLong())
-                    }
-                },
+                .fillMaxWidth()
+                .height(n(6)),
         ) {
             Box(
                 Modifier
@@ -213,7 +232,7 @@ private fun ProgressBar(playback: PlaybackUiState, onSeek: (Long) -> Unit) {
             )
             Box(
                 Modifier
-                    .fillMaxWidth(progress)
+                    .fillMaxWidth(displayProgress)
                     .fillMaxHeight()
                     .align(Alignment.CenterStart)
                     .background(PhonoColors.Foreground),
@@ -221,11 +240,11 @@ private fun ProgressBar(playback: PlaybackUiState, onSeek: (Long) -> Unit) {
         }
         Row(
             Modifier
-                .fillMaxWidth(0.9f)
+                .fillMaxWidth()
                 .padding(top = n(3), bottom = n(6)),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            StyledText(formatTime(playback.positionMs), size = 12, color = PhonoColors.Foreground)
+            StyledText(formatTime(displayPositionMs), size = 12, color = PhonoColors.Foreground)
             StyledText(formatTime(duration), size = 12, color = PhonoColors.Foreground)
         }
     }

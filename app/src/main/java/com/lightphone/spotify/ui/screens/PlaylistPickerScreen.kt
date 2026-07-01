@@ -70,12 +70,14 @@ fun PlaylistPickerScreen(
                 else -> CustomScrollView(modifier = Modifier.weight(1f)) {
                     state.playlists.forEach { playlist ->
                         item(key = playlist.playlist_id) {
-                            val selected = playlist.playlist_id in state.selectedPlaylistIds
+                            val alreadyContains = playlist.playlist_id in state.containingPlaylistIds
+                            val selected = alreadyContains ||
+                                playlist.playlist_id in state.selectedPlaylistIds
                             PlaylistPickerRow(
                                 name = playlist.name,
                                 ownerName = playlist.owner_name,
                                 selected = selected,
-                                disabled = state.adding,
+                                disabled = state.adding || alreadyContains,
                                 onToggle = { vm.togglePlaylistPickerSelection(playlist.playlist_id) },
                             )
                         }

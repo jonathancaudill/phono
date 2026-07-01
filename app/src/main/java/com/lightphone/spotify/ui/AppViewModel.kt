@@ -44,14 +44,17 @@ import kotlinx.coroutines.withContext
 
 data class AlbumDetailState(
     val loading: Boolean = false,
+    val requestedId: String? = null,
     val album: SpotifyAlbumDetail? = null,
     val isSaved: Boolean = false,
+    val isSavedConfirmed: Boolean = false,
     val saving: Boolean = false,
     val error: String? = null,
 )
 
 data class ArtistDetailState(
     val loading: Boolean = false,
+    val requestedId: String? = null,
     val artist: SpotifyArtistDetail? = null,
     val topTracks: List<SpotifyTrack> = emptyList(),
     val albums: List<com.lightphone.spotify.data.SpotifyAlbumSimple> = emptyList(),
@@ -89,6 +92,7 @@ data class PlaylistDetailTrackRow(
 
 data class PlaylistDetailState(
     val loading: Boolean = false,
+    val requestedId: String? = null,
     val detail: SpotifyPlaylistDetail? = null,
     val tracks: List<PlaylistDetailTrackRow> = emptyList(),
     val snapshotId: String? = null,
@@ -111,6 +115,7 @@ data class PlaylistPickerState(
     val loading: Boolean = false,
     val adding: Boolean = false,
     val playlists: List<PlaylistEntity> = emptyList(),
+    val containingPlaylistIds: Set<String> = emptySet(),
     val selectedPlaylistIds: Set<String> = emptySet(),
     val error: String? = null,
     val statusMessage: String? = null,
@@ -601,13 +606,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadPlaylistDetail(playlistId: String) {
-        if (loadedPlaylistId == playlistId && _playlistDetail.value.detail != null) return
+        if (loadedPlaylistId == playlistId &&
+            _playlistDetail.value.detail?.id == playlistId &&
+            !_playlistDetail.value.loading
+        ) {
+            return
+        }
         loadedPlaylistId = playlistId
+        _playlistDetail.value = PlaylistDetailState(
+            loading = true,
+            requestedId = playlistId,
+        )
         viewModelScope.launch {
-            _playlistDetail.value = PlaylistDetailState(loading = true)
             runCatching { controller.playlistDetail(playlistId) }
                 .onSuccess { result ->
                     _playlistDetail.value = PlaylistDetailState(
+                        requestedId = playlistId,
                         detail = result.detail,
                         tracks = result.tracks.mapNotNull { item ->
                             item.track?.let { track ->
@@ -624,7 +638,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
                 .onFailure { e ->
-                    _playlistDetail.value = PlaylistDetailState(error = e.message ?: "Could not load playlist")
+                    _playlistDetail.value = PlaylistDetailState(
+                        requestedId = playlistId,
+                        error = e.message ?: "Could not load playlist",
+                    )
                 }
         }
     }
@@ -771,9 +788,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _playlistPicker.value = PlaylistPickerState(trackUri = trackUri, loading = true)
             runCatching { controller.editablePlaylists() }
                 .onSuccess { playlists ->
+                    val containing = runCatching {
+                        controller.playlistsContainingTrack(
+                            trackUri,
+                            playlists.map { it.playlist_id },
+                        )
+                    }.getOrDefault(emptySet())
                     _playlistPicker.value = PlaylistPickerState(
                         trackUri = trackUri,
                         playlists = playlists,
+                        containingPlaylistIds = containing,
                     )
                 }
                 .onFailure { e ->
@@ -787,7 +811,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun togglePlaylistPickerSelection(playlistId: String) {
         _playlistPicker.update { state ->
-            if (state.adding) return@update state
+            if (state.adding || playlistId in state.containingPlaylistIds) return@update state
             val next = state.selectedPlaylistIds.toMutableSet()
             if (playlistId in next) next.remove(playlistId) else next.add(playlistId)
             state.copy(selectedPlaylistIds = next, error = null, statusMessage = null)
@@ -819,17 +843,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadAlbumDetail(albumId: String) {
+        _albumDetail.value = AlbumDetailState(loading = true, requestedId = albumId)
         viewModelScope.launch {
-            _albumDetail.value = AlbumDetailState(loading = true)
+            val cachedSaved = runCatching { controller.isSavedAlbumCached(albumId) }
+                .getOrDefault(false)
+            _albumDetail.update {
+                if (it.requestedId != albumId) return@update it
+                it.copy(isSaved = cachedSaved, isSavedConfirmed = false)
+            }
             runCatching { controller.albumDetail(albumId) }
                 .onSuccess { result ->
+                    if (_albumDetail.value.requestedId != albumId) return@onSuccess
                     _albumDetail.value = AlbumDetailState(
+                        requestedId = albumId,
                         album = result.album,
                         isSaved = result.isSaved,
+                        isSavedConfirmed = true,
                     )
                 }
                 .onFailure { e ->
-                    _albumDetail.value = AlbumDetailState(error = e.message ?: "Could not load album")
+                    if (_albumDetail.value.requestedId != albumId) return@onFailure
+                    _albumDetail.value = AlbumDetailState(
+                        requestedId = albumId,
+                        error = e.message ?: "Could not load album",
+                        isSaved = cachedSaved,
+                    )
                 }
         }
     }
@@ -851,18 +889,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadArtistDetail(artistId: String) {
+        _artistDetail.value = ArtistDetailState(loading = true, requestedId = artistId)
         viewModelScope.launch {
-            _artistDetail.value = ArtistDetailState(loading = true)
             runCatching { controller.artistDetail(artistId) }
                 .onSuccess { result ->
+                    if (_artistDetail.value.requestedId != artistId) return@onSuccess
                     _artistDetail.value = ArtistDetailState(
+                        requestedId = artistId,
                         artist = result.artist,
                         topTracks = result.topTracks,
                         albums = result.albums,
                     )
                 }
                 .onFailure { e ->
-                    _artistDetail.value = ArtistDetailState(error = e.message ?: "Could not load artist")
+                    if (_artistDetail.value.requestedId != artistId) return@onFailure
+                    _artistDetail.value = ArtistDetailState(
+                        requestedId = artistId,
+                        error = e.message ?: "Could not load artist",
+                    )
                 }
         }
     }

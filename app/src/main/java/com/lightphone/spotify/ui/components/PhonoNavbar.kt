@@ -10,10 +10,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MoreHoriz
-import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -84,7 +84,7 @@ private fun OfflineStrip(message: String) {
 enum class PhonoTab(val route: String, val label: String, val icon: ImageVector) {
     Liked("liked", "Liked Songs", Icons.Default.Favorite),
     Albums("albums", "Albums", Icons.Default.Album),
-    Playlists("playlists", "Playlists", Icons.Default.QueueMusic),
+    Playlists("playlists", "Playlists", Icons.AutoMirrored.Filled.PlaylistPlay),
     Search("search", "Search", Icons.Default.Search),
     Settings("settings", "Settings", Icons.Default.MoreHoriz),
 }

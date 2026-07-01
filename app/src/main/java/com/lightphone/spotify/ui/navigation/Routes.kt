@@ -1,5 +1,7 @@
 package com.lightphone.spotify.ui.navigation
 
+import android.net.Uri
+
 object Routes {
     const val Login = "login"
     const val Main = "main"
@@ -12,12 +14,12 @@ object Routes {
     const val CreatePlaylist = "create_playlist"
     const val PlaylistPicker = "playlist_picker/{trackUri}"
 
-    fun searchResults(query: String) = "search_results/${java.net.URLEncoder.encode(query, Charsets.UTF_8.name())}"
+    fun searchResults(query: String) = "search_results/${Uri.encode(query)}"
     fun album(albumId: String, title: String = "") =
-        "album/$albumId?title=${java.net.URLEncoder.encode(title, Charsets.UTF_8.name())}"
+        "album/$albumId?title=${Uri.encode(title)}"
     fun artist(artistId: String) = "artist/$artistId"
     fun playlist(playlistId: String, title: String = "") =
-        "playlist/$playlistId?title=${java.net.URLEncoder.encode(title, Charsets.UTF_8.name())}"
+        "playlist/$playlistId?title=${Uri.encode(title)}"
     fun playlistPicker(trackUri: String) =
-        "playlist_picker/${java.net.URLEncoder.encode(trackUri, Charsets.UTF_8.name())}"
+        "playlist_picker/${Uri.encode(trackUri)}"
 }

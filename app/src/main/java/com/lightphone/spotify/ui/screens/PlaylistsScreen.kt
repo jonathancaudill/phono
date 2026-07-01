@@ -12,7 +12,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
@@ -104,7 +104,7 @@ fun PlaylistsScreen(
                             primaryText = playlist.name,
                             secondaryText = playlist.owner_name,
                             showImage = false,
-                            placeholderIcon = Icons.Default.QueueMusic,
+                            placeholderIcon = Icons.AutoMirrored.Filled.PlaylistPlay,
                             onClick = { onOpenPlaylist(playlist.playlist_id, playlist.name) },
                             onLongClick = {
                                 vm.showPlaylistContextMenu(

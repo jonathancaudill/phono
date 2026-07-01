@@ -1,6 +1,8 @@
 package com.lightphone.spotify.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextAlign
 import com.lightphone.spotify.ui.ContextMenuAction
 import com.lightphone.spotify.ui.theme.PhonoColors
@@ -27,6 +30,13 @@ private val OverlayBottomInset = n(30)
 // size 26 text + slightly relaxed gap between lines
 private const val ContextMenuItemFontSize = 26
 private const val ContextMenuItemLineHeight = 50
+
+/** Full-screen scrim that absorbs touches so they do not reach content beneath. */
+private fun Modifier.consumeScrimTouches(): Modifier = pointerInput(Unit) {
+    awaitEachGesture {
+        awaitFirstDown().consume()
+    }
+}
 
 data class PhonoContextMenuItem(
     val label: String,
@@ -116,7 +126,9 @@ fun PhonoDeleteConfirmOverlay(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(PhonoColors.Background),
+            .background(PhonoColors.Background)
+            .consumeScrimTouches()
+            .tap(onClick = onCancel),
     ) {
         Box(
             modifier = Modifier

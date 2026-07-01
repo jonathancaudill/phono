@@ -65,6 +65,9 @@ interface SavedAlbumDao {
     @Query("DELETE FROM saved_albums WHERE album_id = :albumId")
     suspend fun deleteByAlbumId(albumId: String)
 
+    @Query("SELECT EXISTS(SELECT 1 FROM saved_albums WHERE album_id = :albumId LIMIT 1)")
+    suspend fun exists(albumId: String): Boolean
+
     @Query(
         """
         UPDATE saved_albums SET sort_index = sort_index + 1

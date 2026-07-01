@@ -1,6 +1,8 @@
 package com.lightphone.spotify.ui.components
 
 import android.os.Build
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -17,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
@@ -79,6 +82,11 @@ internal fun LibraryAlphaScrubVisuals(
             .fillMaxSize()
             .drawBehind {
                 drawRect(color = scrimColor, size = Size(size.width, size.height))
+            }
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown().consume()
+                }
             },
     ) {
         ScrubLabelColumn(
@@ -129,6 +137,11 @@ internal fun LibraryScrubVisuals(
             .fillMaxSize()
             .drawBehind {
                 drawRect(color = scrimColor, size = Size(size.width, size.height))
+            }
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown().consume()
+                }
             },
     ) {
         Row(

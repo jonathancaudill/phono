@@ -63,8 +63,9 @@ fun PlaylistDetailScreen(
         return
     }
 
-    val title = state.detail?.name ?: fallbackTitle
-    val tracks = state.tracks
+    val detail = state.detail?.takeIf { it.id == playlistId }
+    val title = detail?.name ?: fallbackTitle
+    val tracks = if (state.requestedId == playlistId) state.tracks else emptyList()
 
     PhonoContentContainer(
         title = title,
@@ -82,7 +83,7 @@ fun PlaylistDetailScreen(
                 vm.togglePlaylistLibrary(playlistId)
             }
         },
-        rightIconVisible = state.isEditable || state.detail != null,
+        rightIconVisible = state.isEditable || detail != null,
         rightLoading = state.mutating || state.saving,
         onTitleClick = if (state.editMode && state.isEditable) {
             { renameDraft = title }
@@ -103,14 +104,14 @@ fun PlaylistDetailScreen(
                 .padding(bottom = n(20)),
         ) {
             when {
-                state.error != null && state.detail == null -> EmptyListMessage(state.error!!)
-                state.loading && state.detail == null -> EmptyListMessage("Loading playlist…")
+                state.error != null && detail == null -> EmptyListMessage(state.error!!)
+                state.loading && detail == null -> EmptyListMessage("Loading playlist…")
                 tracks.isEmpty() -> EmptyListMessage("No tracks in this playlist.")
                 else -> CustomScrollView(
                     state = listState,
                     loadedItemCount = tracks.size,
                 ) {
-                    itemsIndexed(tracks, key = { index, row -> row.uri.ifBlank { "$index" } }) { index, row ->
+                    itemsIndexed(tracks, key = { index, _ -> index }) { index, row ->
                         val track = row.track
                         Column {
                             PlaylistTrackRow(

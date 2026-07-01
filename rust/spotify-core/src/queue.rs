@@ -103,7 +103,21 @@ impl QueueState {
         self.position_ms = position_ms;
     }
 
-    pub fn snapshot_resume(&self) -> Option<(Vec<SpotifyUri>, usize, u32)> {
+    /// Full queue snapshot for session rebuild (manual queue, shuffle, repeat, label).
+    pub fn snapshot_resume(&self) -> Option<QueueState> {
+        if self.context_uris.is_empty() {
+            None
+        } else {
+            Some(self.clone())
+        }
+    }
+
+    pub fn restore_snapshot(&mut self, snap: QueueState) {
+        *self = snap;
+    }
+
+    /// Legacy linear-only snapshot fields — used by tests documenting linear restore.
+    pub fn snapshot_linear(&self) -> Option<(Vec<SpotifyUri>, usize, u32)> {
         if self.context_uris.is_empty() {
             None
         } else {
@@ -512,5 +526,150 @@ mod tests {
         let snap = q.queue_snapshot();
         assert_eq!(snap.next_from_context[0], uri_string(&uris[2]));
         assert_eq!(snap.next_from_context[1], uri_string(&uris[1]));
+    }
+
+    fn album(n: usize) -> Vec<SpotifyUri> {
+        // Deterministic distinct base62 ids so URIs differ across the queue.
+        const IDS: &[&str] = &[
+            "4iV5W9uYEdYUVa79Axb7Rh",
+            "2ZEPR21rR29EXOpF35cHY1",
+            "6rqhFgbbKwnb9MLmUQDhG6",
+            "3n3Ppam7vgaVa1iaRUc9Lp",
+            "7ouMYWpwJ422jRcDASZB7P",
+            "0VjIjW4GlUZAMYd2vXMi3b",
+            "1mea3bSkSGXuIRvnydlB5b",
+            "5ChkMS8OtdzJeqyybCc9R5",
+        ];
+        IDS.iter().take(n).map(|id| track_uri(id)).collect()
+    }
+
+    /// Simulate a background disconnect mid-track: the reconnect monitor takes a
+    /// resume snapshot, the old `Active` is dropped, and a fresh `QueueState` is
+    /// rebuilt via `restore_linear`. Now-playing track and position must survive.
+    #[test]
+    fn resume_round_trips_across_reconnect() {
+        let uris = album(5);
+        let mut q = QueueState::default();
+        q.set_queue(uris.clone(), 0, Some("Album".into()));
+        // Advance two tracks and play partway into the third.
+        q.skip_next(true);
+        q.skip_next(true);
+        q.set_position_ms(42_000);
+        let current_before = uri_string(&q.current_uri().unwrap());
+
+        // Connection drops -> monitor snapshots, old queue is gone.
+        let snap = q.snapshot_resume().unwrap();
+        drop(q);
+
+        // Session rebuilt on reconnect with a brand-new queue.
+        let mut rebuilt = QueueState::default();
+        rebuilt.restore_snapshot(snap);
+
+        assert_eq!(uri_string(&rebuilt.current_uri().unwrap()), current_before);
+        assert_eq!(rebuilt.position_ms(), 42_000);
+        // The two already-played tracks are not replayed after reconnect.
+        assert_eq!(rebuilt.queue_snapshot().next_from_context.len(), 2);
+    }
+
+    /// An idle/empty queue (nothing was playing when backgrounded) must produce
+    /// no resume snapshot, so a reconnect doesn't spuriously start playback.
+    #[test]
+    fn empty_queue_has_no_resume_snapshot() {
+        let q = QueueState::default();
+        assert!(q.snapshot_resume().is_none());
+    }
+
+    /// Full snapshot preserves manual queue across session rebuild.
+    #[test]
+    fn full_snapshot_preserves_manual_queue() {
+        let uris = album(4);
+        let mut q = QueueState::default();
+        q.set_queue(uris.clone(), 1, Some("Album".into()));
+        q.add_to_queue(track_uri("5ChkMS8OtdzJeqyybCc9R5"));
+        let current_before = uri_string(&q.current_uri().unwrap());
+
+        let snap = q.snapshot_resume().unwrap();
+        let mut rebuilt = QueueState::default();
+        rebuilt.restore_snapshot(snap);
+
+        assert_eq!(uri_string(&rebuilt.current_uri().unwrap()), current_before);
+        assert_eq!(rebuilt.queue_snapshot().next_from_context.len(), 2);
+        assert_eq!(rebuilt.queue_snapshot().next_in_queue.len(), 1);
+    }
+
+    /// Linear-only restore still drops manual queue (legacy path).
+    #[test]
+    fn resume_restores_context_after_manual_queue() {
+        let uris = album(4);
+        let mut q = QueueState::default();
+        q.set_queue(uris.clone(), 1, Some("Album".into()));
+        q.add_to_queue(track_uri("5ChkMS8OtdzJeqyybCc9R5"));
+        let current_before = uri_string(&q.current_uri().unwrap());
+
+        let (snap_uris, snap_index, snap_pos) = q.snapshot_linear().unwrap();
+        let mut rebuilt = QueueState::default();
+        rebuilt.restore_linear(snap_uris, snap_index, snap_pos);
+
+        assert_eq!(uri_string(&rebuilt.current_uri().unwrap()), current_before);
+        // Started at index 1 of 4 -> two context tracks remain.
+        assert_eq!(rebuilt.queue_snapshot().next_from_context.len(), 2);
+        assert!(rebuilt.queue_snapshot().next_in_queue.is_empty());
+    }
+
+    /// Long-running playback: stepping through an entire album via end-of-track
+    /// events visits every track once and then stops (repeat off).
+    #[test]
+    fn plays_through_entire_album_then_stops() {
+        let uris = album(6);
+        let mut q = QueueState::default();
+        q.set_queue(uris.clone(), 0, None);
+
+        let mut visited = vec![uri_string(&q.current_uri().unwrap())];
+        while let Some(next) = q.end_of_track() {
+            visited.push(uri_string(&next));
+            assert!(visited.len() <= uris.len(), "queue should not loop with repeat off");
+        }
+        let expected: Vec<String> = uris.iter().map(uri_string).collect();
+        assert_eq!(visited, expected);
+        // After the last track, end_of_track yields nothing more.
+        assert!(q.end_of_track().is_none());
+    }
+
+    /// Repeat-context keeps a backgrounded queue playing indefinitely: simulate
+    /// many album cycles and confirm it never dead-ends.
+    #[test]
+    fn repeat_context_loops_indefinitely() {
+        let uris = album(3);
+        let mut q = QueueState::default();
+        q.set_queue(uris.clone(), 0, None);
+        assert_eq!(q.toggle_repeat(), RepeatMode::Context);
+
+        // Three full albums' worth of track ends should always advance.
+        for _ in 0..(uris.len() * 3) {
+            assert!(
+                q.end_of_track().is_some(),
+                "repeat-context must always supply a next track"
+            );
+        }
+    }
+
+    /// Repeat-track holds on the same URI across repeated end-of-track events
+    /// (a single song left looping in the background).
+    #[test]
+    fn repeat_track_holds_same_uri() {
+        let uris = album(3);
+        let mut q = QueueState::default();
+        q.set_queue(uris.clone(), 1, None);
+        q.toggle_repeat(); // Context
+        assert_eq!(q.toggle_repeat(), RepeatMode::Track);
+
+        let held = uri_string(&q.current_uri().unwrap());
+        for _ in 0..5 {
+            let next = q.end_of_track().unwrap();
+            assert_eq!(uri_string(&next), held);
+        }
+        // A user-initiated skip breaks out of repeat-track to the next song.
+        let after_skip = q.skip_next(true).unwrap();
+        assert_ne!(uri_string(&after_skip), held);
     }
 }

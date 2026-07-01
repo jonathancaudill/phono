@@ -37,9 +37,10 @@ fun AlbumDetailScreen(
 
     LaunchedEffect(albumId) { vm.loadAlbumDetail(albumId) }
 
-    val album = state.album
+    val album = state.album?.takeIf { it.id == albumId }
     val title = album?.name ?: fallbackTitle
     val tracks = album?.tracks?.items.orEmpty()
+    val showSaveLoading = state.loading && !state.isSavedConfirmed
 
     PhonoContentContainer(
         title = title,
@@ -47,7 +48,7 @@ fun AlbumDetailScreen(
         onBack = onBack,
         rightIcon = if (state.isSaved) Icons.Default.Remove else Icons.Default.Add,
         onRightIconClick = { vm.toggleAlbumSave(albumId) },
-        rightLoading = state.saving,
+        rightLoading = state.saving || showSaveLoading,
         onTitleClick = {
             album?.artists?.firstOrNull()?.id?.takeIf { it.isNotBlank() }?.let(onOpenArtist)
         },
@@ -61,6 +62,7 @@ fun AlbumDetailScreen(
                 .padding(bottom = n(20)),
         ) {
             when {
+                state.loading && album == null -> EmptyListMessage("Loading…")
                 state.error != null && album == null -> EmptyListMessage(state.error!!)
                 tracks.isEmpty() -> EmptyListMessage("No tracks found in this album.")
                 else -> CustomScrollView {
