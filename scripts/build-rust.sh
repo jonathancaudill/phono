@@ -51,9 +51,14 @@ copy_libcxx() {
         *)      host="" ;;
     esac
     local sysroot="$ndk/toolchains/llvm/prebuilt/$host/sysroot/usr/lib"
-    declare -A TRIPLE=( [arm64-v8a]=aarch64-linux-android [x86_64]=x86_64-linux-android )
     for abi in "${ABIS[@]}"; do
-        local src="$sysroot/${TRIPLE[$abi]}/libc++_shared.so"
+        local triple
+        case "$abi" in
+            arm64-v8a) triple="aarch64-linux-android" ;;
+            x86_64)    triple="x86_64-linux-android" ;;
+            *)         continue ;;
+        esac
+        local src="$sysroot/$triple/libc++_shared.so"
         if [ -f "$src" ]; then
             cp -f "$src" "$JNILIBS_DIR/$abi/"
             echo "    copied libc++_shared.so -> $abi"

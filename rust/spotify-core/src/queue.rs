@@ -219,6 +219,20 @@ impl QueueState {
             })
     }
 
+    /// Next `ahead` track URIs in playback order (for opportunistic cache prefetch).
+    pub fn upcoming_prefetch_uris(&self, ahead: usize) -> Vec<SpotifyUri> {
+        let mut out = Vec::new();
+        for entry in self.play_order.iter().skip(self.play_index + 1) {
+            if let Some(uri) = self.entry_uri(entry) {
+                out.push(uri);
+                if out.len() >= ahead {
+                    return out;
+                }
+            }
+        }
+        out
+    }
+
     pub fn queue_snapshot(&self) -> QueueSnapshot {
         let now_playing_uri = self
             .current_uri()

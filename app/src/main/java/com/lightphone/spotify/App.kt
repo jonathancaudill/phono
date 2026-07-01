@@ -9,7 +9,7 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        // Loads the native lib, initializes ndk_context, and creates the engine.
         controller = PlaybackController.get(this)
+        controller.ensureEngineReady()
     }
 }

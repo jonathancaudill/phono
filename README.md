@@ -66,16 +66,23 @@ The app uses **dual authentication**:
 ## Layout
 
 ```
-rust/spotify-core/     # Rust backend: librespot playback + daily-mix native discovery
-app/                   # Android app (Kotlin Web API client + Jetpack Compose UI)
-scripts/build-rust.sh  # Cross-compile + generate Kotlin bindings
+rust/
+  spotify-core/              # UniFFI engine: playback, queue, session recovery
+  librespot-core-patched/    # Keymaster/desktop identity patch (0.8.0)
+  librespot-playback-patched/  # buffer_current_to_end, full-track query
+  librespot-audio-patched/     # download_slots, 429 permit release, CDN retry
+app/                         # Android app (Kotlin Web API + Jetpack Compose UI)
+scripts/build-rust.sh        # Cross-compile + generate Kotlin bindings
 ```
 
 ## Architecture
 
-- **Playback:** `LibrespotEngine` (UniFFI) owns session, player, queue. Keymaster OAuth via
+- **Playback:** `LibrespotEngine` (UniFFI) owns session, player, and queue. Keymaster OAuth via
   WebView (`http://127.0.0.1:8898/login`). Three client-identity surfaces (session, stored
   credentials, client-token) must all agree as Keymaster/desktop — see `AGENTS.md`.
+- **Service ownership:** `PlaybackService` creates the native engine and calls `startForeground()`
+  immediately (before engine init). `PlaybackEngineHolder` wires the engine to
+  `PlaybackController` after attach.
 - **Metadata:** Kotlin `SpotifyWebApi` + `SpotifyRepository` call `api.spotify.com/v1/...`
   with tokens from your dev-app OAuth (`http://127.0.0.1:43821/callback`). Search uses one
   combined `/search` request per query; results are ranked and interleaved client-side
@@ -84,9 +91,80 @@ scripts/build-rust.sh  # Cross-compile + generate Kotlin bindings
 - **Daily mixes:** Hybrid — native librespot `context-resolve` search when possible; fallback
   to editorial playlist names in your library via Web API.
 
-`PlaybackController` handles audio focus and exposes `StateFlow` to Compose;
-`PlaybackService` hosts Media3 for lock-screen controls. UI follows the Light Template
-aesthetic (black canvas, Public Sans, minimal chrome).
+`PlaybackController` handles audio focus, network-tier streaming policy, stall buffering UX, and
+exposes `StateFlow` to Compose. `PlaybackService` hosts Media3 for lock-screen controls. UI
+follows the Light Template aesthetic (black canvas, Public Sans, minimal chrome).
+
+## Caching
+
+phono uses several cache layers with different lifetimes and purposes. Nothing here replaces
+the Web API as the source of truth for metadata — caches reduce API calls and improve
+perceived speed.
+
+### 1. Library (Room / SQLite)
+
+Persistent on-disk cache for browsable library data (`phono_library.db`):
+
+| Resource | Storage | Sync strategy |
+|----------|---------|---------------|
+| Liked tracks | `liked_tracks` + sync metadata | Head-check delta on refresh; background parallel page fill |
+| Saved albums | `saved_albums` + sync metadata | Same pattern |
+| User playlists | `playlists` + sync metadata | Same pattern |
+
+`LibrarySync` skips a full re-download when the remote head (total count + first item) matches
+local state. `fillRemainingParallel` drains remaining pages in parallel so the local DB becomes a
+complete offline copy over time. UI lists read from Room `Flow`s and paginate from disk.
+
+### 2. Detail cache (Room + in-memory)
+
+Album and playlist detail screens use a two-tier lookup in `SpotifyRepository`:
+
+- **Pinned (Room):** Saved albums and user-owned playlists get JSON blobs in
+  `album_details` / `playlist_details` (24 h TTL). Playlist track URIs are indexed in
+  `playlist_track_uris` for fast “is this track in my playlist?” checks (context menus).
+- **Ephemeral (in-memory):** Browsed-but-not-library albums/playlists are cached in bounded
+  LRU-style maps (20 albums / 10 playlists, 5 min TTL).
+
+Artist detail is not cached yet — always fetched from the Web API.
+
+### 3. Search and light metadata (in-memory)
+
+- **Search:** Per-query results cached 5 minutes. Filter chips (All/Songs/Artists/…) reuse the
+  same cached response with zero extra API calls.
+- **Daily mixes:** In-memory, 5 min TTL.
+- **Current user ID:** Cached for the session after first `/me` call.
+
+### 4. Auth tokens (encrypted disk)
+
+- **Playback (Step 1):** librespot stored credentials + volume in `filesDir/spotify-cache/`.
+  OAuth bootstrap token also persisted for early metadata probes.
+- **Web API (Step 2):** Access + refresh tokens in `EncryptedSharedPreferences`; proactive
+  refresh before expiry; `invalid_grant` clears tokens for re-auth.
+
+### 5. Audio stream cache (librespot disk)
+
+Downloaded Ogg/Vorbis chunks live under `filesDir/spotify-cache/` (audio + tmp dirs). Settings
+→ **Clear Cache** deletes audio files only; credentials and library DB are kept.
+
+**Opportunistic buffering** (`StreamingPolicy` + patched librespot):
+
+- On good Wi‑Fi: `buffer_current_to_end()` banks the playing track; `prefetch_upcoming()` warms
+  the next 1–3 queue tracks.
+- On stall: bank current track if battery allows.
+- `NetworkBufferPreset` (Low / Normal / High) tunes read-ahead at engine init.
+
+### Future caching improvements
+
+- **Artist detail cache** — same pinned/ephemeral split as albums.
+- **Snapshot-aware playlist invalidation** — refresh pinned playlist detail when
+  `snapshot_id` changes instead of relying on TTL alone.
+- **Image disk cache** — album art URLs are re-fetched by Coil on every screen; a bounded
+  disk cache would help offline browsing.
+- **Incremental library sync** — today a head mismatch triggers a full local rewrite for that
+  resource; a merge/diff path would reduce churn on large libraries.
+- **Search persistence** — optional disk cache for recent queries across app restarts.
+- **Offline playback policy** — gate prefetch/banking on metered vs unmetered + user setting;
+  surface “fully buffered” state in the UI via `is_current_fully_buffered()`.
 
 ## Build
 
@@ -121,10 +199,16 @@ bash scripts/build-rust.sh
 - **Do not use the Keymaster OAuth token for Web API calls** — metadata must use the dev-app
   bearer from Step 2.
 - **Non-premium accounts:** librespot requires Premium for playback.
+- **Foreground service:** `PlaybackService` must call `startForeground()` within seconds of
+  `startForegroundService()` — engine init alone is too slow to rely on Media3 promotion alone.
 
 ## Reliability
 
-- Auto-reconnect with cached librespot credentials and queue restore
-- Web API token refresh with `invalid_grant` handling (6-month refresh token expiry)
-- HTTP 429 honored via `Retry-After` with capped retries
-- Search results cached in memory (5 min TTL); filter chips reuse cached data with no extra API calls
+- **Session recovery:** Cached librespot credentials + queue restore across seamless rebuilds;
+  `ensure_playback_ready` rebuilds session/player when the access point drops.
+- **Network awareness:** `ConnectivityManager` callbacks with debounced reconnect and handoff
+  grace; stall watchdog surfaces buffering without tearing down the session mid-play.
+- **Streaming policy:** Network-tier prefetch and full-track banking via patched librespot
+  (`buffer_current_to_end`, `prefetch_upcoming`).
+- **Web API:** Token refresh with `invalid_grant` handling (6-month refresh token expiry).
+- **HTTP 429:** Honored via `Retry-After` with capped retries in `SpotifyWebApi`.

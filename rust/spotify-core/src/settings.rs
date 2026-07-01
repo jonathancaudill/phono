@@ -100,9 +100,9 @@ impl NetworkBufferPreset {
                     initial_ping_time_estimate: Duration::from_millis(800),
                     maximum_assumed_ping_time: Duration::from_millis(2000),
                     read_ahead_before_playback: Duration::from_secs(2),
-                    read_ahead_during_playback: Duration::from_secs(30),
+                    read_ahead_during_playback: Duration::from_secs(60),
                     prefetch_threshold_factor: 5.0,
-                    download_timeout: Duration::from_secs(15),
+                    download_timeout: Duration::from_secs(30),
                 }
             }
             Self::High => {

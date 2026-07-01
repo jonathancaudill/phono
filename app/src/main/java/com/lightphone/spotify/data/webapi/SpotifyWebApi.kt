@@ -152,6 +152,8 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
 
     fun currentUser(): SpotifyCurrentUser = get("/me")
 
+    suspend fun currentUserSuspend(): SpotifyCurrentUser = getSuspend("/me")
+
     suspend fun savedPlaylistsPage(
         offset: Int,
         limit: Int = LIBRARY_PAGE_LIMIT,

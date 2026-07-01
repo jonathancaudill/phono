@@ -12,9 +12,6 @@ import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ffi.TrackInfo
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 
 /**
  * UI-facing track model for playback.
@@ -128,7 +125,7 @@ class SpotifyRepository(
             ephemeralPlaylistCache.remove(playlistId)
         }
         detailCache.getPinnedPlaylistDetail(playlistId)?.let { (detail, tracks, _) ->
-            val userId = currentUserId()
+            val userId = currentUserIdSuspend()
             val isEditable = detail.owner?.id == userId || detail.collaborative
             val uri = detail.uri.ifBlank { "spotify:playlist:$playlistId" }
             val isInLibrary = webApi.libraryContains(listOf(uri)).firstOrNull() ?: false
@@ -141,7 +138,7 @@ class SpotifyRepository(
             )
         }
 
-        val userId = currentUserId()
+        val userId = currentUserIdSuspend()
         val detail = webApi.playlist(playlistId)
         val tracks = paginatePlaylistTrackItems(playlistId, trackLimit)
         val isEditable = detail.owner?.id == userId || detail.collaborative
@@ -165,40 +162,25 @@ class SpotifyRepository(
     suspend fun playlistsContainingTrack(
         trackUri: String,
         playlistIds: List<String>,
-    ): Set<String> = coroutineScope {
+    ): Set<String> {
         val normalized = normalizeUri(trackUri)
-        val found = ConcurrentHashMap.newKeySet<String>()
-        playlistIds.map { playlistId ->
-            async {
-                when {
-                    detailCache.playlistContainsTrack(playlistId, normalized) -> {
-                        found.add(playlistId)
-                    }
-                    ephemeralPlaylistCache[playlistId]?.value?.tracks?.any { item ->
-                        item.track?.uri?.let { normalizeUri(it) } == normalized
-                    } == true -> {
-                        found.add(playlistId)
-                    }
-                    else -> {
-                        runCatching {
-                            val tracks = paginatePlaylistTrackItems(playlistId, 500)
-                            val contains = tracks.any { item ->
-                                item.track?.uri?.let { normalizeUri(it) } == normalized
-                            }
-                            if (contains) found.add(playlistId)
-                        }
-                    }
-                }
+        val found = mutableSetOf<String>()
+        for (playlistId in playlistIds) {
+            when {
+                detailCache.playlistContainsTrack(playlistId, normalized) -> found.add(playlistId)
+                ephemeralPlaylistCache[playlistId]?.value?.tracks?.any { item ->
+                    item.track?.uri?.let { normalizeUri(it) } == normalized
+                } == true -> found.add(playlistId)
             }
-        }.awaitAll()
-        found.toSet()
+        }
+        return found
     }
 
     suspend fun isSavedAlbumCached(albumId: String): Boolean =
         detailCache.isSavedAlbumCached(albumId)
 
     suspend fun createPlaylist(name: String, isPublic: Boolean): SpotifyPlaylistSimple {
-        val userId = currentUserId()
+        val userId = currentUserIdSuspend()
         val created = webApi.createPlaylist(userId, name.trim(), isPublic)
         libraryRepository.prependPlaylist(created)
         return created
@@ -248,20 +230,25 @@ class SpotifyRepository(
         libraryRepository.removePlaylist(playlistId)
     }
 
-    suspend fun editablePlaylists(): List<PlaylistEntity> {
-        val userId = currentUserId()
+    suspend fun editablePlaylists(userId: String? = null): List<PlaylistEntity> {
+        val resolvedUserId = userId ?: currentUserIdSuspend()
         return libraryRepository.playlistsSnapshot().filter { playlist ->
-            playlist.owner_id == userId || playlist.is_collaborative
+            playlist.owner_id == resolvedUserId || playlist.is_collaborative
         }
     }
 
-    private fun paginatePlaylistTrackItems(playlistId: String, limit: Int): List<SpotifyPlaylistTrackItem> {
+    suspend fun currentUserIdSuspend(): String {
+        currentUserIdCache?.let { return it }
+        val id = webApi.currentUserSuspend().id
+        currentUserIdCache = id
+        return id
+    }
+
+    private suspend fun paginatePlaylistTrackItems(playlistId: String, limit: Int): List<SpotifyPlaylistTrackItem> {
         val results = mutableListOf<SpotifyPlaylistTrackItem>()
         var offset = 0
         while (results.size < limit) {
-            val page = kotlinx.coroutines.runBlocking {
-                webApi.playlistItemsPage(playlistId, offset)
-            }
+            val page = webApi.playlistItemsPage(playlistId, offset)
             if (page.items.isEmpty()) break
             results.addAll(page.items)
             offset += page.items.size
