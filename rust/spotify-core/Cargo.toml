@@ -57,6 +57,8 @@ uniffi = { version = "0.28.3", features = ["build"] }
 
 [patch.crates-io]
 librespot-core = { path = "../librespot-core-patched" }
+librespot-playback = { path = "../librespot-playback-patched" }
+librespot-audio = { path = "../librespot-audio-patched" }
 
 # NOTE: do not set panic = "abort". UniFFI relies on unwinding (catch_unwind) at
 # the FFI boundary to turn Rust panics into Kotlin exceptions instead of killing

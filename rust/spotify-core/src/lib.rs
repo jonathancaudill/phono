@@ -5,8 +5,8 @@
 //! and its sibling modules - never the Kotlin side.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use librespot::core::authentication::Credentials;
@@ -14,7 +14,9 @@ use librespot::core::cache::Cache;
 use librespot::core::config::SessionConfig;
 use librespot::core::spotify_id::SpotifyId;
 use librespot::core::{Session, SpotifyUri};
-use librespot::playback::config::AudioFormat;
+use librespot::metadata::audio::{AudioFileFormat, AudioItem};
+use librespot::audio::{AudioFile, Range};
+use librespot::playback::config::{AudioFormat, Bitrate};
 use librespot::playback::mixer::softmixer::SoftMixer;
 use librespot::playback::mixer::{Mixer, MixerConfig};
 use librespot::playback::player::{Player, PlayerEvent};
@@ -90,6 +92,8 @@ pub trait PlayerEventListener: Send + Sync {
     fn on_connection_restored(&self);
     fn on_error(&self, message: String);
     fn on_queue_changed(&self);
+    /// Emitted when decode stalls (buffer underrun) or resumes.
+    fn on_buffering(&self, stalled: bool);
 }
 
 type SharedListener = Arc<Mutex<Option<Box<dyn PlayerEventListener>>>>;
@@ -177,6 +181,15 @@ struct EngineShared {
     playing: Arc<AtomicBool>,
     /// Queue held while `active` is dropped during reconnect so UI reads stay populated.
     pending_queue: Mutex<Option<QueueState>>,
+    rebuild_mutex: Mutex<()>,
+    last_force_reconnect: Mutex<Option<Instant>>,
+    prefetch_generation: AtomicU32,
+    #[cfg(debug_assertions)]
+    metrics_transport_reconnect: AtomicU32,
+    #[cfg(debug_assertions)]
+    metrics_full_rebuild: AtomicU32,
+    #[cfg(debug_assertions)]
+    metrics_stall_events: AtomicU32,
 }
 
 /// The UniFFI object handed to Kotlin.
@@ -246,11 +259,13 @@ impl LibrespotEngine {
         start_index: u32,
         context_label: Option<String>,
     ) -> Result<(), SpotifyError> {
+        EngineShared::ensure_playback_ready(&self.shared)?;
         self.shared.play_uris(uris, start_index, context_label)
     }
 
     /// Convenience: play a single URI.
     pub fn play_uri(&self, uri: String) -> Result<(), SpotifyError> {
+        EngineShared::ensure_playback_ready(&self.shared)?;
         self.shared.play_uris(vec![uri], 0, None)
     }
 
@@ -259,18 +274,22 @@ impl LibrespotEngine {
     }
 
     pub fn resume(&self) {
+        let _ = EngineShared::ensure_playback_ready(&self.shared);
         self.shared.transport_resume();
     }
 
     pub fn next(&self) {
+        let _ = EngineShared::ensure_playback_ready(&self.shared);
         self.shared.transport_next();
     }
 
     pub fn previous(&self) {
+        let _ = EngineShared::ensure_playback_ready(&self.shared);
         self.shared.transport_previous();
     }
 
     pub fn seek(&self, position_ms: u32) {
+        let _ = EngineShared::ensure_playback_ready(&self.shared);
         self.shared.transport_seek(position_ms);
     }
 
@@ -414,6 +433,32 @@ impl LibrespotEngine {
         self.shared.force_reconnect_check();
     }
 
+    /// Bank the currently playing track to its end (opportunistic full-track cache).
+    pub fn buffer_current_to_end(&self) {
+        self.shared.with_active(|a| a.player.buffer_current_to_end());
+    }
+
+    /// True when the active track is fully present in the local audio cache.
+    pub fn is_current_fully_buffered(&self) -> bool {
+        self.shared
+            .active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|a| a.player.is_current_fully_buffered())
+            .unwrap_or(false)
+    }
+
+    /// Prefetch up to `ahead` upcoming queue tracks into the shared audio cache.
+    pub fn prefetch_upcoming(&self, ahead: u32) {
+        self.shared.prefetch_upcoming(ahead);
+    }
+
+    /// Ensure session + player are ready for transport commands (rebuild if needed).
+    pub fn ensure_playback_ready(&self) -> Result<(), SpotifyError> {
+        EngineShared::ensure_playback_ready(&self.shared)
+    }
+
     /// Rebuild session + player so persisted settings take effect mid-session.
     fn rebuild_player_if_active(&self) {
         if self.shared.active.lock().unwrap().is_none() {
@@ -504,6 +549,15 @@ impl EngineShared {
             refresh_mutex: Mutex::new(()),
             playing: Arc::new(AtomicBool::new(false)),
             pending_queue: Mutex::new(None),
+            rebuild_mutex: Mutex::new(()),
+            last_force_reconnect: Mutex::new(None),
+            prefetch_generation: AtomicU32::new(0),
+            #[cfg(debug_assertions)]
+            metrics_transport_reconnect: AtomicU32::new(0),
+            #[cfg(debug_assertions)]
+            metrics_full_rebuild: AtomicU32::new(0),
+            #[cfg(debug_assertions)]
+            metrics_stall_events: AtomicU32::new(0),
         }))
     }
 
@@ -714,12 +768,55 @@ impl EngineShared {
     }
 
     fn is_logged_in(&self) -> bool {
-        self.active
+        if self
+            .active
             .lock()
             .unwrap()
             .as_ref()
             .map(|a| !a.session.is_invalid())
             .unwrap_or(false)
+        {
+            return true;
+        }
+        self.cache.credentials().is_some()
+            && self.pending_queue.lock().unwrap().is_some()
+    }
+
+    fn ensure_playback_ready(shared: &Arc<Self>) -> Result<(), SpotifyError> {
+        if shared
+            .active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|a| !a.session.is_invalid())
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        let _guard = shared.rebuild_mutex.lock().unwrap();
+        if shared
+            .active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|a| !a.session.is_invalid())
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        let resume = shared
+            .pending_queue
+            .lock()
+            .unwrap()
+            .clone()
+            .or_else(|| shared.snapshot_resume());
+        let creds = shared
+            .cache
+            .credentials()
+            .ok_or(SpotifyError::NotLoggedIn)?;
+        let handle = shared.runtime.handle().clone();
+        handle.block_on(shared.clone().build_active(creds, resume))?;
+        Ok(())
     }
 
     /// A Spotify Web API access token. Returns the cached OAuth token while it is
@@ -1081,6 +1178,8 @@ impl EngineShared {
     fn with_active_queue_mut<F: FnOnce(&mut QueueState)>(&self, f: F) {
         if let Some(active) = self.active.lock().unwrap().as_ref() {
             f(&mut active.queue.lock().unwrap());
+        } else if let Some(pending) = self.pending_queue.lock().unwrap().as_mut() {
+            f(pending);
         }
     }
 
@@ -1138,12 +1237,14 @@ impl EngineShared {
         }
 
         let rx = player.get_player_event_channel();
+        let weak = Arc::downgrade(&self);
         let event_task = self.runtime.spawn(forward_events(
             rx,
             player.clone(),
             queue.clone(),
             self.listener.clone(),
             self.playing.clone(),
+            weak,
         ));
 
         spawn_monitor(
@@ -1160,6 +1261,9 @@ impl EngineShared {
             // Only auto-start if the user actually had playback running. An
             // idle-timeout reconnect of a paused queue must restore it paused.
             let start_playing = self.playing.load(Ordering::SeqCst);
+            log::info!(
+                "build_active: uri={uri} pos={pos} start_playing={start_playing} reason=session_rebuild"
+            );
             player.load(uri, start_playing, pos);
         }
 
@@ -1183,7 +1287,50 @@ impl EngineShared {
             .and_then(|a| a.queue.lock().unwrap().snapshot_resume())
     }
 
+    fn prefetch_upcoming(&self, ahead: u32) {
+        let ahead = ahead.min(3);
+        if ahead == 0 {
+            return;
+        }
+        let (session, upcoming, bitrate, generation) = {
+            let guard = self.active.lock().unwrap();
+            let Some(active) = guard.as_ref() else {
+                return;
+            };
+            let upcoming = active
+                .queue
+                .lock()
+                .unwrap()
+                .upcoming_prefetch_uris(ahead as usize);
+            if upcoming.is_empty() {
+                return;
+            }
+            (
+                active.session.clone(),
+                upcoming,
+                self.settings.get().player_config().bitrate,
+                self.prefetch_generation.fetch_add(1, Ordering::SeqCst) + 1,
+            )
+        };
+        self.runtime.spawn(async move {
+            for uri in upcoming {
+                prefetch_track(&session, uri, bitrate).await;
+            }
+            let _ = generation;
+        });
+    }
+
     fn force_reconnect_check(&self) {
+        let now = Instant::now();
+        {
+            let mut last = self.last_force_reconnect.lock().unwrap();
+            if let Some(prev) = *last {
+                if now.duration_since(prev) < Duration::from_secs(5) {
+                    return;
+                }
+            }
+            *last = Some(now);
+        }
         if let Some(active) = self.active.lock().unwrap().as_ref() {
             if active.session.is_invalid() {
                 return;
@@ -1282,6 +1429,7 @@ async fn forward_events(
     queue: Arc<Mutex<QueueState>>,
     listener: SharedListener,
     playing: Arc<AtomicBool>,
+    weak: Weak<EngineShared>,
 ) {
     let mut unavailable_guard = UnavailableGuard::new();
     while let Some(event) = rx.recv().await {
@@ -1329,6 +1477,17 @@ async fn forward_events(
             }
             PlayerEvent::Stopped { track_id, .. } => {
                 log::warn!("playback stopped for {}", uri_to_string(&track_id));
+                if playing.load(Ordering::SeqCst) {
+                    if let Some(shared) = weak.upgrade() {
+                        #[cfg(debug_assertions)]
+                        shared
+                            .metrics_stall_events
+                            .fetch_add(1, Ordering::SeqCst);
+                        std::thread::spawn(move || {
+                            let _ = EngineShared::ensure_playback_ready(&shared);
+                        });
+                    }
+                }
             }
             PlayerEvent::TimeToPreloadNextTrack { .. } => {
                 if let Some(uri) = queue.lock().unwrap().next_preload_uri() {
@@ -1384,6 +1543,88 @@ fn parse_uri(input: &str) -> Result<SpotifyUri, SpotifyError> {
 
 fn uri_to_string(uri: &SpotifyUri) -> String {
     uri.to_uri().unwrap_or_default()
+}
+
+fn preferred_formats(bitrate: Bitrate) -> &'static [AudioFileFormat] {
+    use AudioFileFormat::*;
+    match bitrate {
+        Bitrate::Bitrate96 => &[OGG_VORBIS_96, OGG_VORBIS_160, OGG_VORBIS_320],
+        Bitrate::Bitrate160 => &[OGG_VORBIS_160, OGG_VORBIS_96, OGG_VORBIS_320],
+        Bitrate::Bitrate320 => &[OGG_VORBIS_320, OGG_VORBIS_160, OGG_VORBIS_96],
+    }
+}
+
+fn bytes_per_second(format: AudioFileFormat) -> usize {
+    use AudioFileFormat::*;
+    let kbps: f32 = match format {
+        OGG_VORBIS_96 => 12.,
+        OGG_VORBIS_160 => 20.,
+        OGG_VORBIS_320 => 40.,
+        MP3_256 => 32.,
+        MP3_320 => 40.,
+        MP3_160 => 20.,
+        MP3_96 => 12.,
+        MP3_160_ENC => 20.,
+        AAC_24 => 3.,
+        AAC_48 => 6.,
+        AAC_160 => 20.,
+        AAC_320 => 40.,
+        MP4_128 => 16.,
+        OTHER5 => 40.,
+        FLAC_FLAC => 112.,
+        XHE_AAC_12 => 1.5,
+        XHE_AAC_16 => 2.,
+        XHE_AAC_24 => 3.,
+        FLAC_FLAC_24BIT => 3.,
+    };
+    (kbps * 1024.).ceil() as usize
+}
+
+async fn resolve_playable_file(
+    session: &Session,
+    uri: SpotifyUri,
+    bitrate: Bitrate,
+) -> Option<(librespot::core::FileId, usize)> {
+    let mut item = AudioItem::get_file(session, uri).await.ok()?;
+    if item.files.is_empty() {
+        if let Some(alts) = item.alternatives.clone() {
+            for alt in alts.0 {
+                if let Ok(alt_item) = AudioItem::get_file(session, alt).await {
+                    if !alt_item.files.is_empty() {
+                        item = alt_item;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    for &fmt in preferred_formats(bitrate) {
+        if let Some(&file_id) = item.files.get(&fmt) {
+            return Some((file_id, bytes_per_second(fmt)));
+        }
+    }
+    None
+}
+
+async fn prefetch_track(session: &Session, uri: SpotifyUri, bitrate: Bitrate) {
+    let Some((file_id, bps)) = resolve_playable_file(session, uri, bitrate).await else {
+        return;
+    };
+    match AudioFile::open(session, file_id, bps).await {
+        Ok(file) => {
+            if let Ok(slc) = file.get_stream_loader_controller() {
+                if slc.range_to_end_available() {
+                    return;
+                }
+                slc.set_random_access_mode();
+                let len = slc.len();
+                if len > 0 {
+                    slc.fetch(Range::new(0, len));
+                }
+            }
+        }
+        Err(e) => log::debug!("prefetch open failed for {file_id}: {e}"),
+    }
 }
 
 fn load_or_create_device_id(base: &Path) -> String {

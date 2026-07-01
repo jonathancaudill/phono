@@ -1,5 +1,6 @@
 package com.lightphone.spotify.playback
 
+import android.app.ForegroundServiceStartNotAllowedException
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -10,6 +11,8 @@ import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.os.Build
+import android.os.PowerManager
 import com.lightphone.spotify.NativeInit
 import com.lightphone.spotify.data.AlbumDetailResult
 import com.lightphone.spotify.data.ArtistDetailResult
@@ -32,11 +35,11 @@ import com.lightphone.spotify.ffi.LibrespotEngine
 import com.lightphone.spotify.data.webapi.SpotifyWebApi
 import com.lightphone.spotify.data.webapi.WebApiAuth
 import com.lightphone.spotify.ffi.NormalizationType
-import kotlinx.serialization.json.Json
 import com.lightphone.spotify.ffi.PlayerEventListener
-import com.lightphone.spotify.ffi.SpotifyException
 import com.lightphone.spotify.ffi.RepeatMode
+import com.lightphone.spotify.ffi.SpotifyException
 import com.lightphone.spotify.ffi.StreamingQuality
+import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -47,6 +50,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import java.io.File
 
 data class QueueUiItem(
@@ -76,6 +81,8 @@ data class PlaybackUiState(
     val currentUri: String? = null,
     val isPlaying: Boolean = false,
     val isLoading: Boolean = false,
+    /** True when playback position is stalled (buffer underrun). */
+    val isBuffering: Boolean = false,
     val positionMs: Long = 0,
     val title: String? = null,
     val artist: String? = null,
@@ -96,9 +103,15 @@ data class PlaybackUiState(
  */
 class PlaybackController private constructor(
     private val appContext: Context,
-    val engine: LibrespotEngine,
     private val webApiAuth: WebApiAuth,
 ) : PlayerEventListener {
+
+    /** Set by [PlaybackService] via [attachEngine]. */
+    @Volatile
+    private var engineReady = false
+    private lateinit var engine: LibrespotEngine
+
+    private val streamingPolicy = StreamingPolicy(this)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -123,6 +136,17 @@ class PlaybackController private constructor(
     private var hasAudioFocus = false
     private var playWhenFocusReturns = false
     private var playJob: Job? = null
+    private var stallWatchdogJob: Job? = null
+    @Volatile
+    private var lastPositionMs: Long = 0
+    @Volatile
+    private var lastPositionAtMs: Long = 0
+    /** False until Rust emits Playing/PositionChanged — avoids false stall when lastPositionAtMs is 0. */
+    @Volatile
+    private var playbackPulseSeen: Boolean = false
+    private var networkLostGraceJob: Job? = null
+    private var reconnectDebounceJob: Job? = null
+    private var lastTransport: Int? = null
 
     private val audioAttributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -169,58 +193,180 @@ class PlaybackController private constructor(
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
+            networkLostGraceJob?.cancel()
             scope.launch {
                 _state.update {
                     recomputeStatusMessage(it.copy(networkOnline = true, sessionExpired = false))
                 }
+                val caps = connectivityManager.getNetworkCapabilities(network)
+                if (caps != null) {
+                    streamingPolicy.onCapabilitiesChanged(caps)
+                }
                 val current = _state.value
-                if (current.reconnecting || !current.connected) {
-                    runCatching { engine.forceReconnectCheck() }
+                if (!current.connected || current.reconnecting || current.isPlaying) {
+                    debouncedForceReconnect()
                 }
             }
         }
 
         override fun onLost(network: Network) {
-            _state.update { recomputeStatusMessage(it.copy(networkOnline = false)) }
+            networkLostGraceJob?.cancel()
+            networkLostGraceJob = scope.launch {
+                delay(NETWORK_HANDOFF_GRACE_MS)
+                _state.update { recomputeStatusMessage(it.copy(networkOnline = false)) }
+                streamingPolicy.onOffline()
+            }
+        }
+
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            streamingPolicy.onCapabilitiesChanged(caps)
+            val transport = when {
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ->
+                    NetworkCapabilities.TRANSPORT_WIFI
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ->
+                    NetworkCapabilities.TRANSPORT_CELLULAR
+                else -> null
+            }
+            val transportChanged = transport != null && lastTransport != null && transport != lastTransport
+            lastTransport = transport ?: lastTransport
+            if (
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+                transportChanged &&
+                (_state.value.isPlaying || _state.value.reconnecting)
+            ) {
+                debouncedForceReconnect()
+            }
         }
     }
 
     init {
-        engine.setListener(this)
         appContext.registerReceiver(
             becomingNoisyReceiver,
             IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
         )
-        val alreadyLoggedIn = engine.isLoggedIn()
         _state.update {
             recomputeStatusMessage(
                 it.copy(
-                    loggedIn = alreadyLoggedIn,
-                    authInitialized = alreadyLoggedIn,
                     webApiReady = webApiAuth.isAuthorized(),
                     networkOnline = isNetworkOnline(),
                 ),
             )
         }
         connectivityManager.registerDefaultNetworkCallback(networkCallback)
+        connectivityManager.activeNetwork?.let { net ->
+            connectivityManager.getNetworkCapabilities(net)?.let { caps ->
+                streamingPolicy.onCapabilitiesChanged(caps)
+            }
+        }
+    }
+
+    /** Wire native engine after [PlaybackService] creates it (P0b). */
+    fun attachEngine(engine: LibrespotEngine) {
+        if (engineReady) return
+        this.engine = engine
+        engine.setListener(this)
+        engineReady = true
+        val alreadyLoggedIn = engine.isLoggedIn()
+        _state.update {
+            recomputeStatusMessage(
+                it.copy(
+                    loggedIn = alreadyLoggedIn,
+                    authInitialized = alreadyLoggedIn,
+                ),
+            )
+        }
         if (!alreadyLoggedIn) {
             tryCachedLogin { }
         }
+        startStallWatchdog()
+    }
+
+    private fun requireEngine(): LibrespotEngine {
+        check(engineReady) { "Playback engine not ready — call ensureServiceStarted() first" }
+        return engine
+    }
+
+    /** Exposed for [StreamingPolicy]. */
+    internal val appContextInternal: Context get() = appContext
+
+    fun bufferCurrentToEnd() {
+        if (!engineReady) return
+        runCatching { requireEngine().bufferCurrentToEnd() }
+    }
+
+    fun prefetchUpcoming(ahead: Int) {
+        if (!engineReady || ahead <= 0) return
+        runCatching { requireEngine().prefetchUpcoming(ahead.toUInt()) }
+    }
+
+    private fun debouncedForceReconnect() {
+        reconnectDebounceJob?.cancel()
+        reconnectDebounceJob = scope.launch {
+            delay(RECONNECT_DEBOUNCE_MS)
+            runCatching { requireEngine().forceReconnectCheck() }
+        }
+    }
+
+    private fun startStallWatchdog() {
+        stallWatchdogJob?.cancel()
+        stallWatchdogJob = scope.launch {
+            while (isActive) {
+                delay(STALL_POLL_MS)
+                if (!engineReady || !playbackPulseSeen) continue
+                val s = _state.value
+                if (!s.isPlaying || s.isLoading || s.currentUri == null) continue
+                val stalledFor = System.currentTimeMillis() - lastPositionAtMs
+                when {
+                    stalledFor > STALL_BUFFERING_MS -> {
+                        // Buffer only — do NOT forceReconnectCheck here; shutting down the
+                        // session mid-play drops Active and can exit(1) in librespot player.
+                        setBuffering(true)
+                        streamingPolicy.onPlaybackStall()
+                    }
+                    else -> if (s.isBuffering) setBuffering(false)
+                }
+            }
+        }
+    }
+
+    private fun markPlaybackPulse() {
+        playbackPulseSeen = true
+        lastPositionAtMs = System.currentTimeMillis()
+    }
+
+    private fun resetPlaybackPulse() {
+        playbackPulseSeen = false
+        lastPositionAtMs = 0
+    }
+
+    private fun setBuffering(buffering: Boolean) {
+        if (_state.value.isBuffering == buffering) return
+        _state.update { it.copy(isBuffering = buffering) }
+        onStateChanged?.invoke()
     }
 
     // --- Auth ---------------------------------------------------------------
 
-    fun beginLogin(): String = engine.beginLogin()
+    fun beginLogin(): String {
+        ensureEngineReady()
+        return requireEngine().beginLogin()
+    }
 
     fun completeLogin(code: String, onResult: (Result<Unit>) -> Unit) {
+        ensureEngineReady()
+        if (!engineReady) {
+            onResult(Result.failure(IllegalStateException("Playback engine not ready")))
+            return
+        }
         scope.launch {
-            val result = runCatching { engine.loginWithOauthCode(code) }
+            val result = runCatching { requireEngine().loginWithOauthCode(code) }
             result.onFailure { e ->
                 val sessionExpired = e is SpotifyException.Auth
                 _state.update {
                     recomputeStatusMessage(
                         it.copy(
-                            loggedIn = engine.isLoggedIn(),
+                            loggedIn = requireEngine().isLoggedIn(),
                             sessionExpired = sessionExpired,
                             error = mapSpotifyError(e),
                         ),
@@ -239,18 +385,26 @@ class PlaybackController private constructor(
     }
 
     fun tryCachedLogin(onResult: (Boolean) -> Unit) {
+        if (!engineReady) {
+            ensureEngineReady()
+        }
+        if (!engineReady) {
+            onResult(false)
+            return
+        }
         scope.launch {
-            val ok = runCatching { engine.loginWithCachedCredentials() }.getOrDefault(false)
+            val ok = runCatching { requireEngine().loginWithCachedCredentials() }.getOrDefault(false)
             _state.update {
-                it.copy(loggedIn = engine.isLoggedIn(), authInitialized = true)
+                it.copy(loggedIn = requireEngine().isLoggedIn(), authInitialized = true)
             }
             onResult(ok)
         }
     }
 
     fun logout() {
+        if (!engineReady) return
         scope.launch {
-            engine.logout()
+            requireEngine().logout()
             webApiAuth.clearAll()
             repository.clearLibraryCache()
             abandonFocus()
@@ -308,6 +462,7 @@ class PlaybackController private constructor(
     // --- Transport ----------------------------------------------------------
 
     fun play(tracks: List<TrackMetadata>, startIndex: Int, contextLabel: String? = null) {
+        ensureServiceStarted()
         tracks.forEach { trackMetadata[normalizeUri(it.uri)] = it }
         tracks.getOrNull(startIndex)?.let { track ->
             _state.update {
@@ -319,7 +474,7 @@ class PlaybackController private constructor(
                     albumId = track.albumId,
                     durationMs = track.durationMs,
                     isLoading = true,
-                    isPlaying = true,
+                    isPlaying = false,
                     positionMs = 0,
                     shuffleEnabled = false,
                     repeatMode = RepeatMode.OFF,
@@ -337,10 +492,17 @@ class PlaybackController private constructor(
                 onStateChanged?.invoke()
                 return@launch
             }
-            runCatching { engine.playUris(uris, startIndex.toUInt(), contextLabel) }
+            if (!engineReady) {
+                android.util.Log.w("Playback", "engine not ready")
+                _state.update { it.copy(isPlaying = false, error = "Playback service not ready") }
+                onStateChanged?.invoke()
+                return@launch
+            }
+            resetPlaybackPulse()
+            runCatching { requireEngine().playUris(uris, startIndex.toUInt(), contextLabel) }
                 .onSuccess {
                     android.util.Log.i("Playback", "playUris index=$startIndex uri=${uris.getOrNull(startIndex)}")
-                    _state.update { it.copy(isPlaying = true, isLoading = true) }
+                    _state.update { it.copy(isLoading = true) }
                     onStateChanged?.invoke()
                 }
                 .onFailure { e ->
@@ -357,8 +519,9 @@ class PlaybackController private constructor(
 
     private fun resumeTransport() {
         scope.launch {
+            if (!ensureEngineReady()) return@launch
             if (!ensureAudioFocus()) return@launch
-            engine.resume()
+            requireEngine().resume()
             _state.update { it.copy(isPlaying = true, isLoading = false) }
             onStateChanged?.invoke()
         }
@@ -367,7 +530,8 @@ class PlaybackController private constructor(
     /** Pause the engine and mirror state locally (don't wait on Mercury/player events). */
     private fun pauseTransport(userInitiated: Boolean) {
         scope.launch {
-            engine.pause()
+            if (!engineReady) return@launch
+            requireEngine().pause()
             _state.update { it.copy(isPlaying = false) }
             onStateChanged?.invoke()
             if (userInitiated) {
@@ -377,27 +541,34 @@ class PlaybackController private constructor(
     }
 
     fun next() = scope.launch {
-        engine.next()
+        if (!ensureEngineReady()) return@launch
+        requireEngine().next()
         syncPlaybackModes()
     }
     fun previous() = scope.launch {
-        engine.previous()
+        if (!ensureEngineReady()) return@launch
+        requireEngine().previous()
         syncPlaybackModes()
     }
-    fun seek(positionMs: Long) = scope.launch { engine.seek(positionMs.toUInt()) }
+    fun seek(positionMs: Long) = scope.launch {
+        if (!ensureEngineReady()) return@launch
+        requireEngine().seek(positionMs.toUInt())
+    }
     fun toggleShuffle() = scope.launch {
-        val enabled = engine.toggleShuffle()
+        if (!ensureEngineReady()) return@launch
+        val enabled = requireEngine().toggleShuffle()
         _state.update { it.copy(shuffleEnabled = enabled) }
         onStateChanged?.invoke()
     }
     fun toggleRepeat() = scope.launch {
-        val mode = engine.toggleRepeat()
+        if (!ensureEngineReady()) return@launch
+        val mode = requireEngine().toggleRepeat()
         _state.update { it.copy(repeatMode = mode) }
         onStateChanged?.invoke()
     }
     fun refreshQueue() {
-        if (_state.value.reconnecting) return
-        val snapshot = engine.getQueue()
+        if (!engineReady) return
+        val snapshot = requireEngine().getQueue()
         val queue = QueueViewState(
             nowPlaying = snapshot.nowPlayingUri?.let { uriToQueueItem(normalizeUri(it)) },
             nextInQueue = snapshot.nextInQueue.map { uriToQueueItem(normalizeUri(it)) },
@@ -444,13 +615,17 @@ class PlaybackController private constructor(
 
     fun addToQueue(track: TrackMetadata) {
         trackMetadata[normalizeUri(track.uri)] = track
-        val snapshot = engine.getQueue()
+        if (!engineReady) {
+            play(listOf(track), 0, track.album.ifBlank { track.title })
+            return
+        }
+        val snapshot = requireEngine().getQueue()
         if (_state.value.currentUri == null && snapshot.nowPlayingUri == null) {
             play(listOf(track), 0, track.album.ifBlank { track.title })
             return
         }
         scope.launch {
-            runCatching { engine.addToQueue(normalizeUri(track.uri)) }
+            runCatching { requireEngine().addToQueue(normalizeUri(track.uri)) }
                 .onSuccess { refreshQueue() }
                 .onFailure { e ->
                     android.util.Log.w("Playback", "addToQueue failed", e)
@@ -460,57 +635,74 @@ class PlaybackController private constructor(
     }
 
     fun clearManualQueue() = scope.launch {
-        engine.clearManualQueue()
+        if (!engineReady) return@launch
+        requireEngine().clearManualQueue()
         refreshQueue()
     }
 
     fun moveQueueItemUp(index: Int) = scope.launch {
-        runCatching { engine.moveQueueItemUp(index.toUInt()) }
+        if (!engineReady) return@launch
+        runCatching { requireEngine().moveQueueItemUp(index.toUInt()) }
             .onSuccess { refreshQueue() }
             .onFailure { e -> android.util.Log.w("Playback", "moveQueueItemUp failed", e) }
     }
 
     fun moveQueueItemDown(index: Int) = scope.launch {
-        runCatching { engine.moveQueueItemDown(index.toUInt()) }
+        if (!engineReady) return@launch
+        runCatching { requireEngine().moveQueueItemDown(index.toUInt()) }
             .onSuccess { refreshQueue() }
             .onFailure { e -> android.util.Log.w("Playback", "moveQueueItemDown failed", e) }
     }
 
     fun moveContextItemUp(index: Int) = scope.launch {
-        runCatching { engine.moveContextItemUp(index.toUInt()) }
+        if (!engineReady) return@launch
+        runCatching { requireEngine().moveContextItemUp(index.toUInt()) }
             .onSuccess { refreshQueue() }
             .onFailure { e -> android.util.Log.w("Playback", "moveContextItemUp failed", e) }
     }
 
     fun moveContextItemDown(index: Int) = scope.launch {
-        runCatching { engine.moveContextItemDown(index.toUInt()) }
+        if (!engineReady) return@launch
+        runCatching { requireEngine().moveContextItemDown(index.toUInt()) }
             .onSuccess { refreshQueue() }
             .onFailure { e -> android.util.Log.w("Playback", "moveContextItemDown failed", e) }
     }
 
-    fun loadSettings(): SettingsSnapshot = SettingsSnapshot(
-        streamingQuality = engine.getStreamingQuality(),
-        gaplessEnabled = engine.getGaplessEnabled(),
-        normalizationEnabled = engine.getNormalizationEnabled(),
-        normalizationType = engine.getNormalizationType(),
-        proxy = engine.getProxy(),
-    )
+    fun loadSettings(): SettingsSnapshot {
+        if (!engineReady) {
+            return SettingsSnapshot(
+                streamingQuality = StreamingQuality.HIGH,
+                gaplessEnabled = true,
+                normalizationEnabled = false,
+                normalizationType = NormalizationType.AUTO,
+                proxy = null,
+            )
+        }
+        val eng = requireEngine()
+        return SettingsSnapshot(
+            streamingQuality = eng.getStreamingQuality(),
+            gaplessEnabled = eng.getGaplessEnabled(),
+            normalizationEnabled = eng.getNormalizationEnabled(),
+            normalizationType = eng.getNormalizationType(),
+            proxy = eng.getProxy(),
+        )
+    }
 
     fun setStreamingQuality(quality: StreamingQuality) =
-        scope.launch { engine.setStreamingQuality(quality) }
+        scope.launch { if (engineReady) requireEngine().setStreamingQuality(quality) }
 
     fun setGaplessEnabled(enabled: Boolean) =
-        scope.launch { engine.setGaplessEnabled(enabled) }
+        scope.launch { if (engineReady) requireEngine().setGaplessEnabled(enabled) }
 
     fun setNormalizationEnabled(enabled: Boolean) =
-        scope.launch { engine.setNormalizationEnabled(enabled) }
+        scope.launch { if (engineReady) requireEngine().setNormalizationEnabled(enabled) }
 
     fun setNormalizationType(type: NormalizationType) =
-        scope.launch { engine.setNormalizationType(type) }
+        scope.launch { if (engineReady) requireEngine().setNormalizationType(type) }
 
-    fun setProxy(proxy: String?) = scope.launch { engine.setProxy(proxy) }
+    fun setProxy(proxy: String?) = scope.launch { if (engineReady) requireEngine().setProxy(proxy) }
 
-    fun clearAudioCache() = scope.launch { engine.clearAudioCache() }
+    fun clearAudioCache() = scope.launch { if (engineReady) requireEngine().clearAudioCache() }
 
     /** Search tracks via Web API (catalog search, track type only). */
     suspend fun searchTracks(query: String, limit: Int = 25): Result<List<TrackMetadata>> =
@@ -662,10 +854,10 @@ class PlaybackController private constructor(
         }
     }
 
-    suspend fun editablePlaylists(): List<PlaylistEntity> =
+    suspend fun editablePlaylists(userId: String? = null): List<PlaylistEntity> =
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
-                repository.editablePlaylists()
+                repository.editablePlaylists(userId)
             } catch (e: Throwable) {
                 throw Exception(mapWebApiError(e))
             }
@@ -673,7 +865,7 @@ class PlaybackController private constructor(
 
     suspend fun currentUserId(): String =
         kotlinx.coroutines.withContext(Dispatchers.IO) {
-            repository.currentUserId()
+            repository.currentUserIdSuspend()
         }
 
     suspend fun albumDetail(albumId: String): AlbumDetailResult =
@@ -824,11 +1016,28 @@ class PlaybackController private constructor(
             }
         }
 
-    /** Start the MediaSessionService so OS media controls are available. */
+    /** Start the MediaSessionService so OS media controls and FGS are available. */
     fun ensureServiceStarted() {
-        runCatching {
-            appContext.startService(Intent(appContext, PlaybackService::class.java))
+        val intent = Intent(appContext, PlaybackService::class.java)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                appContext.startForegroundService(intent)
+            } else {
+                appContext.startService(intent)
+            }
+        } catch (e: ForegroundServiceStartNotAllowedException) {
+            android.util.Log.w("Playback", "startForegroundService blocked; falling back", e)
+            runCatching { appContext.startService(intent) }
+        } catch (e: IllegalStateException) {
+            android.util.Log.w("Playback", "FGS start failed; falling back", e)
+            runCatching { appContext.startService(intent) }
         }
+    }
+
+    /** Start service and wait for native engine attach (max 2s). */
+    fun ensureEngineReady(): Boolean {
+        ensureServiceStarted()
+        return PlaybackEngineHolder.awaitEngineReady() && engineReady
     }
 
     // --- Audio focus --------------------------------------------------------
@@ -855,6 +1064,7 @@ class PlaybackController private constructor(
     // --- PlayerEventListener (called from Rust runtime threads) --------------
 
     override fun onTrackChanged(uri: String) {
+        markPlaybackPulse()
         val normalized = normalizeUri(uri)
         val cached = trackMetadata[normalized]
         _state.update {
@@ -885,20 +1095,32 @@ class PlaybackController private constructor(
     }
 
     override fun onPlaying(positionMs: Long) {
-        _state.update { it.copy(isPlaying = true, isLoading = false, positionMs = positionMs) }
+        lastPositionMs = positionMs
+        markPlaybackPulse()
+        _state.update { it.copy(isPlaying = true, isLoading = false, isBuffering = false, positionMs = positionMs) }
+        streamingPolicy.onTrackActive()
         onStateChanged?.invoke()
     }
 
     override fun onPaused(positionMs: Long) {
+        resetPlaybackPulse()
         _state.update { it.copy(isPlaying = false, positionMs = positionMs) }
         onStateChanged?.invoke()
     }
 
     override fun onPositionChanged(positionMs: Long) {
-        _state.update { it.copy(positionMs = positionMs) }
+        lastPositionMs = positionMs
+        markPlaybackPulse()
+        _state.update { it.copy(positionMs = positionMs, isBuffering = false) }
+    }
+
+    override fun onBuffering(stalled: Boolean) {
+        _state.update { it.copy(isBuffering = stalled, isLoading = stalled) }
+        onStateChanged?.invoke()
     }
 
     override fun onEndOfTrack() {
+        resetPlaybackPulse()
         _state.update { it.copy(isPlaying = false, positionMs = 0) }
         abandonFocus()
         onStateChanged?.invoke()
@@ -965,10 +1187,11 @@ class PlaybackController private constructor(
     }
 
     private fun syncPlaybackModes() {
+        if (!engineReady) return
         _state.update {
             it.copy(
-                shuffleEnabled = engine.getShuffle(),
-                repeatMode = engine.getRepeatMode(),
+                shuffleEnabled = requireEngine().getShuffle(),
+                repeatMode = requireEngine().getRepeatMode(),
             )
         }
     }
@@ -1024,19 +1247,20 @@ class PlaybackController private constructor(
     }
 
     companion object {
+        private const val STALL_POLL_MS = 2000L
+        private const val STALL_BUFFERING_MS = 8000L
+        private const val NETWORK_HANDOFF_GRACE_MS = 3000L
+        private const val RECONNECT_DEBOUNCE_MS = 2000L
+
         @Volatile
         private var instance: PlaybackController? = null
 
         fun get(context: Context): PlaybackController {
             return instance ?: synchronized(this) {
-                instance ?: run {
-                    val appContext = context.applicationContext
-                    NativeInit.ensureLoaded(appContext)
-                    val cacheDir = File(appContext.filesDir, "spotify-cache").apply { mkdirs() }
-                    val engine = LibrespotEngine(cacheDir.absolutePath)
-                    val webApiAuth = WebApiAuth(appContext)
-                    PlaybackController(appContext, engine, webApiAuth).also { instance = it }
-                }
+                instance ?: PlaybackController(
+                    appContext = context.applicationContext,
+                    webApiAuth = PlaybackEngineHolder.webApiAuth(context),
+                ).also { instance = it }
             }
         }
     }

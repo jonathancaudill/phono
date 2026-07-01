@@ -784,28 +784,49 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadPlaylistPicker(trackUri: String) {
+        ensurePlaylistsLoaded()
         viewModelScope.launch {
             _playlistPicker.value = PlaylistPickerState(trackUri = trackUri, loading = true)
-            runCatching { controller.editablePlaylists() }
-                .onSuccess { playlists ->
-                    val containing = runCatching {
-                        controller.playlistsContainingTrack(
-                            trackUri,
-                            playlists.map { it.playlist_id },
-                        )
-                    }.getOrDefault(emptySet())
-                    _playlistPicker.value = PlaylistPickerState(
-                        trackUri = trackUri,
-                        playlists = playlists,
-                        containingPlaylistIds = containing,
-                    )
+
+            var userId = _playlists.value.currentUserId
+            var playlists = editablePlaylistsFromState(userId)
+
+            if (playlists.isEmpty()) {
+                if (userId == null) {
+                    userId = runCatching { controller.currentUserId() }.getOrNull()
                 }
-                .onFailure { e ->
-                    _playlistPicker.value = PlaylistPickerState(
-                        trackUri = trackUri,
-                        error = e.message ?: "Could not load playlists",
-                    )
-                }
+                runCatching { controller.refreshPlaylists() }
+                playlists = runCatching { controller.editablePlaylists(userId) }
+                    .getOrElse { emptyList() }
+            }
+
+            if (playlists.isEmpty()) {
+                _playlistPicker.value = PlaylistPickerState(
+                    trackUri = trackUri,
+                    error = "No editable playlists found.",
+                )
+                return@launch
+            }
+
+            val containing = runCatching {
+                controller.playlistsContainingTrack(
+                    trackUri,
+                    playlists.map { it.playlist_id },
+                )
+            }.getOrDefault(emptySet())
+
+            _playlistPicker.value = PlaylistPickerState(
+                trackUri = trackUri,
+                playlists = playlists,
+                containingPlaylistIds = containing,
+            )
+        }
+    }
+
+    private fun editablePlaylistsFromState(userId: String?): List<PlaylistEntity> {
+        if (userId == null) return emptyList()
+        return _playlists.value.items.filter { playlist ->
+            playlist.owner_id == userId || playlist.is_collaborative
         }
     }
 

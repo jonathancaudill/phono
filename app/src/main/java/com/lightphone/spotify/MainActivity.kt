@@ -13,8 +13,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
-                .launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                if (!granted) {
+                    android.util.Log.w(
+                        "MainActivity",
+                        "POST_NOTIFICATIONS denied; playback notification may be limited",
+                    )
+                }
+            }.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
 
         setContent {
