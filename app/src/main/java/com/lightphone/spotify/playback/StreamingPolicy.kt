@@ -20,7 +20,7 @@ enum class NetworkTier {
 
 /**
  * Centralizes when to bank the current track and prefetch upcoming tracks.
- * UniFFI buffer/prefetch calls are no-ops until librespot-playback patch ships (P2).
+ * Uses hysteresis so tier flapping on cellular does not thrash prefetch depth.
  */
 class StreamingPolicy(
     private val controller: PlaybackController,
@@ -29,17 +29,44 @@ class StreamingPolicy(
     private val context: Context get() = controller.appContextInternal
 
     @Volatile
-    private var tier: NetworkTier = NetworkTier.FAIR
+    private var stableTier: NetworkTier = NetworkTier.FAIR
+
+    private var tierUpCount = 0
+    private var tierDownCount = 0
 
     fun onCapabilitiesChanged(caps: NetworkCapabilities) {
-        tier = classify(caps)
-        if (tier != NetworkTier.OFFLINE && tier != NetworkTier.POOR && controller.state.value.isPlaying) {
+        val raw = classify(caps)
+        when {
+            raw.ordinal > stableTier.ordinal -> {
+                tierDownCount = 0
+                tierUpCount++
+                if (tierUpCount >= TIER_UP_SAMPLES) {
+                    stableTier = raw
+                    tierUpCount = 0
+                }
+            }
+            raw.ordinal < stableTier.ordinal -> {
+                tierUpCount = 0
+                tierDownCount++
+                if (tierDownCount >= TIER_DOWN_SAMPLES) {
+                    stableTier = raw
+                    tierDownCount = 0
+                }
+            }
+            else -> {
+                tierUpCount = 0
+                tierDownCount = 0
+            }
+        }
+        if (raw != NetworkTier.OFFLINE && controller.state.value.isPlaying) {
             maybeBufferOpportunistically()
         }
     }
 
     fun onOffline() {
-        tier = NetworkTier.OFFLINE
+        stableTier = NetworkTier.OFFLINE
+        tierUpCount = 0
+        tierDownCount = 0
     }
 
     fun onTrackActive() {
@@ -52,16 +79,17 @@ class StreamingPolicy(
         bankCurrentTrack()
     }
 
-    fun currentTier(): NetworkTier = tier
+    fun currentTier(): NetworkTier = stableTier
 
-    fun prefetchDepth(): Int = when (tier) {
+    fun prefetchDepth(): Int = when (stableTier) {
         NetworkTier.GOOD_UNMETERED -> 3
-        NetworkTier.GOOD_METERED -> 1
+        NetworkTier.GOOD_METERED, NetworkTier.FAIR -> 1
         else -> 0
     }
 
     private fun maybeBufferOpportunistically() {
         if (isBatteryConstrained()) return
+        if (stableTier == NetworkTier.OFFLINE) return
         scope.launch {
             bankCurrentTrack()
             val ahead = prefetchDepth()
@@ -96,9 +124,14 @@ class StreamingPolicy(
                 caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
                     caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
                 ) -> NetworkTier.GOOD_UNMETERED
-            downKbps >= 1500 -> NetworkTier.GOOD_METERED
-            downKbps >= 500 -> NetworkTier.FAIR
+            downKbps >= 1200 -> NetworkTier.GOOD_METERED
+            downKbps >= 400 -> NetworkTier.FAIR
             else -> NetworkTier.POOR
         }
+    }
+
+    companion object {
+        private const val TIER_UP_SAMPLES = 3
+        private const val TIER_DOWN_SAMPLES = 2
     }
 }
