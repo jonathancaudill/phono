@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.net.ConnectivityManager
@@ -146,7 +148,10 @@ class PlaybackController private constructor(
     private var playbackPulseSeen: Boolean = false
     private var networkLostGraceJob: Job? = null
     private var reconnectDebounceJob: Job? = null
+    private var audioRouteDebounceJob: Job? = null
     private var lastTransport: Int? = null
+    private var pendingTransport: Int? = null
+    private var transportConfirmCount = 0
 
     private val audioAttributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -191,6 +196,16 @@ class PlaybackController private constructor(
         }
     }
 
+    private val audioDeviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+            handleAudioRouteChange()
+        }
+
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+            handleAudioRouteChange()
+        }
+    }
+
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             networkLostGraceJob?.cancel()
@@ -203,7 +218,8 @@ class PlaybackController private constructor(
                     streamingPolicy.onCapabilitiesChanged(caps)
                 }
                 val current = _state.value
-                if (!current.connected || current.reconnecting || current.isPlaying) {
+                val sessionDead = engineReady && !requireEngine().isSessionConnected()
+                if (!current.connected || current.reconnecting || sessionDead) {
                     debouncedForceReconnect()
                 }
             }
@@ -228,13 +244,25 @@ class PlaybackController private constructor(
                     NetworkCapabilities.TRANSPORT_CELLULAR
                 else -> null
             }
-            val transportChanged = transport != null && lastTransport != null && transport != lastTransport
+            if (transport != null && lastTransport != null && transport != lastTransport) {
+                if (pendingTransport == transport) {
+                    transportConfirmCount++
+                } else {
+                    pendingTransport = transport
+                    transportConfirmCount = 1
+                }
+            } else if (transport == lastTransport) {
+                pendingTransport = null
+                transportConfirmCount = 0
+            }
             lastTransport = transport ?: lastTransport
             if (
                 caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
-                transportChanged &&
+                transportConfirmCount >= TRANSPORT_CONFIRM_SAMPLES &&
                 (_state.value.isPlaying || _state.value.reconnecting)
             ) {
+                pendingTransport = null
+                transportConfirmCount = 0
                 debouncedForceReconnect()
             }
         }
@@ -254,6 +282,9 @@ class PlaybackController private constructor(
             )
         }
         connectivityManager.registerDefaultNetworkCallback(networkCallback)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
+        }
         connectivityManager.activeNetwork?.let { net ->
             connectivityManager.getNetworkCapabilities(net)?.let { caps ->
                 streamingPolicy.onCapabilitiesChanged(caps)
@@ -298,6 +329,18 @@ class PlaybackController private constructor(
     fun prefetchUpcoming(ahead: Int) {
         if (!engineReady || ahead <= 0) return
         runCatching { requireEngine().prefetchUpcoming(ahead.toUInt()) }
+    }
+
+    private fun handleAudioRouteChange() {
+        if (!engineReady) return
+        audioRouteDebounceJob?.cancel()
+        audioRouteDebounceJob = scope.launch {
+            delay(AUDIO_ROUTE_DEBOUNCE_MS)
+            val wasPlaying = _state.value.isPlaying
+            if (wasPlaying) pauseTransport(userInitiated = false)
+            runCatching { requireEngine().recreateAudioSink() }
+            if (wasPlaying && hasAudioFocus) resumeTransport()
+        }
     }
 
     private fun debouncedForceReconnect() {
@@ -1250,7 +1293,9 @@ class PlaybackController private constructor(
         private const val STALL_POLL_MS = 2000L
         private const val STALL_BUFFERING_MS = 8000L
         private const val NETWORK_HANDOFF_GRACE_MS = 3000L
-        private const val RECONNECT_DEBOUNCE_MS = 2000L
+        private const val RECONNECT_DEBOUNCE_MS = 6000L
+        private const val AUDIO_ROUTE_DEBOUNCE_MS = 400L
+        private const val TRANSPORT_CONFIRM_SAMPLES = 2
 
         @Volatile
         private var instance: PlaybackController? = null

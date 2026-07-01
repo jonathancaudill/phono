@@ -68,6 +68,8 @@ pub enum SinkStatus {
 
 pub type SinkEventCallback = Box<dyn Fn(SinkStatus) + Send>;
 
+type SinkFactory = Arc<dyn Fn() -> Box<dyn Sink> + Send + Sync>;
+
 struct PlayerInternal {
     session: Session,
     config: PlayerConfig,
@@ -77,6 +79,7 @@ struct PlayerInternal {
     state: PlayerState,
     preload: PlayerPreload,
     sink: Box<dyn Sink>,
+    sink_factory: SinkFactory,
     sink_status: SinkStatus,
     sink_event_callback: Option<SinkEventCallback>,
     volume_getter: Box<dyn VolumeGetter + Send>,
@@ -110,6 +113,8 @@ enum PlayerCommand {
     },
     /// Force the current track to download to its end (random-access mode).
     BufferCurrentToEnd,
+    /// Close and reopen the audio output sink (e.g. Bluetooth route change).
+    RecreateSink,
     Play,
     Pause,
     Stop,
@@ -438,15 +443,12 @@ impl NormalisationData {
 }
 
 impl Player {
-    pub fn new<F>(
+    pub fn new(
         config: PlayerConfig,
         session: Session,
         volume_getter: Box<dyn VolumeGetter + Send>,
-        sink_builder: F,
-    ) -> Arc<Self>
-    where
-        F: FnOnce() -> Box<dyn Sink> + Send + 'static,
-    {
+        sink_factory: SinkFactory,
+    ) -> Arc<Self> {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
 
         if config.normalisation {
@@ -496,7 +498,8 @@ impl Player {
 
                 state: PlayerState::Stopped,
                 preload: PlayerPreload::None,
-                sink: sink_builder(),
+                sink: sink_factory(),
+                sink_factory,
                 sink_status: SinkStatus::Closed,
                 sink_event_callback: None,
                 volume_getter,
@@ -561,6 +564,11 @@ impl Player {
     /// Request that the currently playing/paused track be fully buffered to its end.
     pub fn buffer_current_to_end(&self) {
         self.command(PlayerCommand::BufferCurrentToEnd);
+    }
+
+    /// Recreate the audio output sink without reloading the current track.
+    pub fn recreate_audio_sink(&self) {
+        self.command(PlayerCommand::RecreateSink);
     }
 
     /// True when the active track's remaining bytes are fully available locally.
@@ -1638,8 +1646,15 @@ impl PlayerInternal {
                         }
                     }
                     Err(e) => {
-                        error!("{e}");
-                        exit(1);
+                        error!("sink stop failed (continuing): {e}");
+                        self.sink_status = if temporarily {
+                            SinkStatus::TemporarilyClosed
+                        } else {
+                            SinkStatus::Closed
+                        };
+                        if let Some(callback) = &mut self.sink_event_callback {
+                            callback(self.sink_status);
+                        }
                     }
                 }
             }
@@ -2295,6 +2310,8 @@ impl PlayerInternal {
 
             PlayerCommand::BufferCurrentToEnd => self.handle_buffer_current_to_end(),
 
+            PlayerCommand::RecreateSink => self.handle_recreate_sink(),
+
             PlayerCommand::QueryCurrentBuffered { reply } => {
                 let buffered = match self.state {
                     PlayerState::Playing {
@@ -2473,6 +2490,16 @@ impl PlayerInternal {
         }
     }
 
+    fn handle_recreate_sink(&mut self) {
+        let should_run = self.state.is_playing();
+        self.ensure_sink_stopped(false);
+        self.sink = (self.sink_factory)();
+        self.sink_status = SinkStatus::Closed;
+        if should_run {
+            self.ensure_sink_running();
+        }
+    }
+
     fn handle_buffer_current_to_end(&mut self) {
         use crate::audio::Range;
 
@@ -2539,6 +2566,7 @@ impl fmt::Debug for PlayerCommand {
                 f.debug_tuple("Preload").field(&track_id).finish()
             }
             PlayerCommand::BufferCurrentToEnd => f.write_str("BufferCurrentToEnd"),
+            PlayerCommand::RecreateSink => f.write_str("RecreateSink"),
             PlayerCommand::QueryCurrentBuffered { .. } => f.write_str("QueryCurrentBuffered"),
             PlayerCommand::Play => f.debug_tuple("Play").finish(),
             PlayerCommand::Pause => f.debug_tuple("Pause").finish(),

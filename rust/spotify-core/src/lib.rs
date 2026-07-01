@@ -179,17 +179,26 @@ struct EngineShared {
     /// of auto-starting music the user had paused. Survives `Active` swaps because
     /// it lives on the long-lived `EngineShared`.
     playing: Arc<AtomicBool>,
+    /// Latest playhead from player events; belt-and-suspenders for reconnect rebuilds.
+    last_known_position_ms: Arc<AtomicU32>,
     /// Queue held while `active` is dropped during reconnect so UI reads stay populated.
     pending_queue: Mutex<Option<QueueState>>,
     rebuild_mutex: Mutex<()>,
     last_force_reconnect: Mutex<Option<Instant>>,
     prefetch_generation: AtomicU32,
-    #[cfg(debug_assertions)]
     metrics_transport_reconnect: AtomicU32,
-    #[cfg(debug_assertions)]
     metrics_full_rebuild: AtomicU32,
-    #[cfg(debug_assertions)]
     metrics_stall_events: AtomicU32,
+    metrics_sink_recreate: AtomicU32,
+}
+
+/// Debug counters for playback stability field testing (logcat / settings).
+#[derive(uniffi::Record, Clone, Debug, Default)]
+pub struct PlaybackDebugMetrics {
+    pub transport_reconnect: u32,
+    pub full_rebuild: u32,
+    pub stall_events: u32,
+    pub sink_recreate: u32,
 }
 
 /// The UniFFI object handed to Kotlin.
@@ -433,6 +442,21 @@ impl LibrespotEngine {
         self.shared.force_reconnect_check();
     }
 
+    /// True when a live session exists and has not been invalidated.
+    pub fn is_session_connected(&self) -> bool {
+        self.shared.is_session_connected()
+    }
+
+    /// Recreate the native audio output sink (e.g. after Bluetooth route change).
+    pub fn recreate_audio_sink(&self) {
+        self.shared.recreate_audio_sink();
+    }
+
+    /// Counters for reconnect/rebuild/stall diagnostics.
+    pub fn playback_debug_metrics(&self) -> PlaybackDebugMetrics {
+        self.shared.playback_debug_metrics()
+    }
+
     /// Bank the currently playing track to its end (opportunistic full-track cache).
     pub fn buffer_current_to_end(&self) {
         self.shared.with_active(|a| a.player.buffer_current_to_end());
@@ -464,16 +488,10 @@ impl LibrespotEngine {
         if self.shared.active.lock().unwrap().is_none() {
             return;
         }
-        let resume = self.shared.snapshot_resume();
         let this = self.shared.clone();
         let handle = this.runtime.handle().clone();
         handle.spawn(async move {
-            if let Some(active) = this.active.lock().unwrap().take() {
-                active.session.shutdown();
-            }
-            if let Some(creds) = this.cache.credentials() {
-                let _ = this.build_active(creds, resume).await;
-            }
+            this.rebuild_active_staged().await;
         });
     }
 }
@@ -548,17 +566,66 @@ impl EngineShared {
             oauth: Mutex::new(None),
             refresh_mutex: Mutex::new(()),
             playing: Arc::new(AtomicBool::new(false)),
+            last_known_position_ms: Arc::new(AtomicU32::new(0)),
             pending_queue: Mutex::new(None),
             rebuild_mutex: Mutex::new(()),
             last_force_reconnect: Mutex::new(None),
             prefetch_generation: AtomicU32::new(0),
-            #[cfg(debug_assertions)]
             metrics_transport_reconnect: AtomicU32::new(0),
-            #[cfg(debug_assertions)]
             metrics_full_rebuild: AtomicU32::new(0),
-            #[cfg(debug_assertions)]
             metrics_stall_events: AtomicU32::new(0),
+            metrics_sink_recreate: AtomicU32::new(0),
         }))
+    }
+
+    fn is_session_connected(&self) -> bool {
+        self.active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|a| !a.session.is_invalid())
+            .unwrap_or(false)
+    }
+
+    fn recreate_audio_sink(&self) {
+        if let Some(active) = self.active.lock().unwrap().as_ref() {
+            active.player.recreate_audio_sink();
+            self.metrics_sink_recreate.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn playback_debug_metrics(&self) -> PlaybackDebugMetrics {
+        PlaybackDebugMetrics {
+            transport_reconnect: self.metrics_transport_reconnect.load(Ordering::Relaxed),
+            full_rebuild: self.metrics_full_rebuild.load(Ordering::Relaxed),
+            stall_events: self.metrics_stall_events.load(Ordering::Relaxed),
+            sink_recreate: self.metrics_sink_recreate.load(Ordering::Relaxed),
+        }
+    }
+
+    fn snapshot_resume_with_position(&self) -> Option<QueueState> {
+        let mut snap = self.snapshot_resume()?;
+        let last = self.last_known_position_ms.load(Ordering::SeqCst);
+        if last > snap.position_ms() {
+            snap.set_position_ms(last);
+        }
+        Some(snap)
+    }
+
+    async fn rebuild_active_staged(self: Arc<Self>) {
+        let resume = self.snapshot_resume_with_position();
+        notify(&self.listener, |l| l.on_connection_lost());
+        *self.pending_queue.lock().unwrap() = resume.clone();
+        self.metrics_full_rebuild.fetch_add(1, Ordering::Relaxed);
+        if let Some(active) = self.active.lock().unwrap().take() {
+            active.session.shutdown();
+        }
+        if let Some(creds) = self.cache.credentials() {
+            match self.clone().build_active(creds, resume).await {
+                Ok(()) => notify(&self.listener, |l| l.on_connection_restored()),
+                Err(e) => log::warn!("staged rebuild failed: {e}"),
+            }
+        }
     }
 
     fn get_volume(&self) -> u8 {
@@ -809,7 +876,7 @@ impl EngineShared {
             .lock()
             .unwrap()
             .clone()
-            .or_else(|| shared.snapshot_resume());
+            .or_else(|| shared.snapshot_resume_with_position());
         let creds = shared
             .cache
             .credentials()
@@ -1224,9 +1291,15 @@ impl EngineShared {
         let player_config = self.settings.get().player_config();
         let audio_format = AudioFormat::S16;
 
-        let player = Player::new(player_config, session.clone(), volume_getter, move || {
-            backend(None, audio_format)
-        });
+        let sink_factory: Arc<dyn Fn() -> Box<dyn audio_backend::Sink> + Send + Sync> =
+            Arc::new(move || backend(None, audio_format));
+
+        let player = Player::new(
+            player_config,
+            session.clone(),
+            volume_getter,
+            sink_factory,
+        );
 
         // App volume is fixed at 100%; users adjust loudness via Android system volume.
         mixer.set_volume(u16::MAX);
@@ -1244,6 +1317,7 @@ impl EngineShared {
             queue.clone(),
             self.listener.clone(),
             self.playing.clone(),
+            self.last_known_position_ms.clone(),
             weak,
         ));
 
@@ -1257,7 +1331,11 @@ impl EngineShared {
             let q = queue.lock().unwrap();
             q.current_uri()
         } {
-            let pos = queue.lock().unwrap().position_ms();
+            let pos = {
+                let q = queue.lock().unwrap();
+                q.position_ms()
+                    .max(self.last_known_position_ms.load(Ordering::SeqCst))
+            };
             // Only auto-start if the user actually had playback running. An
             // idle-timeout reconnect of a paused queue must restore it paused.
             let start_playing = self.playing.load(Ordering::SeqCst);
@@ -1335,6 +1413,8 @@ impl EngineShared {
             if active.session.is_invalid() {
                 return;
             }
+            self.metrics_transport_reconnect
+                .fetch_add(1, Ordering::Relaxed);
             active.session.shutdown();
         }
     }
@@ -1363,8 +1443,9 @@ fn spawn_monitor(
             };
             notify(&shared.listener, |l| l.on_connection_lost());
 
-            let resume = shared.snapshot_resume();
+            let resume = shared.snapshot_resume_with_position();
             *shared.pending_queue.lock().unwrap() = resume.clone();
+            shared.metrics_full_rebuild.fetch_add(1, Ordering::Relaxed);
             *shared.active.lock().unwrap() = None;
 
             let mut delay = 2u64;
@@ -1429,6 +1510,7 @@ async fn forward_events(
     queue: Arc<Mutex<QueueState>>,
     listener: SharedListener,
     playing: Arc<AtomicBool>,
+    last_known_position_ms: Arc<AtomicU32>,
     weak: Weak<EngineShared>,
 ) {
     let mut unavailable_guard = UnavailableGuard::new();
@@ -1436,22 +1518,31 @@ async fn forward_events(
         match event {
             PlayerEvent::Loading { track_id, .. } => {
                 unavailable_guard.reset();
+                notify(&listener, |l| l.on_buffering(true));
                 notify(&listener, |l| l.on_loading());
                 notify(&listener, |l| l.on_track_changed(uri_to_string(&track_id)));
             }
-            PlayerEvent::Playing { track_id, position_ms, .. } => {
+            PlayerEvent::Playing {
+                track_id,
+                position_ms,
+                ..
+            } => {
                 unavailable_guard.reset();
+                sync_queue_position(&queue, position_ms, &last_known_position_ms);
                 playing.store(true, Ordering::SeqCst);
+                notify(&listener, |l| l.on_buffering(false));
                 notify(&listener, |l| l.on_playing(position_ms as i64));
                 notify(&listener, |l| l.on_track_changed(uri_to_string(&track_id)));
             }
             PlayerEvent::Paused { position_ms, .. } => {
+                sync_queue_position(&queue, position_ms, &last_known_position_ms);
                 playing.store(false, Ordering::SeqCst);
                 notify(&listener, |l| l.on_paused(position_ms as i64));
             }
             PlayerEvent::PositionChanged { position_ms, .. }
             | PlayerEvent::PositionCorrection { position_ms, .. }
             | PlayerEvent::Seeked { position_ms, .. } => {
+                sync_queue_position(&queue, position_ms, &last_known_position_ms);
                 notify(&listener, |l| l.on_position_changed(position_ms as i64));
             }
             PlayerEvent::Unavailable { track_id, .. } => {
@@ -1479,7 +1570,6 @@ async fn forward_events(
                 log::warn!("playback stopped for {}", uri_to_string(&track_id));
                 if playing.load(Ordering::SeqCst) {
                     if let Some(shared) = weak.upgrade() {
-                        #[cfg(debug_assertions)]
                         shared
                             .metrics_stall_events
                             .fetch_add(1, Ordering::SeqCst);
@@ -1506,6 +1596,15 @@ async fn forward_events(
             _ => {}
         }
     }
+}
+
+fn sync_queue_position(
+    queue: &Arc<Mutex<QueueState>>,
+    position_ms: u32,
+    last_known_position_ms: &Arc<AtomicU32>,
+) {
+    queue.lock().unwrap().set_position_ms(position_ms);
+    last_known_position_ms.store(position_ms, Ordering::SeqCst);
 }
 
 fn notify<F: FnOnce(&dyn PlayerEventListener)>(listener: &SharedListener, f: F) {
@@ -1548,9 +1647,33 @@ fn uri_to_string(uri: &SpotifyUri) -> String {
 fn preferred_formats(bitrate: Bitrate) -> &'static [AudioFileFormat] {
     use AudioFileFormat::*;
     match bitrate {
-        Bitrate::Bitrate96 => &[OGG_VORBIS_96, OGG_VORBIS_160, OGG_VORBIS_320],
-        Bitrate::Bitrate160 => &[OGG_VORBIS_160, OGG_VORBIS_96, OGG_VORBIS_320],
-        Bitrate::Bitrate320 => &[OGG_VORBIS_320, OGG_VORBIS_160, OGG_VORBIS_96],
+        Bitrate::Bitrate96 => &[
+            OGG_VORBIS_96,
+            MP3_96,
+            OGG_VORBIS_160,
+            MP3_160,
+            MP3_256,
+            OGG_VORBIS_320,
+            MP3_320,
+        ],
+        Bitrate::Bitrate160 => &[
+            OGG_VORBIS_160,
+            MP3_160,
+            OGG_VORBIS_96,
+            MP3_96,
+            MP3_256,
+            OGG_VORBIS_320,
+            MP3_320,
+        ],
+        Bitrate::Bitrate320 => &[
+            OGG_VORBIS_320,
+            MP3_320,
+            MP3_256,
+            OGG_VORBIS_160,
+            MP3_160,
+            OGG_VORBIS_96,
+            MP3_96,
+        ],
     }
 }
 
