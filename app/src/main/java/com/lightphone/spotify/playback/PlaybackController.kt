@@ -15,7 +15,8 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.PowerManager
-import com.lightphone.spotify.NativeInit
+import com.lightphone.spotify.BuildConfig
+import com.lightphone.spotify.audio.PhonoAudioTrackSink
 import com.lightphone.spotify.data.AlbumDetailResult
 import com.lightphone.spotify.data.ArtistDetailResult
 import com.lightphone.spotify.data.SearchResultItem
@@ -333,6 +334,21 @@ class PlaybackController private constructor(
 
     private fun handleAudioRouteChange() {
         if (!engineReady) return
+        if (BuildConfig.USE_AUDIOTRACK_SINK) {
+            // Path C: PhonoAudioTrackSink owns routing via OnRoutingChangedListener.
+            // Only recreate the Rust sink wrapper if Kotlin metrics show repeated failures.
+            audioRouteDebounceJob?.cancel()
+            audioRouteDebounceJob = scope.launch {
+                delay(AUDIO_ROUTE_DEBOUNCE_MS)
+                val deadObjects = runCatching {
+                    PhonoAudioTrackSink.getDeadObjectCount()
+                }.getOrDefault(0)
+                if (deadObjects > 0) {
+                    runCatching { requireEngine().recreateAudioSink() }
+                }
+            }
+            return
+        }
         audioRouteDebounceJob?.cancel()
         audioRouteDebounceJob = scope.launch {
             delay(AUDIO_ROUTE_DEBOUNCE_MS)
@@ -1140,21 +1156,29 @@ class PlaybackController private constructor(
     override fun onPlaying(positionMs: Long) {
         lastPositionMs = positionMs
         markPlaybackPulse()
-        _state.update { it.copy(isPlaying = true, isLoading = false, isBuffering = false, positionMs = positionMs) }
+        val audible = audiblePositionMs(positionMs)
+        _state.update { it.copy(isPlaying = true, isLoading = false, isBuffering = false, positionMs = audible) }
         streamingPolicy.onTrackActive()
         onStateChanged?.invoke()
     }
 
     override fun onPaused(positionMs: Long) {
         resetPlaybackPulse()
-        _state.update { it.copy(isPlaying = false, positionMs = positionMs) }
+        _state.update { it.copy(isPlaying = false, positionMs = audiblePositionMs(positionMs)) }
         onStateChanged?.invoke()
     }
 
     override fun onPositionChanged(positionMs: Long) {
         lastPositionMs = positionMs
         markPlaybackPulse()
-        _state.update { it.copy(positionMs = positionMs, isBuffering = false) }
+        _state.update { it.copy(positionMs = audiblePositionMs(positionMs), isBuffering = false) }
+    }
+
+    /** Subtract AudioTrack + ring latency from stream position (ExoPlayer DelayMs). */
+    private fun audiblePositionMs(streamPositionMs: Long): Long {
+        if (!BuildConfig.USE_AUDIOTRACK_SINK) return streamPositionMs
+        val delayMs = runCatching { PhonoAudioTrackSink.getOutputDelayMs() }.getOrDefault(0)
+        return (streamPositionMs - delayMs).coerceAtLeast(0L)
     }
 
     override fun onBuffering(stalled: Boolean) {

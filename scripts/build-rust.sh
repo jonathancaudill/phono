@@ -32,16 +32,24 @@ done
 
 (
     cd "$CRATE_DIR"
-    # The librespot feature set (rustls-tls-webpki-roots, rodio-backend,
-    # with-libmdns) is pinned in Cargo.toml, so no --features flag is needed.
+    if [ "${USE_AUDIOTRACK_SINK:-1}" = "1" ]; then
+        echo "    Android audio backend: audiotrack (Path C)"
+        CARGO_FEATURES=(--no-default-features --features audiotrack-sink)
+    else
+        echo "    Android audio backend: rodio/cpal"
+        CARGO_FEATURES=(--features rodio-sink)
+    fi
     cargo ndk "${NDK_ARGS[@]}" -o "$JNILIBS_DIR" \
         --platform 26 \
-        build --release
+        build --release "${CARGO_FEATURES[@]}"
 )
 
-# Copy libc++_shared.so next to our lib for each ABI. cpal/AAudio pulls in the
-# C++ runtime; bundling it avoids "libc++_shared.so not found" at load time.
+# Copy libc++_shared.so next to our lib for each ABI when using rodio/cpal (cpal/AAudio).
 copy_libcxx() {
+    if [ "${USE_AUDIOTRACK_SINK:-1}" = "1" ]; then
+        echo "    skipping libc++_shared.so (audiotrack backend)"
+        return
+    fi
     local ndk="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
     [ -z "$ndk" ] && { echo "WARN: ANDROID_NDK_HOME unset; skipping libc++_shared.so"; return; }
     local host

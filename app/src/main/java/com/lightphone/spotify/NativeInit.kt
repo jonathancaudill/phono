@@ -7,8 +7,10 @@ import android.content.Context
  *
  * [initAndroidContext] is a raw-JNI entrypoint (implemented in Rust in
  * `android_ctx.rs`). It must run once, before any playback, so cpal's AAudio
- * backend can read the JavaVM/Context from `ndk_context`. JNI_OnLoad's reserved
- * arg is null, so we hand the real applicationContext across ourselves.
+ * backend can read the JavaVM/Context from `ndk_context` when rodio is used.
+ *
+ * [registerAudioSink] caches JNI method IDs for [PhonoAudioTrackSink] when the
+ * audiotrack backend is compiled in (Path C).
  */
 object NativeInit {
     @Volatile
@@ -20,9 +22,13 @@ object NativeInit {
             if (initialized) return
             System.loadLibrary("spotify_core")
             initAndroidContext(context.applicationContext)
+            if (BuildConfig.USE_AUDIOTRACK_SINK) {
+                registerAudioSink()
+            }
             initialized = true
         }
     }
 
     private external fun initAndroidContext(context: Context)
+    private external fun registerAudioSink()
 }

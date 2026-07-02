@@ -15,11 +15,16 @@ crate-type = ["cdylib", "staticlib", "lib"]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi_bindgen.rs"
 
+[features]
+default = ["rodio-sink"]
+rodio-sink = ["librespot/rodio-backend", "dep:ndk-context"]
+audiotrack-sink = []
+
 [dependencies]
+ringbuf = "0.4"
 # Pin librespot exactly. A bump should only ever touch this crate.
 librespot = { version = "=0.8.0", default-features = false, features = [
     "rustls-tls-webpki-roots",
-    "rodio-backend",
     "with-libmdns",
 ] }
 
@@ -46,11 +51,11 @@ protobuf = "3.7"
 log = "0.4"
 thiserror = "2"
 
-# Android-only: JNI shim that bootstraps ndk_context for cpal/AAudio, plus logging.
+# Android-only: JNI for AudioTrack sink + optional ndk_context for rodio/cpal.
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
-ndk-context = "0.1"
 android_logger = "0.14"
+ndk-context = { version = "0.1", optional = true }
 
 [build-dependencies]
 uniffi = { version = "0.28.3", features = ["build"] }

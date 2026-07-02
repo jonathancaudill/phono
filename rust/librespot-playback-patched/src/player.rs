@@ -1634,7 +1634,12 @@ impl PlayerInternal {
         match self.sink_status {
             SinkStatus::Running => {
                 trace!("== Stopping sink ==");
-                match self.sink.stop() {
+                let result = if temporarily {
+                    self.sink.pause()
+                } else {
+                    self.sink.stop()
+                };
+                match result {
                     Ok(()) => {
                         self.sink_status = if temporarily {
                             SinkStatus::TemporarilyClosed
@@ -2274,6 +2279,10 @@ impl PlayerInternal {
                             track_id: track_id.clone(),
                             position_ms: new_position_ms,
                         });
+                        // Drop stale PCM buffered in the output sink after a seek.
+                        if let Err(e) = self.sink.flush() {
+                            error!("sink flush after seek failed: {e}");
+                        }
                     }
                 }
                 Err(e) => error!("PlayerInternal::handle_command_seek error: {e}"),

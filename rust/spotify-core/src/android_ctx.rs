@@ -68,8 +68,8 @@ pub extern "system" fn Java_com_lightphone_spotify_NativeInit_initAndroidContext
     let vm_ptr = vm.get_java_vm_pointer() as *mut c_void;
     let ctx_ptr = global.as_obj().as_raw() as *mut c_void;
 
-    // SAFETY: vm_ptr and ctx_ptr remain valid for the process lifetime because we
-    // pin both `vm` (JAVA_VM) and `global` (ANDROID_CONTEXT) below.
+    // ndk_context is only required for cpal/AAudio (rodio backend).
+    #[cfg(feature = "rodio-sink")]
     unsafe {
         ndk_context::initialize_android_context(vm_ptr, ctx_ptr);
     }
@@ -94,7 +94,7 @@ pub extern "system" fn Java_com_lightphone_spotify_NativeInit_initAndroidContext
     librespot::core::config::set_os_version_override("0");
     log::info!("OS version override set to desktop \"0\" for Keymaster/Linux identity");
 
-    log::info!("Android context initialized for ndk_context");
+    log::info!("Android context initialized (JavaVM stashed)");
 }
 
 fn read_android_sdk_int(env: &mut JNIEnv) -> jni::errors::Result<i32> {
