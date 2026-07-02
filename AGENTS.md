@@ -154,9 +154,17 @@ reason — dev-app Web API is the supported metadata path today.
 
 ## Playback
 
-librespot streams over TCP to `ap-*.spotify.com`. Android audio uses the **oboe** backend.
-Exposed via UniFFI to Kotlin. `MediaSession` / Media3 for lock-screen controls and audio focus.
-`PlaybackController` owns audio focus in Kotlin.
+librespot streams over TCP to `ap-*.spotify.com`. Android audio uses a native **`AudioTrack`** sink
+(Path C: SPSC ring + Rust drain thread → Kotlin `PhonoAudioTrackSink` via JNI). The drain thread
+uses `WRITE_BLOCKING`; the librespot player thread only pushes to the ring. See
+[docs/audio-sink.md](docs/audio-sink.md).
+
+Release builds default to `audiotrack-sink`; set `USE_AUDIOTRACK_SINK=false` in `build.gradle.kts` +
+`USE_AUDIOTRACK_SINK=0` in `build-rust.sh` to fall back to rodio/cpal/AAudio.
+
+`MediaSession` / Media3 for lock-screen controls and audio focus. `PlaybackController` owns audio
+focus in Kotlin. Session rebuild (not librespot-java in-place reconnect):
+[docs/future/session-reconnect.md](docs/future/session-reconnect.md).
 
 ---
 
@@ -196,6 +204,7 @@ Exposed via UniFFI to Kotlin. `MediaSession` / Media3 for lock-screen controls a
 - **[Echo](https://github.com/vandamd/echo)** (Vandam Dinh) — Light Phone Spotify UX, Web API
   metadata patterns, dev-app setup flow. phono's UI descends from Light Template.
 - **psst** — librespot playback/session reference; search API structure (single combined `/search`).
-- **librespot** — protocol source of truth for session, Login5, spclient, oboe playback.
-- **Jetispot** — informative for native Mercury/collection-v2 approaches we deliberately do **not**
-  use for metadata today.
+- **librespot** — protocol source of truth for session, Login5, spclient, playback.
+- **Jetispot** — informative for librespot-java reconnect + `AndroidSinkOutput`; phono uses Rust
+  stack with seamless rebuild instead. See [docs/future/session-reconnect.md](docs/future/session-reconnect.md).
+- **Developer docs** — [docs/README.md](docs/README.md) for architecture index and field tests.

@@ -15,6 +15,9 @@ No official Spotify app required.
 > Requires a Spotify **Premium** account. Playback is a protocol-level requirement of
 > librespot, not something that can be worked around.
 
+**New developer?** Read [docs/README.md](docs/README.md) and [AGENTS.md](AGENTS.md) before
+changing code.
+
 ## How this differs from Echo
 
 | | **phono** | **Echo** |
@@ -22,6 +25,7 @@ No official Spotify app required.
 | Playback | librespot in-process | Spotify Android SDK (official app installed) |
 | Metadata | Web API (your dev app) | Web API (your dev app) |
 | Spotify app required | No | Yes |
+| Android audio | Native `AudioTrack` (Path C) | Delegated to Spotify app |
 
 Both need a Spotify Developer app for library/search/browse. phono additionally needs a
 one-time Keymaster OAuth login (Step 1) for streaming.
@@ -63,108 +67,73 @@ The app uses **dual authentication**:
 - Refresh tokens expire after **6 months** — re-run Step 2 if metadata stops working
 - New dev-mode apps may lack some endpoints (e.g. artist top tracks) due to Spotify API policy changes
 
-## Layout
+## Repository layout
 
 ```
 rust/
-  spotify-core/              # UniFFI engine: playback, queue, session recovery
-  librespot-core-patched/    # Keymaster/desktop identity patch (0.8.0)
-  librespot-playback-patched/  # buffer_current_to_end, full-track query
-  librespot-audio-patched/     # download_slots, 429 permit release, CDN retry
-app/                         # Android app (Kotlin Web API + Jetpack Compose UI)
-scripts/build-rust.sh        # Cross-compile + generate Kotlin bindings
+  spotify-core/                 # UniFFI engine: session, player, queue, AudioTrack sink
+  librespot-core-patched/       # Keymaster/desktop identity (PATCHES.md)
+  librespot-playback-patched/   # Buffering API, sink lifecycle (PATCHES.md)
+  librespot-audio-patched/      # CDN fetch resilience (PATCHES.md)
+app/                            # Android (Kotlin Web API + Jetpack Compose)
+docs/                           # Architecture, field tests, future research
+scripts/build-rust.sh           # Cross-compile + UniFFI Kotlin bindings
 ```
+
+All librespot crates are pinned to **=0.8.0**. Do not bump without re-validating every patch.
 
 ## Architecture
 
-- **Playback:** `LibrespotEngine` (UniFFI) owns session, player, and queue. Keymaster OAuth via
-  WebView (`http://127.0.0.1:8898/login`). Three client-identity surfaces (session, stored
-  credentials, client-token) must all agree as Keymaster/desktop — see `AGENTS.md`.
-- **Service ownership:** `PlaybackService` creates the native engine and calls `startForeground()`
-  immediately (before engine init). `PlaybackEngineHolder` wires the engine to
-  `PlaybackController` after attach.
-- **Metadata:** Kotlin `SpotifyWebApi` + `SpotifyRepository` call `api.spotify.com/v1/...`
-  with tokens from your dev-app OAuth (`http://127.0.0.1:43821/callback`). Search uses one
-  combined `/search` request per query; results are ranked and interleaved client-side
-  (`SearchRanking.kt`).
-- **Library writes:** Web API (`PUT`/`DELETE /me/library`) — save/remove tracks and albums.
-- **Daily mixes:** Hybrid — native librespot `context-resolve` search when possible; fallback
-  to editorial playlist names in your library via Web API.
+### Playback (Rust)
 
-`PlaybackController` handles audio focus, network-tier streaming policy, stall buffering UX, and
-exposes `StateFlow` to Compose. `PlaybackService` hosts Media3 for lock-screen controls. UI
-follows the Light Template aesthetic (black canvas, Public Sans, minimal chrome).
+- `LibrespotEngine` (UniFFI) owns session, player, and queue.
+- Keymaster OAuth via WebView (`http://127.0.0.1:8898/login`). Three client-identity surfaces
+  (session, stored credentials, client-token) must agree as Keymaster/desktop — see `AGENTS.md`.
+- **Audio output (Path C):** decode on the librespot player thread → SPSC ring → dedicated
+  drain thread → JNI → Kotlin `PhonoAudioTrackSink` → `AudioTrack` (`USAGE_MEDIA`).
+  Details: [docs/audio-sink.md](docs/audio-sink.md).
+- **Session recovery:** seamless `Active` rebuild with queue/position restore (not
+  librespot-java in-place reconnect). Details:
+  [docs/future/session-reconnect.md](docs/future/session-reconnect.md).
+
+### Android (Kotlin)
+
+- `PlaybackService` creates the native engine and calls `startForeground()` immediately.
+- `PlaybackController` — audio focus, network-tier streaming policy, stall UX, DelayMs for
+  lock-screen position.
+- `SpotifyWebApi` + `SpotifyRepository` — metadata via dev-app OAuth
+  (`http://127.0.0.1:43821/callback`). Single combined `/search` per query; client-side
+  ranking (`SearchRanking.kt`).
+- Library writes via Web API (`PUT`/`DELETE /me/library`).
+- Daily mixes: native librespot `context-resolve` with Web API fallback.
+
+`NativeInit` order: `loadLibrary` → `initAndroidContext` → `registerAudioSink` (Path C).
 
 ## Caching
 
-phono uses several cache layers with different lifetimes and purposes. Nothing here replaces
-the Web API as the source of truth for metadata — caches reduce API calls and improve
-perceived speed.
+### Library (Room)
 
-### 1. Library (Room / SQLite)
+Liked tracks, saved albums, playlists — head-check delta sync, parallel page fill. UI reads from
+disk via `Flow`.
 
-Persistent on-disk cache for browsable library data (`phono_library.db`):
+### Detail cache
 
-| Resource | Storage | Sync strategy |
-|----------|---------|---------------|
-| Liked tracks | `liked_tracks` + sync metadata | Head-check delta on refresh; background parallel page fill |
-| Saved albums | `saved_albums` + sync metadata | Same pattern |
-| User playlists | `playlists` + sync metadata | Same pattern |
+Pinned Room cache for saved albums / owned playlists (24 h TTL); ephemeral in-memory for browsed
+content.
 
-`LibrarySync` skips a full re-download when the remote head (total count + first item) matches
-local state. `fillRemainingParallel` drains remaining pages in parallel so the local DB becomes a
-complete offline copy over time. UI lists read from Room `Flow`s and paginate from disk.
+### Search
 
-### 2. Detail cache (Room + in-memory)
+Per-query in-memory cache (5 min); filter chips reuse cached response.
 
-Album and playlist detail screens use a two-tier lookup in `SpotifyRepository`:
+### Auth tokens
 
-- **Pinned (Room):** Saved albums and user-owned playlists get JSON blobs in
-  `album_details` / `playlist_details` (24 h TTL). Playlist track URIs are indexed in
-  `playlist_track_uris` for fast “is this track in my playlist?” checks (context menus).
-- **Ephemeral (in-memory):** Browsed-but-not-library albums/playlists are cached in bounded
-  LRU-style maps (20 albums / 10 playlists, 5 min TTL).
+- Playback: librespot stored credentials in `filesDir/spotify-cache/`
+- Web API: `EncryptedSharedPreferences` with proactive refresh
 
-Artist detail is not cached yet — always fetched from the Web API.
+### Audio stream cache
 
-### 3. Search and light metadata (in-memory)
-
-- **Search:** Per-query results cached 5 minutes. Filter chips (All/Songs/Artists/…) reuse the
-  same cached response with zero extra API calls.
-- **Daily mixes:** In-memory, 5 min TTL.
-- **Current user ID:** Cached for the session after first `/me` call.
-
-### 4. Auth tokens (encrypted disk)
-
-- **Playback (Step 1):** librespot stored credentials + volume in `filesDir/spotify-cache/`.
-  OAuth bootstrap token also persisted for early metadata probes.
-- **Web API (Step 2):** Access + refresh tokens in `EncryptedSharedPreferences`; proactive
-  refresh before expiry; `invalid_grant` clears tokens for re-auth.
-
-### 5. Audio stream cache (librespot disk)
-
-Downloaded Ogg/Vorbis chunks live under `filesDir/spotify-cache/` (audio + tmp dirs). Settings
-→ **Clear Cache** deletes audio files only; credentials and library DB are kept.
-
-**Opportunistic buffering** (`StreamingPolicy` + patched librespot):
-
-- On good Wi‑Fi: `buffer_current_to_end()` banks the playing track; `prefetch_upcoming()` warms
-  the next 1–3 queue tracks.
-- On stall: bank current track if battery allows.
-- `NetworkBufferPreset` (Low / Normal / High) tunes read-ahead at engine init.
-
-### Future caching improvements
-
-- **Artist detail cache** — same pinned/ephemeral split as albums.
-- **Snapshot-aware playlist invalidation** — refresh pinned playlist detail when
-  `snapshot_id` changes instead of relying on TTL alone.
-- **Image disk cache** — album art URLs are re-fetched by Coil on every screen; a bounded
-  disk cache would help offline browsing.
-- **Incremental library sync** — today a head mismatch triggers a full local rewrite for that
-  resource; a merge/diff path would reduce churn on large libraries.
-- **Search persistence** — optional disk cache for recent queries across app restarts.
-- **Offline playback policy** — gate prefetch/banking on metered vs unmetered + user setting;
-  surface “fully buffered” state in the UI via `is_current_fully_buffered()`.
+Ogg chunks under `filesDir/spotify-cache/`. **Opportunistic buffering** on good Wi‑Fi:
+`buffer_current_to_end()` + `prefetch_upcoming()` via patched librespot player API.
 
 ## Build
 
@@ -175,40 +144,43 @@ Prerequisites:
 - Android NDK installed; export `ANDROID_NDK_HOME`
 - JDK 17, Android SDK (compileSdk 35), Gradle
 
-Then:
-
 ```bash
-# 1) Cross-compile the Rust backend and generate Kotlin bindings.
+# Cross-compile Rust + generate Kotlin bindings (AudioTrack backend by default)
 bash scripts/build-rust.sh
 
-# 2) Build the app (also runs step 1 via the cargoBuild Gradle task).
-./gradlew :app:assembleDebug
-
-# Install on a connected device/emulator
+# Build and install
 ./gradlew :app:installDebug
 ```
 
+**Rodio fallback** (emulator debug): `USE_AUDIOTRACK_SINK=0 ./scripts/build-rust.sh` and match
+`USE_AUDIOTRACK_SINK` in `app/build.gradle.kts`.
+
+**Host tests** (ring buffer): `cd rust/spotify-core && cargo test pcm_ring`
+
 ## Key gotchas
 
-- **`ndk_context` must be initialized** via `NativeInit.initAndroidContext` before
-  constructing the engine.
-- **Audio focus** is handled in Kotlin (`PlaybackController`).
-- **minSdk is 26** (AAudio requirement).
-- **Do not mix redirect URIs:** Step 1 uses `127.0.0.1:8898/login` (Keymaster); Step 2 uses
-  `127.0.0.1:43821/callback` (your dev app).
-- **Do not use the Keymaster OAuth token for Web API calls** — metadata must use the dev-app
-  bearer from Step 2.
-- **Non-premium accounts:** librespot requires Premium for playback.
-- **Foreground service:** `PlaybackService` must call `startForeground()` within seconds of
-  `startForegroundService()` — engine init alone is too slow to rely on Media3 promotion alone.
+- Call `NativeInit.initAndroidContext` before constructing the engine (`ndk_context` / identity).
+- **Do not mix redirect URIs:** Step 1 → `127.0.0.1:8898/login`; Step 2 → `127.0.0.1:43821/callback`.
+- **Do not use the Keymaster token for Web API** — metadata must use the dev-app bearer.
+- **minSdk 26.** Audio focus in `PlaybackController`.
+- `PlaybackService` must `startForeground()` within seconds of `startForegroundService()`.
 
 ## Reliability
 
-- **Session recovery:** Cached librespot credentials + queue restore across seamless rebuilds;
-  `ensure_playback_ready` rebuilds session/player when the access point drops.
-- **Network awareness:** `ConnectivityManager` callbacks with debounced reconnect and handoff
-  grace; stall watchdog surfaces buffering without tearing down the session mid-play.
-- **Streaming policy:** Network-tier prefetch and full-track banking via patched librespot
-  (`buffer_current_to_end`, `prefetch_upcoming`).
-- **Web API:** Token refresh with `invalid_grant` handling (6-month refresh token expiry).
-- **HTTP 429:** Honored via `Retry-After` with capped retries in `SpotifyWebApi`.
+| Layer | Mechanism |
+|-------|-----------|
+| Session | Monitor + seamless rebuild; `force_reconnect_check()` on network change |
+| Decode buffer | `buffer_current_to_end`, `prefetch_upcoming`, network-tier presets |
+| Audio output | Ring + drain; `recreateAudioSink()`; Kotlin DEAD_OBJECT / stall recovery |
+| Web API | Token refresh, HTTP 429 `Retry-After`, `invalid_grant` handling |
+
+Field validation: [docs/audio-sink-baseline-metrics.md](docs/audio-sink-baseline-metrics.md)
+
+## Documentation index
+
+| Doc | Contents |
+|-----|----------|
+| [AGENTS.md](AGENTS.md) | Hard rules, auth, diagnostics — read before coding |
+| [docs/README.md](docs/README.md) | Developer onboarding index |
+| [docs/audio-sink.md](docs/audio-sink.md) | Phase C AudioTrack architecture |
+| [docs/future/](docs/future/) | Researched future work (session reconnect, backend move) |

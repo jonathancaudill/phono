@@ -30,6 +30,14 @@ pub trait Sink {
     fn stop(&mut self) -> SinkResult<()> {
         Ok(())
     }
+    /// Pause output without tearing down the sink (transport pause). Default: stop().
+    fn pause(&mut self) -> SinkResult<()> {
+        self.stop()
+    }
+    /// Discard buffered PCM (e.g. after seek). Default no-op.
+    fn flush(&mut self) -> SinkResult<()> {
+        Ok(())
+    }
     fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()>;
 }
 

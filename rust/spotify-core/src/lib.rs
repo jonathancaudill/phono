@@ -19,7 +19,7 @@ use librespot::audio::{AudioFile, Range};
 use librespot::playback::config::{AudioFormat, Bitrate};
 use librespot::playback::mixer::softmixer::SoftMixer;
 use librespot::playback::mixer::{Mixer, MixerConfig};
-use librespot::playback::player::{Player, PlayerEvent};
+use librespot::playback::player::{Player, PlayerEvent, SinkStatus};
 use librespot::playback::audio_backend;
 use tokio::runtime::Runtime;
 
@@ -27,8 +27,17 @@ mod auth;
 mod library;
 mod queue;
 mod settings;
+mod pcm_ring;
 #[cfg(target_os = "android")]
 mod android_ctx;
+#[cfg(all(target_os = "android", feature = "audiotrack-sink"))]
+mod audio_drain;
+#[cfg(all(target_os = "android", feature = "audiotrack-sink"))]
+mod audio_sink_jni;
+#[cfg(all(target_os = "android", not(feature = "audiotrack-sink")))]
+mod audio_sink_stub;
+#[cfg(all(target_os = "android", feature = "audiotrack-sink"))]
+mod android_audiotrack_sink;
 
 pub use library::EntityInfo;
 pub use queue::{QueueSnapshot, RepeatMode};
@@ -190,6 +199,7 @@ struct EngineShared {
     metrics_full_rebuild: AtomicU32,
     metrics_stall_events: AtomicU32,
     metrics_sink_recreate: AtomicU32,
+    metrics_audiotrack_write_errors: AtomicU32,
 }
 
 /// Debug counters for playback stability field testing (logcat / settings).
@@ -199,6 +209,13 @@ pub struct PlaybackDebugMetrics {
     pub full_rebuild: u32,
     pub stall_events: u32,
     pub sink_recreate: u32,
+    pub audiotrack_write_errors: u32,
+    pub audiotrack_routing_events: u32,
+    pub sink_backend: String,
+    pub ring_occupancy_ms: u32,
+    pub pending_output_ms: u32,
+    pub producer_block_ms: u32,
+    pub drain_partial_writes: u32,
 }
 
 /// The UniFFI object handed to Kotlin.
@@ -575,6 +592,7 @@ impl EngineShared {
             metrics_full_rebuild: AtomicU32::new(0),
             metrics_stall_events: AtomicU32::new(0),
             metrics_sink_recreate: AtomicU32::new(0),
+            metrics_audiotrack_write_errors: AtomicU32::new(0),
         }))
     }
 
@@ -595,11 +613,35 @@ impl EngineShared {
     }
 
     fn playback_debug_metrics(&self) -> PlaybackDebugMetrics {
+        #[cfg(all(target_os = "android", feature = "audiotrack-sink"))]
+        let (routing, write_errs, ring_ms, pending_ms, prod_block, partial, backend) = (
+            audio_sink_jni::routing_event_count(),
+            audio_sink_jni::write_error_count(),
+            audio_sink_jni::ring_occupancy_ms(),
+            audio_sink_jni::pending_output_ms(),
+            audio_sink_jni::producer_block_ms(),
+            audio_sink_jni::drain_partial_writes(),
+            "audiotrack".to_string(),
+        );
+        #[cfg(not(all(target_os = "android", feature = "audiotrack-sink")))]
+        let (routing, write_errs, ring_ms, pending_ms, prod_block, partial, backend) =
+            (0, 0, 0, 0, 0, 0, "rodio".to_string());
+
         PlaybackDebugMetrics {
             transport_reconnect: self.metrics_transport_reconnect.load(Ordering::Relaxed),
             full_rebuild: self.metrics_full_rebuild.load(Ordering::Relaxed),
             stall_events: self.metrics_stall_events.load(Ordering::Relaxed),
             sink_recreate: self.metrics_sink_recreate.load(Ordering::Relaxed),
+            audiotrack_write_errors: self
+                .metrics_audiotrack_write_errors
+                .load(Ordering::Relaxed)
+                .max(write_errs),
+            audiotrack_routing_events: routing,
+            sink_backend: backend,
+            ring_occupancy_ms: ring_ms,
+            pending_output_ms: pending_ms,
+            producer_block_ms: prod_block,
+            drain_partial_writes: partial,
         }
     }
 
@@ -1279,9 +1321,6 @@ impl EngineShared {
         // Fresh client-token for this session identity (Keymaster + Linux on Android).
         session.spclient().clear_client_token();
 
-        let backend = audio_backend::find(None).ok_or(SpotifyError::Internal {
-            msg: "no audio backend compiled in (expected rodio)".into(),
-        })?;
         let mixer = Arc::new(
             SoftMixer::open(MixerConfig::default())
                 .map_err(|e| SpotifyError::Internal { msg: e.to_string() })?,
@@ -1291,8 +1330,23 @@ impl EngineShared {
         let player_config = self.settings.get().player_config();
         let audio_format = AudioFormat::S16;
 
-        let sink_factory: Arc<dyn Fn() -> Box<dyn audio_backend::Sink> + Send + Sync> =
-            Arc::new(move || backend(None, audio_format));
+        #[cfg(all(target_os = "android", feature = "audiotrack-sink"))]
+        let sink_factory: Arc<dyn Fn() -> Box<dyn audio_backend::Sink> + Send + Sync> = {
+            use android_audiotrack_sink::AndroidAudioTrackSink;
+            use librespot::playback::audio_backend::Open;
+            Arc::new(move || {
+                Box::new(AndroidAudioTrackSink::open(None, audio_format))
+                    as Box<dyn audio_backend::Sink>
+            })
+        };
+
+        #[cfg(not(all(target_os = "android", feature = "audiotrack-sink")))]
+        let sink_factory: Arc<dyn Fn() -> Box<dyn audio_backend::Sink> + Send + Sync> = {
+            let backend = audio_backend::find(None).ok_or(SpotifyError::Internal {
+                msg: "no audio backend compiled in (expected rodio)".into(),
+            })?;
+            Arc::new(move || backend(None, audio_format))
+        };
 
         let player = Player::new(
             player_config,
@@ -1300,6 +1354,14 @@ impl EngineShared {
             volume_getter,
             sink_factory,
         );
+
+        let player_for_sink_cb = player.clone();
+        let playing_flag = self.playing.clone();
+        player.set_sink_event_callback(Some(Box::new(move |status| {
+            if status == SinkStatus::Running && playing_flag.load(Ordering::SeqCst) {
+                player_for_sink_cb.play();
+            }
+        })));
 
         // App volume is fixed at 100%; users adjust loudness via Android system volume.
         mixer.set_volume(u16::MAX);

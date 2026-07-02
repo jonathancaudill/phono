@@ -31,10 +31,13 @@ android {
 
     defaultConfig {
         applicationId = "com.lightphone.spotify"
-        minSdk = 26 // AAudio (cpal) requires API 26+
+        minSdk = 26
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+
+        // Path C: native AudioTrack sink (set false to fall back to rodio/cpal).
+        buildConfigField("boolean", "USE_AUDIOTRACK_SINK", "true")
 
         // Light Phone III is arm64; x86_64 included for the emulator.
         ndk {
@@ -68,6 +71,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     // The Rust build script populates src/main/jniLibs.
