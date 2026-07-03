@@ -24,18 +24,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.lightphone.spotify.playback.QueueUiItem
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
-import com.lightphone.spotify.ui.components.PhonoContentContainer
-import com.lightphone.spotify.ui.components.StyledText
-import com.lightphone.spotify.ui.components.tap
-import com.lightphone.spotify.ui.theme.PhonoColors
-import com.lightphone.spotify.ui.theme.n
-
-private val QueueArrowEndPadding = n(14)
-private val QueueArrowSize = n(44)
-private val QueueArrowSpacing = n(24)
-private const val QueueTrackTitleSize = 26
-private const val QueueTrackSubtitleSize = 16
-private const val QueueTrackSubtitleLineHeight = 18
+import com.lightphone.spotify.ui.light.PhonoSemanticColors
+import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.lightphone.spotify.ui.phono.PhonoScreenShell
+import com.thelightphone.sdk.ui.LightText
+import com.thelightphone.sdk.ui.LightTextVariant
+import com.thelightphone.sdk.ui.LightThemeTokens
+import com.thelightphone.sdk.ui.lightClickable
 
 @Composable
 fun QueueScreen(
@@ -53,19 +48,19 @@ fun QueueScreen(
         queue.nextInQueue.isNotEmpty() ||
         queue.nextFromContext.isNotEmpty()
 
-    PhonoContentContainer(
+    PhonoScreenShell(
         title = "Queue",
         hideBackButton = false,
         onBack = onBack,
         rightIconVisible = false,
-        horizontalPadding = n(20),
+        horizontalPadding = legacyNToGridDp(20),
         modifier = Modifier.fillMaxSize(),
     ) {
         Box(
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .padding(bottom = n(20)),
+                .padding(bottom = legacyNToGridDp(20)),
         ) {
             when {
                 !hasContent -> EmptyListMessage("Nothing playing.")
@@ -97,7 +92,7 @@ fun QueueScreen(
                                         onMoveUp = { vm.moveQueueItemUp(index) },
                                         onMoveDown = { vm.moveQueueItemDown(index) },
                                     )
-                                    Spacer(Modifier.height(n(8)))
+                                    Spacer(Modifier.height(legacyNToGridDp(8)))
                                 }
                             }
                         }
@@ -118,7 +113,7 @@ fun QueueScreen(
                                         onMoveUp = { vm.moveContextItemUp(index) },
                                         onMoveDown = { vm.moveContextItemDown(index) },
                                     )
-                                    Spacer(Modifier.height(n(8)))
+                                    Spacer(Modifier.height(legacyNToGridDp(8)))
                                 }
                             }
                         }
@@ -138,21 +133,20 @@ private fun QueueSectionHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = n(16), bottom = n(8)),
+            .padding(top = legacyNToGridDp(16), bottom = legacyNToGridDp(8)),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        StyledText(
-            title,
-            size = 20,
-            color = PhonoColors.Foreground,
+        LightText(
+            text = title,
+            variant = LightTextVariant.Fine,
             modifier = Modifier.weight(1f),
         )
         if (actionLabel != null && onAction != null) {
-            StyledText(
-                actionLabel,
-                size = 16,
-                color = PhonoColors.Placeholder,
-                modifier = Modifier.tap(onClick = onAction),
+            LightText(
+                text = actionLabel,
+                variant = LightTextVariant.Detail,
+                color = PhonoSemanticColors.Placeholder,
+                modifier = Modifier.lightClickable(onClick = onAction),
             )
         }
     }
@@ -161,21 +155,18 @@ private fun QueueSectionHeader(
 @Composable
 private fun QueueTrackRow(item: QueueUiItem) {
     Column(Modifier.fillMaxWidth()) {
-        StyledText(
-            item.title,
-            size = QueueTrackTitleSize,
-            color = PhonoColors.Foreground,
+        LightText(
+            text = item.title,
+            variant = LightTextVariant.Copy,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        StyledText(
-            item.artists,
-            size = QueueTrackSubtitleSize,
-            lineHeight = QueueTrackSubtitleLineHeight,
-            color = PhonoColors.Foreground,
+        LightText(
+            text = item.artists,
+            variant = LightTextVariant.Detail,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(bottom = n(6)),
+            modifier = Modifier.padding(bottom = legacyNToGridDp(6)),
         )
     }
 }
@@ -188,6 +179,7 @@ private fun ReorderableQueueRow(
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
 ) {
+    val colors = LightThemeTokens.colors
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -195,45 +187,42 @@ private fun ReorderableQueueRow(
         Column(
             Modifier
                 .weight(1f)
-                .padding(end = n(4)),
+                .padding(end = legacyNToGridDp(4)),
         ) {
-            StyledText(
-                item.title,
-                size = QueueTrackTitleSize,
-                color = PhonoColors.Foreground,
+            LightText(
+                text = item.title,
+                variant = LightTextVariant.Copy,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            StyledText(
-                item.artists,
-                size = QueueTrackSubtitleSize,
-                lineHeight = QueueTrackSubtitleLineHeight,
-                color = PhonoColors.Foreground,
+            LightText(
+                text = item.artists,
+                variant = LightTextVariant.Detail,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(bottom = n(6)),
+                modifier = Modifier.padding(bottom = legacyNToGridDp(6)),
             )
         }
         Row(
-            modifier = Modifier.padding(end = QueueArrowEndPadding),
+            modifier = Modifier.padding(end = legacyNToGridDp(14)),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
                 Icons.Default.KeyboardArrowUp,
                 contentDescription = "Move up",
-                tint = if (index > 0) PhonoColors.Foreground else PhonoColors.Placeholder,
+                tint = if (index > 0) colors.content else PhonoSemanticColors.Placeholder,
                 modifier = Modifier
-                    .size(QueueArrowSize)
-                    .tap(enabled = index > 0, onClick = onMoveUp),
+                    .size(legacyNToGridDp(44))
+                    .lightClickable(enabled = index > 0, onClick = onMoveUp),
             )
-            Spacer(Modifier.width(QueueArrowSpacing))
+            Spacer(Modifier.width(legacyNToGridDp(24)))
             Icon(
                 Icons.Default.KeyboardArrowDown,
                 contentDescription = "Move down",
-                tint = if (index < total - 1) PhonoColors.Foreground else PhonoColors.Placeholder,
+                tint = if (index < total - 1) colors.content else PhonoSemanticColors.Placeholder,
                 modifier = Modifier
-                    .size(QueueArrowSize)
-                    .tap(enabled = index < total - 1, onClick = onMoveDown),
+                    .size(legacyNToGridDp(44))
+                    .lightClickable(enabled = index < total - 1, onClick = onMoveDown),
             )
         }
     }

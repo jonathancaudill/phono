@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -29,13 +28,15 @@ import com.lightphone.spotify.data.SearchResults
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
-import com.lightphone.spotify.ui.components.PhonoContentContainer
 import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
-import com.lightphone.spotify.ui.components.StyledText
-import com.lightphone.spotify.ui.components.tap
 import com.lightphone.spotify.ui.components.tapWithLongPress
-import com.lightphone.spotify.ui.theme.PhonoColors
-import com.lightphone.spotify.ui.theme.n
+import com.lightphone.spotify.ui.light.PhonoSemanticColors
+import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.lightphone.spotify.ui.phono.PhonoScreenShell
+import com.thelightphone.sdk.ui.LightText
+import com.thelightphone.sdk.ui.LightTextVariant
+import com.thelightphone.sdk.ui.LightThemeTokens
+import com.thelightphone.sdk.ui.lightClickable
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -55,25 +56,25 @@ fun SearchResultsScreen(
         vm.submitSearch(query)
     }
 
-    PhonoContentContainer(
+    PhonoScreenShell(
         title = "Results for $query",
         hideBackButton = false,
         onBack = onBack,
         rightIconVisible = false,
-        horizontalPadding = n(20),
+        horizontalPadding = legacyNToGridDp(20),
         modifier = Modifier.fillMaxSize(),
     ) {
         Column(
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .padding(bottom = n(20)),
+                .padding(bottom = legacyNToGridDp(20)),
         ) {
             SearchFilterChips(
                 selected = state.filter,
                 onSelect = vm::setSearchFilter,
             )
-            Spacer(Modifier.size(n(12)))
+            Spacer(Modifier.size(legacyNToGridDp(12)))
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 val display = state.results?.displayFor(state.filter)
                 when {
@@ -85,7 +86,7 @@ fun SearchResultsScreen(
                     else -> {
                         val results = state.results ?: return@Box
                         val items = results.displayFor(state.filter)
-                        CustomScrollView(verticalArrangement = Arrangement.spacedBy(n(8))) {
+                        CustomScrollView(verticalArrangement = Arrangement.spacedBy(legacyNToGridDp(8))) {
                             items(items, key = { "${it::class.simpleName}-${it.id}" }) { item ->
                                 when (item) {
                                     is SearchResultItem.Track -> PhonoSwipeToActionRow(
@@ -178,7 +179,7 @@ private fun SearchFilterChips(
     selected: SearchFilter,
     onSelect: (SearchFilter) -> Unit,
 ) {
-    val chipGap = n(8)
+    val chipGap = legacyNToGridDp(8)
 
     SubcomposeLayout(modifier = Modifier.fillMaxWidth()) { constraints ->
         val rowPlaceable = subcompose("chips") {
@@ -214,17 +215,17 @@ private fun SearchFilterChip(
     active: Boolean,
     onSelect: (SearchFilter) -> Unit,
 ) {
+    val colors = LightThemeTokens.colors
     Box(
         modifier = Modifier
-            .background(if (active) PhonoColors.Foreground else PhonoColors.PlaceholderBg)
-            .tap { onSelect(filter) }
-            .padding(horizontal = n(14), vertical = n(8)),
+            .background(if (active) colors.content else PhonoSemanticColors.PlaceholderBg)
+            .lightClickable { onSelect(filter) }
+            .padding(horizontal = legacyNToGridDp(14), vertical = legacyNToGridDp(8)),
     ) {
-        StyledText(
-            filter.label,
-            size = 16,
-            lineHeight = 18,
-            color = if (active) PhonoColors.Background else PhonoColors.Foreground,
+        LightText(
+            text = filter.label,
+            variant = LightTextVariant.Detail,
+            color = if (active) colors.background else colors.content,
             maxLines = 1,
         )
     }
@@ -239,28 +240,24 @@ private fun SearchResultRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .defaultMinSize(minHeight = n(50))
+            .defaultMinSize(minHeight = legacyNToGridDp(50))
             .tapWithLongPress(onClick = onClick, onLongClick = onLongClick),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .padding(end = n(10)),
+                .padding(end = legacyNToGridDp(10)),
         ) {
-            StyledText(
-                item.title,
-                size = 22,
-                lineHeight = 24,
-                color = PhonoColors.Foreground,
+            LightText(
+                text = item.title,
+                variant = LightTextVariant.Copy,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            StyledText(
-                item.subtitle,
-                size = 16,
-                lineHeight = 18,
-                color = PhonoColors.Foreground,
+            LightText(
+                text = item.subtitle,
+                variant = LightTextVariant.Detail,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )

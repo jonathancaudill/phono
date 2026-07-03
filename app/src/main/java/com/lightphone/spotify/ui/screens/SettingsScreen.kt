@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,21 +20,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import com.lightphone.spotify.ffi.NormalizationType
 import com.lightphone.spotify.ffi.StreamingQuality
 import com.lightphone.spotify.ui.AppViewModel
-import com.lightphone.spotify.ui.components.CustomScrollView
-import com.lightphone.spotify.ui.components.PhonoContentContainer
-import com.lightphone.spotify.ui.components.PhonoStyledButton
-import com.lightphone.spotify.ui.components.PhonoToggleSwitch
-import com.lightphone.spotify.ui.components.StyledText
-import com.lightphone.spotify.ui.components.tap
-import com.lightphone.spotify.ui.theme.PhonoColors
-import com.lightphone.spotify.ui.theme.PublicSans
-import com.lightphone.spotify.ui.theme.n
-import com.lightphone.spotify.ui.theme.nSp
+import com.lightphone.spotify.ui.light.PhonoSemanticColors
+import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.lightphone.spotify.ui.phono.PhonoScreenShell
+import com.thelightphone.sdk.ui.LightIcon
+import com.thelightphone.sdk.ui.LightIcons
+import com.thelightphone.sdk.ui.LightScrollView
+import com.thelightphone.sdk.ui.LightText
+import com.thelightphone.sdk.ui.LightTextVariant
+import com.thelightphone.sdk.ui.LightThemeTokens
+import com.thelightphone.sdk.ui.gridUnitsAsDp
+import com.thelightphone.sdk.ui.lightClickable
 
 @Composable
 fun SettingsScreen(
@@ -57,65 +58,55 @@ fun SettingsScreen(
         return
     }
 
-    PhonoContentContainer(
+    PhonoScreenShell(
         title = "Settings",
         hideBackButton = true,
         rightIconVisible = false,
-        horizontalPadding = n(37),
-        contentGap = n(0),
         modifier = Modifier.fillMaxSize(),
     ) {
-        CustomScrollView(modifier = Modifier.weight(1f), screenEdgeGutter = n(37)) {
-            item("body") {
-                Column(Modifier.fillMaxWidth().padding(end = n(20))) {
-                    SectionLabel("Playback")
-                    PhonoToggleSwitch("Gapless playback", settings.gaplessEnabled, vm::setGaplessEnabled)
-                    PhonoToggleSwitch("Normalize volume", settings.normalizationEnabled, vm::setNormalizationEnabled)
-                    if (settings.normalizationEnabled) {
-                        Spacer(Modifier.height(n(8)))
-                        NormalizationOptions(settings.normalizationType, vm::setNormalizationType)
-                    }
-
-                    SectionLabel("Audio quality")
-                    StreamingQualityOptions(settings.streamingQuality, vm::setStreamingQuality)
-
-                    SectionLabel("Storage")
-                    PhonoStyledButton(
-                        text = "Clear Cache",
-                        onClick = {
-                            confirm = ConfirmRequest(
-                                title = "Clear Cache",
-                                message = "Delete downloaded audio cache files? Credentials are kept.",
-                                confirmText = "Clear",
-                                onConfirm = { vm.clearAudioCache() },
-                            )
-                        },
-                    )
-
-                    SectionLabel("Advanced")
-                    PhonoStyledButton(
-                        text = if (settings.showAdvanced) "Hide proxy settings" else "Show proxy settings",
-                        onClick = vm::toggleAdvancedSettings,
-                    )
-                    if (settings.showAdvanced) {
-                        Spacer(Modifier.height(n(12)))
-                        ProxyField(settings.proxy, vm::setProxy)
-                    }
-
-                    SectionLabel("Account")
-                    PhonoStyledButton(
-                        text = "Logout",
-                        onClick = {
-                            confirm = ConfirmRequest(
-                                title = "Logout",
-                                message = "Are you sure you want to logout?",
-                                confirmText = "Logout",
-                                onConfirm = onLogout,
-                            )
-                        },
-                    )
-                    Spacer(Modifier.height(n(40)))
+        LightScrollView(modifier = Modifier.weight(1f)) {
+            Column(Modifier.fillMaxWidth()) {
+                SectionLabel("Playback")
+                SettingsToggleRow("Gapless playback", settings.gaplessEnabled, vm::setGaplessEnabled)
+                SettingsToggleRow("Normalize volume", settings.normalizationEnabled, vm::setNormalizationEnabled)
+                if (settings.normalizationEnabled) {
+                    Spacer(Modifier.height(legacyNToGridDp(8)))
+                    NormalizationOptions(settings.normalizationType, vm::setNormalizationType)
                 }
+
+                SectionLabel("Audio quality")
+                StreamingQualityOptions(settings.streamingQuality, vm::setStreamingQuality)
+
+                SectionLabel("Storage")
+                SettingsActionRow("Clear Cache") {
+                    confirm = ConfirmRequest(
+                        title = "Clear Cache",
+                        message = "Delete downloaded audio cache files? Credentials are kept.",
+                        confirmText = "Clear",
+                        onConfirm = { vm.clearAudioCache() },
+                    )
+                }
+
+                SectionLabel("Advanced")
+                SettingsActionRow(
+                    text = if (settings.showAdvanced) "Hide proxy settings" else "Show proxy settings",
+                    onClick = vm::toggleAdvancedSettings,
+                )
+                if (settings.showAdvanced) {
+                    Spacer(Modifier.height(legacyNToGridDp(12)))
+                    ProxyField(settings.proxy, vm::setProxy)
+                }
+
+                SectionLabel("Account")
+                SettingsActionRow("Logout") {
+                    confirm = ConfirmRequest(
+                        title = "Logout",
+                        message = "Are you sure you want to logout?",
+                        confirmText = "Logout",
+                        onConfirm = onLogout,
+                    )
+                }
+                Spacer(Modifier.height(legacyNToGridDp(40)))
             }
         }
     }
@@ -130,12 +121,55 @@ private data class ConfirmRequest(
 
 @Composable
 private fun SectionLabel(text: String) {
-    StyledText(
-        text.uppercase(),
-        size = 12,
-        color = PhonoColors.Placeholder,
-        modifier = Modifier.padding(top = n(24), bottom = n(12)),
+    LightText(
+        text = text,
+        variant = LightTextVariant.Detail,
+        color = PhonoSemanticColors.Placeholder,
+        modifier = Modifier.padding(top = 1.5f.gridUnitsAsDp(), bottom = legacyNToGridDp(8)),
     )
+}
+
+@Composable
+private fun SettingsActionRow(
+    text: String,
+    selected: Boolean = false,
+    onClick: () -> Unit,
+) {
+    LightText(
+        text = text,
+        variant = LightTextVariant.Copy,
+        underline = selected,
+        modifier = Modifier
+            .fillMaxWidth()
+            .lightClickable(onClick = onClick)
+            .padding(vertical = legacyNToGridDp(8)),
+    )
+}
+
+@Composable
+private fun SettingsToggleRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .lightClickable { onCheckedChange(!checked) }
+            .padding(vertical = legacyNToGridDp(8)),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LightIcon(
+            icon = if (checked) LightIcons.TOGGLE_ON else LightIcons.TOGGLE_OFF,
+            modifier = Modifier.padding(end = legacyNToGridDp(10)),
+            contentDescription = null,
+        )
+        LightText(
+            text = label,
+            variant = LightTextVariant.Copy,
+            modifier = Modifier.weight(1f),
+        )
+    }
 }
 
 @Composable
@@ -146,8 +180,7 @@ private fun StreamingQualityOptions(selected: StreamingQuality, onSelect: (Strea
         StreamingQuality.HIGH to "High (320 kbps)",
     )
     options.forEach { (quality, label) ->
-        PhonoStyledButton(text = label, selected = quality == selected, onClick = { onSelect(quality) })
-        Spacer(Modifier.height(n(6)))
+        SettingsActionRow(text = label, selected = quality == selected, onClick = { onSelect(quality) })
     }
 }
 
@@ -159,35 +192,40 @@ private fun NormalizationOptions(selected: NormalizationType, onSelect: (Normali
         NormalizationType.ALBUM to "Album",
     )
     options.forEach { (type, label) ->
-        PhonoStyledButton(text = label, selected = type == selected, onClick = { onSelect(type) })
-        Spacer(Modifier.height(n(6)))
+        SettingsActionRow(text = label, selected = type == selected, onClick = { onSelect(type) })
     }
 }
 
 @Composable
 private fun ProxyField(value: String, onChange: (String) -> Unit) {
+    val colors = LightThemeTokens.colors
+    val typography = LightThemeTokens.typography
     Column(Modifier.fillMaxWidth()) {
         Box(
             Modifier
                 .fillMaxWidth()
-                .padding(bottom = n(6)),
+                .padding(bottom = legacyNToGridDp(6)),
         ) {
             BasicTextField(
                 value = value,
                 onValueChange = onChange,
-                textStyle = TextStyle(color = PhonoColors.Foreground, fontSize = nSp(22), fontFamily = PublicSans),
-                cursorBrush = SolidColor(PhonoColors.Foreground),
+                textStyle = typography.copy.copy(color = colors.content),
+                cursorBrush = SolidColor(colors.content),
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 decorationBox = { inner ->
                     if (value.isEmpty()) {
-                        StyledText("http://host:port", size = 22, color = PhonoColors.Placeholder)
+                        LightText(
+                            text = "http://host:port",
+                            variant = LightTextVariant.Copy,
+                            color = PhonoSemanticColors.Placeholder,
+                        )
                     }
                     inner()
                 },
             )
         }
-        Box(Modifier.fillMaxWidth().height(n(1)).background(PhonoColors.Foreground))
+        Box(Modifier.fillMaxWidth().height(legacyNToGridDp(1)).background(colors.content))
     }
 }
 
@@ -200,14 +238,18 @@ fun PhonoConfirmScreen(
     onConfirm: () -> Unit,
     onCancel: () -> Unit,
 ) {
-    PhonoContentContainer(
+    PhonoScreenShell(
         title = title,
         hideBackButton = false,
         onBack = onCancel,
         rightIconVisible = false,
         modifier = Modifier.fillMaxSize(),
     ) {
-        StyledText(message, size = 18, color = PhonoColors.Foreground, modifier = Modifier.padding(top = n(10)))
+        LightText(
+            text = message,
+            variant = LightTextVariant.Paragraph,
+            modifier = Modifier.padding(top = legacyNToGridDp(10)),
+        )
         Column(
             Modifier
                 .weight(1f)
@@ -215,14 +257,13 @@ fun PhonoConfirmScreen(
             verticalArrangement = Arrangement.Bottom,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            StyledText(
-                confirmText.uppercase(),
-                size = 40,
-                color = PhonoColors.Foreground,
-                textAlign = TextAlign.Center,
+            LightText(
+                text = confirmText.uppercase(),
+                variant = LightTextVariant.Subtitle,
+                align = TextAlign.Center,
                 modifier = Modifier
-                    .tap(onClick = onConfirm)
-                    .padding(vertical = n(15), horizontal = n(30)),
+                    .lightClickable(onClick = onConfirm)
+                    .padding(vertical = legacyNToGridDp(15), horizontal = legacyNToGridDp(30)),
             )
         }
     }

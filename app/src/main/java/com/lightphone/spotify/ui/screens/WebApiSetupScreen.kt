@@ -21,18 +21,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.viewinterop.AndroidView
 import com.lightphone.spotify.data.webapi.WebApiAuth
 import com.lightphone.spotify.ui.AppViewModel
-import com.lightphone.spotify.ui.components.PhonoContentContainer
-import com.lightphone.spotify.ui.components.PhonoStyledButton
-import com.lightphone.spotify.ui.components.StyledText
-import com.lightphone.spotify.ui.theme.PhonoColors
-import com.lightphone.spotify.ui.theme.PublicSans
-import com.lightphone.spotify.ui.theme.n
-import com.lightphone.spotify.ui.theme.nSp
+import com.lightphone.spotify.ui.light.PhonoSemanticColors
+import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.lightphone.spotify.ui.phono.PhonoScreenShell
+import com.lightphone.spotify.ui.phono.PhonoTextButton
+import com.thelightphone.sdk.ui.LightText
+import com.thelightphone.sdk.ui.LightTextVariant
+import com.thelightphone.sdk.ui.LightThemeTokens
 
 @Composable
 fun WebApiSetupScreen(vm: AppViewModel) {
@@ -41,9 +40,10 @@ fun WebApiSetupScreen(vm: AppViewModel) {
     var clientSecret by remember { mutableStateOf("") }
     var showWebView by remember { mutableStateOf(false) }
     var authUrl by remember { mutableStateOf<String?>(null) }
+    val colors = LightThemeTokens.colors
 
     if (showWebView && authUrl != null) {
-        Box(Modifier.fillMaxSize().background(PhonoColors.Background)) {
+        Box(Modifier.fillMaxSize().background(colors.background)) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { context ->
@@ -76,33 +76,38 @@ fun WebApiSetupScreen(vm: AppViewModel) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(PhonoColors.Background.copy(alpha = 0.92f)),
+                        .background(colors.background.copy(alpha = 0.92f)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    StyledText(message, size = 16, color = PhonoColors.Error, modifier = Modifier.padding(n(24)))
+                    LightText(
+                        text = message,
+                        variant = LightTextVariant.Detail,
+                        color = PhonoSemanticColors.Error,
+                        modifier = Modifier.padding(legacyNToGridDp(24)),
+                    )
                 }
             }
         }
         return
     }
 
-    PhonoContentContainer(
+    PhonoScreenShell(
         title = "Step 2: Web API",
         hideBackButton = true,
         rightIconVisible = false,
-        horizontalPadding = n(22),
-        contentGap = n(16),
+        horizontalPadding = legacyNToGridDp(22),
+        contentGap = legacyNToGridDp(16),
         modifier = Modifier.fillMaxSize(),
     ) {
-        StyledText(
-            "Enter your Spotify Developer app credentials. Create one at developer.spotify.com/dashboard.",
-            size = 16,
-            color = PhonoColors.Placeholder,
+        LightText(
+            text = "Enter your Spotify Developer app credentials. Create one at developer.spotify.com/dashboard.",
+            variant = LightTextVariant.Detail,
+            color = PhonoSemanticColors.Placeholder,
         )
-        StyledText(
-            "Redirect URI (copy exactly into dashboard):\n${WebApiAuth.REDIRECT_URI}\nPackage: com.lightphone.spotify",
-            size = 14,
-            color = PhonoColors.Placeholder,
+        LightText(
+            text = "Redirect URI (copy exactly into dashboard):\n${WebApiAuth.REDIRECT_URI}\nPackage: com.lightphone.spotify",
+            variant = LightTextVariant.Detail,
+            color = PhonoSemanticColors.Placeholder,
         )
         UnderlinedField(
             value = clientId,
@@ -115,8 +120,8 @@ fun WebApiSetupScreen(vm: AppViewModel) {
             placeholder = "Client Secret",
             password = true,
         )
-        Spacer(Modifier.height(n(4)))
-        PhonoStyledButton(
+        Spacer(Modifier.height(legacyNToGridDp(4)))
+        PhonoTextButton(
             text = "Connect Web API",
             onClick = {
                 if (clientId.isNotBlank() && clientSecret.isNotBlank()) {
@@ -127,7 +132,7 @@ fun WebApiSetupScreen(vm: AppViewModel) {
             },
         )
         playback.error?.let { message ->
-            StyledText(message, size = 16, color = PhonoColors.Error)
+            LightText(text = message, variant = LightTextVariant.Detail, color = PhonoSemanticColors.Error)
         }
     }
 }
@@ -139,28 +144,34 @@ private fun UnderlinedField(
     placeholder: String,
     password: Boolean = false,
 ) {
+    val colors = LightThemeTokens.colors
+    val typography = LightThemeTokens.typography
     Column(Modifier.fillMaxWidth()) {
         Box(
             Modifier
                 .fillMaxWidth()
-                .padding(bottom = n(6)),
+                .padding(bottom = legacyNToGridDp(6)),
         ) {
             BasicTextField(
                 value = value,
                 onValueChange = onChange,
-                textStyle = TextStyle(color = PhonoColors.Foreground, fontSize = nSp(24), fontFamily = PublicSans),
-                cursorBrush = SolidColor(PhonoColors.Foreground),
+                textStyle = typography.copy.copy(color = colors.content),
+                cursorBrush = SolidColor(colors.content),
                 singleLine = true,
                 visualTransformation = if (password) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
                 modifier = Modifier.fillMaxWidth(),
                 decorationBox = { inner ->
                     if (value.isEmpty()) {
-                        StyledText(placeholder, size = 24, color = PhonoColors.Placeholder)
+                        LightText(
+                            text = placeholder,
+                            variant = LightTextVariant.Copy,
+                            color = PhonoSemanticColors.Placeholder,
+                        )
                     }
                     inner()
                 },
             )
         }
-        Box(Modifier.fillMaxWidth().height(n(1)).background(PhonoColors.Foreground))
+        Box(Modifier.fillMaxWidth().height(legacyNToGridDp(1)).background(colors.content))
     }
 }

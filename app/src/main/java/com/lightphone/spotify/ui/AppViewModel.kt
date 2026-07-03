@@ -36,6 +36,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
@@ -155,6 +156,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _likedTracks = MutableStateFlow(LibraryListUiState<LikedTrackEntity>())
     val likedTracks: StateFlow<LibraryListUiState<LikedTrackEntity>> = _likedTracks.asStateFlow()
 
+    private val _libraryBootstrapping = MutableStateFlow(false)
+    val libraryBootstrapping: StateFlow<Boolean> = _libraryBootstrapping.asStateFlow()
+
     private val _savedAlbums = MutableStateFlow(LibraryListUiState<SavedAlbumEntity>())
     val savedAlbums: StateFlow<LibraryListUiState<SavedAlbumEntity>> = _savedAlbums.asStateFlow()
 
@@ -162,6 +166,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val playlists: StateFlow<PlaylistsUiState> = _playlists.asStateFlow()
 
     private var likedTracksStarted = false
+    private var onLoggedInCalled = false
     private var savedAlbumsStarted = false
     private var playlistsStarted = false
     private var likedFillJob: Job? = null
@@ -262,7 +267,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun onLoggedIn() {
-        // Library tabs load on first visit via ensureLikedTracksLoaded / ensureSavedAlbumsLoaded.
+        if (onLoggedInCalled) return
+        onLoggedInCalled = true
+        if (_likedTracks.value.items.isEmpty()) {
+            _libraryBootstrapping.value = true
+        }
+        ensureLikedTracksLoaded()
+        if (_libraryBootstrapping.value) {
+            viewModelScope.launch {
+                likedTracks.first { !it.initialLoading }
+                _libraryBootstrapping.value = false
+            }
+        }
     }
 
     fun ensureLikedTracksLoaded() {
@@ -1117,6 +1133,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         playingExtrasJob?.cancel()
         playingExtrasLoadedForUri = null
         _playingExtras.value = PlayingExtrasState()
+        onLoggedInCalled = false
+        _libraryBootstrapping.value = false
         controller.logout()
     }
 

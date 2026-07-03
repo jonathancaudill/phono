@@ -277,7 +277,7 @@ enum class SearchFilter(val label: String) {
 }
 
 enum class PlaylistFilter(val label: String) {
-    YourPlaylists("Your Playlists"),
+    YourPlaylists("By You"),
     All("All"),
 }
 

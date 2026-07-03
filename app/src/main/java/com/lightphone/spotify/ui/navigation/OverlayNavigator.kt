@@ -8,12 +8,14 @@ private const val OVERLAY_NAV_DEBOUNCE_MS = 400L
 
 /**
  * Central guard for modal overlay destinations (Playing, album/artist detail, search results).
- * Uses [launchSingleTop] so an destination already on the back stack is reused, and debounces
+ * Uses [launchSingleTop] so a destination already on the back stack is reused, and debounces
  * duplicate navigations to the same route while the first is still in flight.
  */
 class OverlayNavigator(private val navController: NavController) {
     private var lastRoute: String? = null
     private var lastNavAtMs: Long = 0L
+
+    fun navigate(destination: OverlayDestination) = navigate(destination.toRoute())
 
     fun navigate(route: String) {
         val now = System.currentTimeMillis()
@@ -22,6 +24,12 @@ class OverlayNavigator(private val navController: NavController) {
         lastNavAtMs = now
         navController.navigate(route) {
             launchSingleTop = true
+        }
+    }
+
+    fun popToRoot() {
+        while (navController.currentBackStackEntry?.destination?.route != OverlayRoot) {
+            if (!navController.popBackStack()) break
         }
     }
 }

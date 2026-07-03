@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
-import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
@@ -18,10 +17,11 @@ import androidx.compose.ui.Modifier
 import com.lightphone.spotify.ui.components.buildLibraryDateIndex
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.LibraryInfiniteList
-import com.lightphone.spotify.ui.components.PhonoContentContainer
 import com.lightphone.spotify.ui.components.PhonoMediaListItem
 import com.lightphone.spotify.ui.components.ScrollbarMode
-import com.lightphone.spotify.ui.theme.n
+import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.lightphone.spotify.ui.phono.PhonoScreenShell
+import com.thelightphone.sdk.ui.LightIcons
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,12 +41,12 @@ fun AlbumsScreen(
         buildLibraryDateIndex(state.items) { it.added_at }
     }
 
-    PhonoContentContainer(
+    PhonoScreenShell(
         title = "Albums",
         hideBackButton = true,
-        rightIcon = Icons.Default.GraphicEq,
+        rightLightIcon = LightIcons.AUDIO_MESSAGE,
         onRightIconClick = onOpenPlaying,
-        horizontalPadding = n(20),
+        horizontalPadding = legacyNToGridDp(20),
         modifier = Modifier.fillMaxSize(),
     ) {
         PullToRefreshBox(
@@ -65,7 +65,6 @@ fun AlbumsScreen(
                     EmptyListMessage("No saved albums found.")
                 else -> Column(Modifier.fillMaxSize()) {
                     if (state.error != null && state.items.isNotEmpty()) {
-                        // TODO: wire styled banner in separate UI task
                         LibraryPartialSyncBanner(state.error!!)
                     }
                     LibraryInfiniteList(

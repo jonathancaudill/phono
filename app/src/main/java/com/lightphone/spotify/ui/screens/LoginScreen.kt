@@ -20,9 +20,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.lightphone.spotify.ui.AppViewModel
-import com.lightphone.spotify.ui.components.StyledText
-import com.lightphone.spotify.ui.theme.PhonoColors
-import com.lightphone.spotify.ui.theme.n
+import com.lightphone.spotify.ui.light.PhonoSemanticColors
+import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.thelightphone.sdk.ui.LightText
+import com.thelightphone.sdk.ui.LightTextVariant
+import com.thelightphone.sdk.ui.LightThemeTokens
 
 private const val REDIRECT_PREFIX = "http://127.0.0.1:8898/login"
 
@@ -30,21 +32,22 @@ private const val REDIRECT_PREFIX = "http://127.0.0.1:8898/login"
 fun LoginScreen(vm: AppViewModel) {
     val playback by vm.playback.collectAsState()
     var authUrl by remember { mutableStateOf<String?>(null) }
+    val colors = LightThemeTokens.colors
     LaunchedEffect(Unit) {
         authUrl = vm.beginLogin()
     }
-    Box(Modifier.fillMaxSize().background(PhonoColors.Background)) {
+    Box(Modifier.fillMaxSize().background(colors.background)) {
         Column(Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = n(22), vertical = n(8)),
+                    .padding(horizontal = legacyNToGridDp(22), vertical = legacyNToGridDp(8)),
             ) {
-                StyledText("Step 1: Playback", size = 22, color = PhonoColors.Foreground)
-                StyledText(
-                    "Sign in with Spotify for audio playback (librespot).",
-                    size = 16,
-                    color = PhonoColors.Placeholder,
+                LightText(text = "Step 1: Playback", variant = LightTextVariant.Copy)
+                LightText(
+                    text = "Sign in with Spotify for audio playback (librespot).",
+                    variant = LightTextVariant.Detail,
+                    color = PhonoSemanticColors.Placeholder,
                 )
             }
             if (authUrl != null) {
@@ -87,19 +90,19 @@ fun LoginScreen(vm: AppViewModel) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(PhonoColors.Background.copy(alpha = 0.92f)),
+                    .background(colors.background.copy(alpha = 0.92f)),
                 contentAlignment = Alignment.Center,
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(n(24)),
+                    modifier = Modifier.padding(legacyNToGridDp(24)),
                 ) {
-                    StyledText("Login failed", size = 22, color = PhonoColors.Foreground)
-                    StyledText(
-                        message,
-                        size = 16,
-                        color = PhonoColors.Error,
-                        modifier = Modifier.padding(top = n(12)),
+                    LightText(text = "Login failed", variant = LightTextVariant.Copy)
+                    LightText(
+                        text = message,
+                        variant = LightTextVariant.Detail,
+                        color = PhonoSemanticColors.Error,
+                        modifier = Modifier.padding(top = legacyNToGridDp(12)),
                     )
                 }
             }

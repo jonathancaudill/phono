@@ -23,8 +23,11 @@ import androidx.compose.ui.unit.Dp
 import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
 import coil.request.ImageRequest
-import com.lightphone.spotify.ui.theme.PhonoColors
-import com.lightphone.spotify.ui.theme.n
+import com.lightphone.spotify.ui.light.PhonoSemanticColors
+import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.thelightphone.sdk.ui.LightText
+import com.thelightphone.sdk.ui.LightTextVariant
+import com.thelightphone.sdk.ui.LightThemeTokens
 
 /**
  * Square artwork with grey placeholder when there's no URL or the load fails.
@@ -35,7 +38,7 @@ fun PhonoFallbackImage(
     imageUrl: String?,
     modifier: Modifier = Modifier,
     placeholderIcon: ImageVector = Icons.Default.MusicNote,
-    placeholderIconSize: Dp = n(100),
+    placeholderIconSize: Dp = legacyNToGridDp(100),
     placeholderText: String? = null,
     disabled: Boolean = false,
     contentDescription: String? = null,
@@ -43,19 +46,19 @@ fun PhonoFallbackImage(
     decodeSize: Dp? = null,
 ) {
     var failed by remember(imageUrl) { mutableStateOf(false) }
-    val iconTint = if (disabled) PhonoColors.DisabledIcon else PhonoColors.Foreground
+    val iconTint = if (disabled) PhonoSemanticColors.DisabledIcon else LightThemeTokens.colors.content
 
     if (imageUrl.isNullOrBlank() || failed) {
         Box(
-            modifier = modifier.background(PhonoColors.PlaceholderBg),
+            modifier = modifier.background(PhonoSemanticColors.PlaceholderBg),
             contentAlignment = Alignment.Center,
         ) {
             if (placeholderText != null) {
-                StyledText(
-                    placeholderText,
-                    size = 24,
+                LightText(
+                    text = placeholderText,
+                    variant = LightTextVariant.Copy,
                     color = iconTint,
-                    textAlign = TextAlign.Center,
+                    align = TextAlign.Center,
                 )
             } else {
                 Icon(
@@ -81,7 +84,7 @@ fun PhonoFallbackImage(
         AsyncImage(
             model = request,
             contentDescription = contentDescription,
-            modifier = modifier.background(PhonoColors.PlaceholderBg),
+            modifier = modifier.background(PhonoSemanticColors.PlaceholderBg),
             contentScale = ContentScale.Crop,
             onState = { state ->
                 if (state is AsyncImagePainter.State.Error) failed = true
@@ -100,6 +103,6 @@ fun PhonoDetailCover(
         imageUrl = imageUrl,
         modifier = modifier.fillMaxSize(),
         placeholderIcon = placeholderIcon,
-        placeholderIconSize = n(100),
+        placeholderIconSize = legacyNToGridDp(100),
     )
 }

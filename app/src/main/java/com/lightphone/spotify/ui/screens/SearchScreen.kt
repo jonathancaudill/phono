@@ -24,16 +24,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import com.lightphone.spotify.ui.AppViewModel
-import com.lightphone.spotify.ui.components.PhonoContentContainer
-import com.lightphone.spotify.ui.components.StyledText
-import com.lightphone.spotify.ui.components.tap
-import com.lightphone.spotify.ui.theme.PhonoColors
-import com.lightphone.spotify.ui.theme.PublicSans
-import com.lightphone.spotify.ui.theme.n
-import com.lightphone.spotify.ui.theme.nSp
+import com.lightphone.spotify.ui.light.PhonoSemanticColors
+import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.lightphone.spotify.ui.phono.PhonoScreenShell
+import com.thelightphone.sdk.ui.LightText
+import com.thelightphone.sdk.ui.LightTextVariant
+import com.thelightphone.sdk.ui.LightThemeTokens
+import com.thelightphone.sdk.ui.lightClickable
 
 @Composable
 fun SearchScreen(
@@ -41,14 +40,16 @@ fun SearchScreen(
     onSubmit: (String) -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
+    val colors = LightThemeTokens.colors
+    val typography = LightThemeTokens.typography
 
-    PhonoContentContainer(
+    PhonoScreenShell(
         title = "Search",
         hideBackButton = true,
         rightIcon = Icons.Default.Check,
         onRightIconClick = { if (query.isNotBlank()) onSubmit(query) },
         rightIconVisible = query.isNotEmpty(),
-        horizontalPadding = n(20),
+        horizontalPadding = legacyNToGridDp(20),
         modifier = Modifier.fillMaxSize(),
     ) {
         Column(Modifier.fillMaxWidth()) {
@@ -59,25 +60,21 @@ fun SearchScreen(
                         query = it
                         vm.updateSearchQuery(it)
                     },
-                    textStyle = TextStyle(
-                        color = PhonoColors.Foreground,
-                        fontSize = nSp(24),
-                        fontFamily = PublicSans,
-                    ),
-                    cursorBrush = SolidColor(PhonoColors.Foreground),
+                    textStyle = typography.copy.copy(color = colors.content),
+                    cursorBrush = SolidColor(colors.content),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     keyboardActions = KeyboardActions(onSearch = { if (query.isNotBlank()) onSubmit(query) }),
                     modifier = Modifier
                         .weight(1f)
-                        .padding(top = n(2), bottom = n(6)),
+                        .padding(top = legacyNToGridDp(2), bottom = legacyNToGridDp(6)),
                     decorationBox = { inner ->
                         Box {
                             if (query.isEmpty()) {
-                                StyledText(
-                                    "Search for something!",
-                                    size = 24,
-                                    color = PhonoColors.Placeholder,
+                                LightText(
+                                    text = "Search for something!",
+                                    variant = LightTextVariant.Copy,
+                                    color = PhonoSemanticColors.Placeholder,
                                 )
                             }
                             inner()
@@ -87,14 +84,14 @@ fun SearchScreen(
                 if (query.isNotEmpty()) {
                     Box(
                         Modifier
-                            .padding(n(5))
-                            .tap { query = "" },
+                            .padding(legacyNToGridDp(5))
+                            .lightClickable { query = "" },
                     ) {
                         Icon(
                             Icons.Default.Clear,
                             contentDescription = "Clear",
-                            tint = PhonoColors.Foreground,
-                            modifier = Modifier.size(n(24)),
+                            tint = colors.content,
+                            modifier = Modifier.size(legacyNToGridDp(24)),
                         )
                     }
                 }
@@ -102,8 +99,8 @@ fun SearchScreen(
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(n(1))
-                    .background(PhonoColors.Foreground),
+                    .height(legacyNToGridDp(1))
+                    .background(colors.content),
             )
         }
     }
