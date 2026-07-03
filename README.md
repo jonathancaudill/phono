@@ -58,7 +58,6 @@ The app uses **dual authentication**:
 # Boring stuff below ↓↓↓
 
 
----
 
 ## Repository layout
 
