@@ -14,9 +14,11 @@ playlists) uses the official Spotify Web API with **your own** developer-app cre
 **New developer? Agent? (ugh)**: Read [docs/README.md](docs/README.md) and [AGENTS.md](AGENTS.md) before
 changing code.
 
-## How this differs from Echo
+## How is this different from Echo?
+
 
 vandam rocks. Basically, this has a few extra features, less album art and doesn't require the Spotify app to be installed.
+
 
 ## Setup (required before first use)
 
