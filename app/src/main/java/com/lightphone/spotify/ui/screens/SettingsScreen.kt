@@ -1,36 +1,39 @@
 package com.lightphone.spotify.ui.screens
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextAlign
 import com.lightphone.spotify.ffi.NormalizationType
 import com.lightphone.spotify.ffi.StreamingQuality
 import com.lightphone.spotify.ui.AppViewModel
-import com.lightphone.spotify.ui.components.EchoContentContainer
-import com.lightphone.spotify.ui.components.EchoSectionLabel
-import com.lightphone.spotify.ui.components.EchoStyledButton
-import com.lightphone.spotify.ui.components.EchoToggleSwitch
-import com.lightphone.spotify.ui.components.EchoVolumeSlider
-import com.lightphone.spotify.ui.theme.EchoColors
+import com.lightphone.spotify.ui.components.CustomScrollView
+import com.lightphone.spotify.ui.components.PhonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoStyledButton
+import com.lightphone.spotify.ui.components.PhonoToggleSwitch
+import com.lightphone.spotify.ui.components.StyledText
+import com.lightphone.spotify.ui.components.tap
+import com.lightphone.spotify.ui.theme.PhonoColors
+import com.lightphone.spotify.ui.theme.PublicSans
+import com.lightphone.spotify.ui.theme.n
+import com.lightphone.spotify.ui.theme.nSp
 
 @Composable
 fun SettingsScreen(
@@ -38,202 +41,189 @@ fun SettingsScreen(
     onLogout: () -> Unit,
 ) {
     val settings by vm.settings.collectAsState()
-    var showClearCacheConfirm by remember { mutableStateOf(false) }
-    var showLogoutConfirm by remember { mutableStateOf(false) }
+    var confirm by remember { mutableStateOf<ConfirmRequest?>(null) }
 
-    if (showClearCacheConfirm) {
-        EchoConfirmDialog(
-            title = "Clear audio cache",
-            message = "Delete downloaded audio cache files? Credentials are kept.",
-            confirmText = "Clear",
+    confirm?.let { request ->
+        PhonoConfirmScreen(
+            title = request.title,
+            message = request.message,
+            confirmText = request.confirmText,
             onConfirm = {
-                vm.clearAudioCache()
-                showClearCacheConfirm = false
+                request.onConfirm()
+                confirm = null
             },
-            onDismiss = { showClearCacheConfirm = false },
+            onCancel = { confirm = null },
         )
+        return
     }
 
-    if (showLogoutConfirm) {
-        EchoConfirmDialog(
-            title = "Logout",
-            message = "Are you sure you want to logout?",
-            confirmText = "Logout",
-            onConfirm = {
-                showLogoutConfirm = false
-                onLogout()
-            },
-            onDismiss = { showLogoutConfirm = false },
-        )
-    }
-
-    EchoContentContainer(
+    PhonoContentContainer(
         title = "Settings",
+        hideBackButton = true,
         rightIconVisible = false,
+        horizontalPadding = n(37),
+        contentGap = n(0),
         modifier = Modifier.fillMaxSize(),
     ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState()),
-        ) {
-            Text(
-                "Spotify for Light Phone",
-                style = MaterialTheme.typography.bodyMedium,
-                color = EchoColors.Placeholder,
-                modifier = Modifier.padding(bottom = 8.dp),
-            )
+        CustomScrollView(modifier = Modifier.weight(1f), screenEdgeGutter = n(37)) {
+            item("body") {
+                Column(Modifier.fillMaxWidth().padding(end = n(20))) {
+                    SectionLabel("Playback")
+                    PhonoToggleSwitch("Gapless playback", settings.gaplessEnabled, vm::setGaplessEnabled)
+                    PhonoToggleSwitch("Normalize volume", settings.normalizationEnabled, vm::setNormalizationEnabled)
+                    if (settings.normalizationEnabled) {
+                        Spacer(Modifier.height(n(8)))
+                        NormalizationOptions(settings.normalizationType, vm::setNormalizationType)
+                    }
 
-            EchoSectionLabel("Playback")
-            EchoVolumeSlider(
-                volumePercent = settings.volumePercent,
-                onVolumeChange = vm::setVolumePercent,
-            )
-            Spacer(Modifier.height(20.dp))
-            EchoToggleSwitch(
-                label = "Gapless playback",
-                checked = settings.gaplessEnabled,
-                onCheckedChange = vm::setGaplessEnabled,
-            )
-            EchoToggleSwitch(
-                label = "Normalize volume",
-                checked = settings.normalizationEnabled,
-                onCheckedChange = vm::setNormalizationEnabled,
-            )
-            if (settings.normalizationEnabled) {
-                NormalizationTypePicker(
-                    selected = settings.normalizationType,
-                    onSelect = vm::setNormalizationType,
-                )
-            }
+                    SectionLabel("Audio quality")
+                    StreamingQualityOptions(settings.streamingQuality, vm::setStreamingQuality)
 
-            EchoSectionLabel("Audio quality")
-            StreamingQualityPicker(
-                selected = settings.streamingQuality,
-                onSelect = vm::setStreamingQuality,
-            )
-            Text(
-                "Changes apply immediately during playback.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = EchoColors.Placeholder,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-
-            EchoSectionLabel("Storage")
-            EchoStyledButton(
-                text = "Clear audio cache",
-                onClick = { showClearCacheConfirm = true },
-            )
-
-            EchoSectionLabel("Advanced")
-            EchoStyledButton(
-                text = if (settings.showAdvanced) "Hide proxy settings" else "Show proxy settings",
-                onClick = vm::toggleAdvancedSettings,
-            )
-            if (settings.showAdvanced) {
-                Text(
-                    "HTTP proxy (optional)",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = EchoColors.Placeholder,
-                    modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
-                )
-                BasicTextField(
-                    value = settings.proxy,
-                    onValueChange = vm::setProxy,
-                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = EchoColors.Foreground),
-                    cursorBrush = SolidColor(EchoColors.Foreground),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
-                    decorationBox = { inner ->
-                        if (settings.proxy.isEmpty()) {
-                            Text(
-                                "http://host:port",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = EchoColors.InactiveTab,
+                    SectionLabel("Storage")
+                    PhonoStyledButton(
+                        text = "Clear Cache",
+                        onClick = {
+                            confirm = ConfirmRequest(
+                                title = "Clear Cache",
+                                message = "Delete downloaded audio cache files? Credentials are kept.",
+                                confirmText = "Clear",
+                                onConfirm = { vm.clearAudioCache() },
                             )
-                        }
-                        inner()
-                    },
-                )
-                Text(
-                    "Reconnects when changed.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = EchoColors.Placeholder,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
+                        },
+                    )
 
-            EchoSectionLabel("Account")
-            EchoStyledButton(
-                text = "Logout",
-                onClick = { showLogoutConfirm = true },
-            )
-            Spacer(Modifier.height(32.dp))
+                    SectionLabel("Advanced")
+                    PhonoStyledButton(
+                        text = if (settings.showAdvanced) "Hide proxy settings" else "Show proxy settings",
+                        onClick = vm::toggleAdvancedSettings,
+                    )
+                    if (settings.showAdvanced) {
+                        Spacer(Modifier.height(n(12)))
+                        ProxyField(settings.proxy, vm::setProxy)
+                    }
+
+                    SectionLabel("Account")
+                    PhonoStyledButton(
+                        text = "Logout",
+                        onClick = {
+                            confirm = ConfirmRequest(
+                                title = "Logout",
+                                message = "Are you sure you want to logout?",
+                                confirmText = "Logout",
+                                onConfirm = onLogout,
+                            )
+                        },
+                    )
+                    Spacer(Modifier.height(n(40)))
+                }
+            }
         }
     }
 }
 
+private data class ConfirmRequest(
+    val title: String,
+    val message: String,
+    val confirmText: String,
+    val onConfirm: () -> Unit,
+)
+
 @Composable
-private fun StreamingQualityPicker(
-    selected: StreamingQuality,
-    onSelect: (StreamingQuality) -> Unit,
-) {
+private fun SectionLabel(text: String) {
+    StyledText(
+        text.uppercase(),
+        size = 12,
+        color = PhonoColors.Placeholder,
+        modifier = Modifier.padding(top = n(24), bottom = n(12)),
+    )
+}
+
+@Composable
+private fun StreamingQualityOptions(selected: StreamingQuality, onSelect: (StreamingQuality) -> Unit) {
     val options = listOf(
         StreamingQuality.LOW to "Low (96 kbps)",
         StreamingQuality.NORMAL to "Normal (160 kbps)",
         StreamingQuality.HIGH to "High (320 kbps)",
     )
     options.forEach { (quality, label) ->
-        EchoStyledButton(
-            text = if (quality == selected) "• $label" else label,
-            onClick = { onSelect(quality) },
-        )
+        PhonoStyledButton(text = label, selected = quality == selected, onClick = { onSelect(quality) })
+        Spacer(Modifier.height(n(6)))
     }
 }
 
 @Composable
-private fun NormalizationTypePicker(
-    selected: NormalizationType,
-    onSelect: (NormalizationType) -> Unit,
-) {
+private fun NormalizationOptions(selected: NormalizationType, onSelect: (NormalizationType) -> Unit) {
     val options = listOf(
         NormalizationType.AUTO to "Auto",
         NormalizationType.TRACK to "Track",
         NormalizationType.ALBUM to "Album",
     )
     options.forEach { (type, label) ->
-        EchoStyledButton(
-            text = if (type == selected) "• $label" else label,
-            onClick = { onSelect(type) },
-        )
+        PhonoStyledButton(text = label, selected = type == selected, onClick = { onSelect(type) })
+        Spacer(Modifier.height(n(6)))
     }
 }
 
 @Composable
-private fun EchoConfirmDialog(
+private fun ProxyField(value: String, onChange: (String) -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(bottom = n(6)),
+        ) {
+            BasicTextField(
+                value = value,
+                onValueChange = onChange,
+                textStyle = TextStyle(color = PhonoColors.Foreground, fontSize = nSp(22), fontFamily = PublicSans),
+                cursorBrush = SolidColor(PhonoColors.Foreground),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                decorationBox = { inner ->
+                    if (value.isEmpty()) {
+                        StyledText("http://host:port", size = 22, color = PhonoColors.Placeholder)
+                    }
+                    inner()
+                },
+            )
+        }
+        Box(Modifier.fillMaxWidth().height(n(1)).background(PhonoColors.Foreground))
+    }
+}
+
+/** Full-screen destructive confirmation, ported from phono's confirm screen. */
+@Composable
+fun PhonoConfirmScreen(
     title: String,
     message: String,
     confirmText: String,
     onConfirm: () -> Unit,
-    onDismiss: () -> Unit,
+    onCancel: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = EchoColors.Background,
-        titleContentColor = EchoColors.Foreground,
-        textContentColor = EchoColors.Placeholder,
-        title = { Text(title, style = MaterialTheme.typography.titleLarge) },
-        text = { Text(message, style = MaterialTheme.typography.bodyMedium) },
-        confirmButton = {
-            TextButton(onClick = onConfirm) {
-                Text(confirmText, color = EchoColors.Foreground)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel", color = EchoColors.Placeholder)
-            }
-        },
-    )
+    PhonoContentContainer(
+        title = title,
+        hideBackButton = false,
+        onBack = onCancel,
+        rightIconVisible = false,
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        StyledText(message, size = 18, color = PhonoColors.Foreground, modifier = Modifier.padding(top = n(10)))
+        Column(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.Bottom,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            StyledText(
+                confirmText.uppercase(),
+                size = 40,
+                color = PhonoColors.Foreground,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .tap(onClick = onConfirm)
+                    .padding(vertical = n(15), horizontal = n(30)),
+            )
+        }
+    }
 }

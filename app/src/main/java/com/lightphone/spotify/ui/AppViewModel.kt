@@ -1,22 +1,36 @@
 package com.lightphone.spotify.ui
 
 import android.app.Application
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.compose.foundation.lazy.LazyListState
 import com.lightphone.spotify.App
+import com.lightphone.spotify.data.PlaylistFilter
+import com.lightphone.spotify.data.SearchFilter
 import com.lightphone.spotify.data.SearchResults
 import com.lightphone.spotify.data.SearchResultItem
 import com.lightphone.spotify.data.SpotifyAlbumDetail
 import com.lightphone.spotify.data.SpotifyArtistDetail
-import com.lightphone.spotify.data.SpotifySavedAlbum
 import com.lightphone.spotify.data.SpotifyTrack
 import com.lightphone.spotify.data.TrackMetadata
+import com.lightphone.spotify.data.SpotifyPlaylistDetail
+import com.lightphone.spotify.data.local.LikedTrackEntity
+import com.lightphone.spotify.data.local.PlaylistEntity
+import com.lightphone.spotify.data.local.SavedAlbumEntity
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ffi.NormalizationType
 import com.lightphone.spotify.ffi.StreamingQuality
+import com.lightphone.spotify.ui.components.PhonoContextMenuItem
 import com.lightphone.spotify.playback.PlaybackController
 import com.lightphone.spotify.playback.PlaybackUiState
 import com.lightphone.spotify.playback.SettingsSnapshot
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,23 +42,19 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 
-data class ListUiState<T>(
-    val loading: Boolean = false,
-    val refreshing: Boolean = false,
-    val items: List<T> = emptyList(),
-    val error: String? = null,
-)
-
 data class AlbumDetailState(
     val loading: Boolean = false,
+    val requestedId: String? = null,
     val album: SpotifyAlbumDetail? = null,
     val isSaved: Boolean = false,
+    val isSavedConfirmed: Boolean = false,
     val saving: Boolean = false,
     val error: String? = null,
 )
 
 data class ArtistDetailState(
     val loading: Boolean = false,
+    val requestedId: String? = null,
     val artist: SpotifyArtistDetail? = null,
     val topTracks: List<SpotifyTrack> = emptyList(),
     val albums: List<com.lightphone.spotify.data.SpotifyAlbumSimple> = emptyList(),
@@ -56,11 +66,13 @@ data class SearchUiState(
     val results: SearchResults? = null,
     val loading: Boolean = false,
     val error: String? = null,
+    val filter: SearchFilter = SearchFilter.All,
 )
 
 data class PlayingExtrasState(
     val isTrackSaved: Boolean = false,
     val savePending: Boolean = false,
+    val saveError: String? = null,
 )
 
 data class SettingsUiState(
@@ -68,9 +80,70 @@ data class SettingsUiState(
     val gaplessEnabled: Boolean = true,
     val normalizationEnabled: Boolean = false,
     val normalizationType: NormalizationType = NormalizationType.AUTO,
-    val volumePercent: Int = 100,
     val proxy: String = "",
     val showAdvanced: Boolean = false,
+)
+
+data class PlaylistDetailTrackRow(
+    val track: SpotifyTrack,
+    val addedAt: String?,
+    val uri: String,
+)
+
+data class PlaylistDetailState(
+    val loading: Boolean = false,
+    val requestedId: String? = null,
+    val detail: SpotifyPlaylistDetail? = null,
+    val tracks: List<PlaylistDetailTrackRow> = emptyList(),
+    val snapshotId: String? = null,
+    val isEditable: Boolean = false,
+    val isInLibrary: Boolean = false,
+    val editMode: Boolean = false,
+    val mutating: Boolean = false,
+    val saving: Boolean = false,
+    val error: String? = null,
+    val mutationError: String? = null,
+)
+
+data class CreatePlaylistState(
+    val creating: Boolean = false,
+    val error: String? = null,
+)
+
+data class PlaylistPickerState(
+    val trackUri: String = "",
+    val loading: Boolean = false,
+    val adding: Boolean = false,
+    val playlists: List<PlaylistEntity> = emptyList(),
+    val containingPlaylistIds: Set<String> = emptySet(),
+    val selectedPlaylistIds: Set<String> = emptySet(),
+    val error: String? = null,
+    val statusMessage: String? = null,
+)
+
+enum class ContextMenuAction {
+    CopyLink,
+    AddToPlaylists,
+    RemoveFromLibrary,
+    DeletePlaylist,
+}
+
+sealed interface ContextMenuTarget {
+    data class Track(val uri: String, val id: String) : ContextMenuTarget
+    data class Album(val albumId: String, val uri: String) : ContextMenuTarget
+    data class Playlist(val playlistId: String, val uri: String, val ownerId: String) : ContextMenuTarget
+}
+
+data class DeletePlaylistConfirm(
+    val playlistId: String,
+    val name: String,
+)
+
+data class ContextMenuUiState(
+    val target: ContextMenuTarget? = null,
+    val showCopied: Boolean = false,
+    val deleteConfirm: DeletePlaylistConfirm? = null,
+    val navigateToPlaylistPickerUri: String? = null,
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -79,11 +152,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     val playback: StateFlow<PlaybackUiState> = controller.state
 
-    private val _likedSongs = MutableStateFlow(ListUiState<TrackMetadata>())
-    val likedSongs: StateFlow<ListUiState<TrackMetadata>> = _likedSongs.asStateFlow()
+    private val _likedTracks = MutableStateFlow(LibraryListUiState<LikedTrackEntity>())
+    val likedTracks: StateFlow<LibraryListUiState<LikedTrackEntity>> = _likedTracks.asStateFlow()
 
-    private val _albums = MutableStateFlow(ListUiState<SpotifySavedAlbum>())
-    val albums: StateFlow<ListUiState<SpotifySavedAlbum>> = _albums.asStateFlow()
+    private val _savedAlbums = MutableStateFlow(LibraryListUiState<SavedAlbumEntity>())
+    val savedAlbums: StateFlow<LibraryListUiState<SavedAlbumEntity>> = _savedAlbums.asStateFlow()
+
+    private val _playlists = MutableStateFlow(PlaylistsUiState())
+    val playlists: StateFlow<PlaylistsUiState> = _playlists.asStateFlow()
+
+    private var likedTracksStarted = false
+    private var savedAlbumsStarted = false
+    private var playlistsStarted = false
+    private var likedFillJob: Job? = null
+    private var likedLookaheadJob: Job? = null
+    private var savedFillJob: Job? = null
+    private var savedLookaheadJob: Job? = null
+    private var playlistsFillJob: Job? = null
+    private var playlistsLookaheadJob: Job? = null
+    private var likedFillRetries = 0
+    private var savedFillRetries = 0
+    private var playlistsFillRetries = 0
+
+    @Volatile private var scrubResyncLocked = false
+    private var pendingLikedRefresh = false
+    private var pendingSavedRefresh = false
+    private var pendingPlaylistsRefresh = false
 
     private val _search = MutableStateFlow(SearchUiState())
     val search: StateFlow<SearchUiState> = _search.asStateFlow()
@@ -100,8 +194,44 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _settings = MutableStateFlow(SettingsUiState())
     val settings: StateFlow<SettingsUiState> = _settings.asStateFlow()
 
+    private val _playlistDetail = MutableStateFlow(PlaylistDetailState())
+    val playlistDetail: StateFlow<PlaylistDetailState> = _playlistDetail.asStateFlow()
+
+    private val _createPlaylist = MutableStateFlow(CreatePlaylistState())
+    val createPlaylist: StateFlow<CreatePlaylistState> = _createPlaylist.asStateFlow()
+
+    private val _playlistPicker = MutableStateFlow(PlaylistPickerState())
+    val playlistPicker: StateFlow<PlaylistPickerState> = _playlistPicker.asStateFlow()
+
+    private val _contextMenu = MutableStateFlow(ContextMenuUiState())
+    val contextMenu: StateFlow<ContextMenuUiState> = _contextMenu.asStateFlow()
+
+    private var loadedPlaylistId: String? = null
+
     init {
         refreshSettings()
+        viewModelScope.launch {
+            playback
+                .map { it.currentUri }
+                .distinctUntilChanged()
+                .collect { uri -> onCurrentTrackChanged(uri) }
+        }
+    }
+
+    private fun onCurrentTrackChanged(uri: String?) {
+        if (uri == null) {
+            playingExtrasJob?.cancel()
+            playingExtrasLoadedForUri = null
+            _playingExtras.value = PlayingExtrasState()
+            return
+        }
+        if (uri != playingExtrasLoadedForUri) {
+            playingExtrasLoadedForUri = null
+            _playingExtras.update {
+                it.copy(isTrackSaved = false, savePending = false, saveError = null)
+            }
+        }
+        refreshPlayingScreen()
     }
 
     fun refreshSettings() {
@@ -121,74 +251,644 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun onLoggedIn() {
-        // Library loads deferred to tab open to avoid API burst on login.
+    fun saveWebApiCredentials(clientId: String, clientSecret: String) {
+        controller.saveWebApiCredentials(clientId, clientSecret)
     }
 
-    fun loadLikedSongs(refresh: Boolean = true) {
+    fun buildWebApiAuthorizeUrl(): String = controller.buildWebApiAuthorizeUrl()
+
+    fun completeWebApiAuth(code: String, onResult: (Result<Unit>) -> Unit) {
+        controller.completeWebApiAuth(code, onResult)
+    }
+
+    fun onLoggedIn() {
+        // Library tabs load on first visit via ensureLikedTracksLoaded / ensureSavedAlbumsLoaded.
+    }
+
+    fun ensureLikedTracksLoaded() {
+        if (likedTracksStarted) return
+        likedTracksStarted = true
+        _likedTracks.value = _likedTracks.value.copy(initialLoading = true)
         viewModelScope.launch {
-            _likedSongs.value = _likedSongs.value.copy(
-                loading = !refresh && _likedSongs.value.items.isEmpty(),
-                refreshing = refresh,
-                error = null,
-            )
-            controller.likedTracks()
-                .onSuccess { tracks ->
-                    _likedSongs.value = ListUiState(
-                        items = tracks,
-                        loading = false,
-                        refreshing = false,
-                        error = null,
+            controller.likedTracksUiFlow().collect { (items, remoteTotal, hasMore) ->
+                _likedTracks.update { it.copy(items = items, remoteTotal = remoteTotal, hasMore = hasMore) }
+            }
+        }
+        refreshLikedTracks()
+    }
+
+    fun refreshLikedTracks() {
+        if (scrubResyncLocked) { pendingLikedRefresh = true; return }
+        if (likedFillJob?.isActive == true) return
+        likedFillJob?.cancel()
+        likedFillJob = null
+        likedLookaheadJob?.cancel()
+        likedLookaheadJob = null
+        viewModelScope.launch {
+            val hadItems = _likedTracks.value.items.isNotEmpty()
+            _likedTracks.update {
+                it.copy(
+                    refreshing = hadItems,
+                    initialLoading = !hadItems,
+                    error = null,
+                )
+            }
+            runCatching { controller.refreshLikedTracks() }
+                .onFailure { e ->
+                    _likedTracks.update { it.copy(error = e.message ?: "Could not load liked songs") }
+                }
+            _likedTracks.update { it.copy(refreshing = false, initialLoading = false) }
+            if (controller.likedTracksNeedsFill()) {
+                startLikedTracksFill()
+            }
+        }
+    }
+
+    fun ensureLikedTracksBufferAhead(lastVisible: Int) {
+        if (likedFillJob?.isActive == true) return
+        val state = _likedTracks.value
+        val target = lastVisible + LOOKAHEAD_ROWS
+        if (state.items.size >= target || !state.hasMore) return
+        if (likedLookaheadJob?.isActive == true) return
+        likedLookaheadJob = viewModelScope.launch {
+            while (_likedTracks.value.items.size < target && _likedTracks.value.hasMore) {
+                val hasMore = runCatching { controller.appendLikedTracks() }
+                    .onFailure { e ->
+                        android.util.Log.e("Library", "append liked tracks failed", e)
+                    }
+                    .getOrDefault(false)
+                if (!hasMore) break
+            }
+        }
+    }
+
+    private fun startLikedTracksFill() {
+        if (likedFillJob?.isActive == true) return
+        likedFillJob = viewModelScope.launch {
+            _likedTracks.update { it.copy(appending = true) }
+            try {
+                runCatching { controller.fillRemainingLikedTracks() }
+                    .onSuccess {
+                        if (!controller.likedTracksNeedsFill()) {
+                            likedFillRetries = 0
+                        }
+                    }
+                    .onFailure { e ->
+                        android.util.Log.e("Library", "fill liked tracks failed", e)
+                        _likedTracks.update {
+                            it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
+                        }
+                        if (likedFillRetries < 3 && controller.likedTracksNeedsFill()) {
+                            likedFillRetries++
+                            viewModelScope.launch {
+                                delay(2000L * likedFillRetries)
+                                startLikedTracksFill()
+                            }
+                        }
+                    }
+            } finally {
+                _likedTracks.update { it.copy(appending = false) }
+            }
+        }
+    }
+
+    fun resumeLikedTracksFillIfNeeded() {
+        if (likedFillJob?.isActive == true) return
+        viewModelScope.launch {
+            if (controller.likedTracksNeedsFill()) {
+                likedFillRetries = 0
+                startLikedTracksFill()
+            }
+        }
+    }
+
+    fun onScrubJumpStart() { scrubResyncLocked = true }
+
+    fun onScrubJumpEnd() {
+        scrubResyncLocked = false
+        runPendingLibraryRefresh()
+    }
+
+    private fun runPendingLibraryRefresh() {
+        if (pendingLikedRefresh) { pendingLikedRefresh = false; refreshLikedTracks() }
+        if (pendingSavedRefresh) { pendingSavedRefresh = false; refreshSavedAlbums() }
+        if (pendingPlaylistsRefresh) { pendingPlaylistsRefresh = false; refreshPlaylists() }
+    }
+
+    fun ensureSavedAlbumsLoaded() {
+        if (savedAlbumsStarted) return
+        savedAlbumsStarted = true
+        _savedAlbums.value = _savedAlbums.value.copy(initialLoading = true)
+        viewModelScope.launch {
+            controller.savedAlbumsUiFlow().collect { (items, remoteTotal, hasMore) ->
+                _savedAlbums.update { it.copy(items = items, remoteTotal = remoteTotal, hasMore = hasMore) }
+            }
+        }
+        refreshSavedAlbums()
+    }
+
+    fun refreshSavedAlbums() {
+        if (scrubResyncLocked) { pendingSavedRefresh = true; return }
+        if (savedFillJob?.isActive == true) return
+        savedFillJob?.cancel()
+        savedFillJob = null
+        savedLookaheadJob?.cancel()
+        savedLookaheadJob = null
+        viewModelScope.launch {
+            val hadItems = _savedAlbums.value.items.isNotEmpty()
+            if (!hadItems) {
+                _savedAlbums.update { it.copy(initialLoading = true, error = null) }
+            } else {
+                _savedAlbums.update { it.copy(refreshing = true, error = null) }
+            }
+            runCatching { controller.refreshSavedAlbums() }
+                .onFailure { e ->
+                    _savedAlbums.update { it.copy(error = e.message ?: "Could not load albums") }
+                }
+            _savedAlbums.update { it.copy(refreshing = false, initialLoading = false) }
+            if (controller.savedAlbumsNeedsFill()) {
+                startSavedAlbumsFill()
+            }
+        }
+    }
+
+    fun ensureSavedAlbumsBufferAhead(lastVisible: Int) {
+        if (savedFillJob?.isActive == true) return
+        val state = _savedAlbums.value
+        val target = lastVisible + LOOKAHEAD_ROWS
+        if (state.items.size >= target || !state.hasMore) return
+        if (savedLookaheadJob?.isActive == true) return
+        savedLookaheadJob = viewModelScope.launch {
+            while (_savedAlbums.value.items.size < target && _savedAlbums.value.hasMore) {
+                val hasMore = runCatching { controller.appendSavedAlbums() }
+                    .onFailure { e ->
+                        android.util.Log.e("Library", "append saved albums failed", e)
+                    }
+                    .getOrDefault(false)
+                if (!hasMore) break
+            }
+        }
+    }
+
+    suspend fun scrollLikedTracksToIndex(listState: LazyListState, targetIndex: Int) {
+        val items = _likedTracks.value.items
+        if (items.isEmpty()) return
+        if (targetIndex > items.lastIndex) {
+            android.util.Log.w("Library", "scrub target $targetIndex > lastIndex ${items.lastIndex}")
+            return
+        }
+        listState.scrollToItem(targetIndex)
+    }
+
+    suspend fun scrollSavedAlbumsToIndex(listState: LazyListState, targetIndex: Int) {
+        val items = _savedAlbums.value.items
+        if (items.isEmpty()) return
+        if (targetIndex > items.lastIndex) {
+            android.util.Log.w("Library", "scrub target $targetIndex > lastIndex ${items.lastIndex}")
+            return
+        }
+        listState.scrollToItem(targetIndex)
+    }
+
+    private fun startSavedAlbumsFill() {
+        if (savedFillJob?.isActive == true) return
+        savedFillJob = viewModelScope.launch {
+            _savedAlbums.update { it.copy(appending = true) }
+            try {
+                runCatching { controller.fillRemainingSavedAlbums() }
+                    .onSuccess {
+                        if (!controller.savedAlbumsNeedsFill()) {
+                            savedFillRetries = 0
+                        }
+                    }
+                    .onFailure { e ->
+                        android.util.Log.e("Library", "fill saved albums failed", e)
+                        _savedAlbums.update {
+                            it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
+                        }
+                        if (savedFillRetries < 3 && controller.savedAlbumsNeedsFill()) {
+                            savedFillRetries++
+                            viewModelScope.launch {
+                                delay(2000L * savedFillRetries)
+                                startSavedAlbumsFill()
+                            }
+                        }
+                    }
+            } finally {
+                _savedAlbums.update { it.copy(appending = false) }
+            }
+        }
+    }
+
+    fun resumeSavedAlbumsFillIfNeeded() {
+        if (savedFillJob?.isActive == true) return
+        viewModelScope.launch {
+            if (controller.savedAlbumsNeedsFill()) {
+                savedFillRetries = 0
+                startSavedAlbumsFill()
+            }
+        }
+    }
+
+    fun ensurePlaylistsLoaded() {
+        if (playlistsStarted) return
+        playlistsStarted = true
+        _playlists.value = _playlists.value.copy(initialLoading = true)
+        viewModelScope.launch {
+            controller.playlistsUiFlow().collect { (items, remoteTotal, hasMore) ->
+                _playlists.update {
+                    it.copy(items = items, remoteTotal = remoteTotal, hasMore = hasMore)
+                }
+            }
+        }
+        viewModelScope.launch {
+            runCatching { controller.currentUserId() }
+                .onSuccess { userId -> _playlists.update { it.copy(currentUserId = userId) } }
+        }
+        refreshPlaylists()
+    }
+
+    fun setPlaylistsFilter(filter: PlaylistFilter) {
+        _playlists.update { it.copy(filter = filter) }
+    }
+
+    fun refreshPlaylists() {
+        if (scrubResyncLocked) { pendingPlaylistsRefresh = true; return }
+        if (playlistsFillJob?.isActive == true) return
+        playlistsFillJob?.cancel()
+        playlistsFillJob = null
+        playlistsLookaheadJob?.cancel()
+        playlistsLookaheadJob = null
+        viewModelScope.launch {
+            val hadItems = _playlists.value.items.isNotEmpty()
+            if (!hadItems) {
+                _playlists.update { it.copy(initialLoading = true, error = null) }
+            } else {
+                _playlists.update { it.copy(refreshing = true, error = null) }
+            }
+            runCatching { controller.refreshPlaylists() }
+                .onFailure { e ->
+                    _playlists.update { it.copy(error = e.message ?: "Could not load playlists") }
+                }
+            _playlists.update { it.copy(refreshing = false, initialLoading = false) }
+            if (controller.playlistsNeedsFill()) {
+                startPlaylistsFill()
+            }
+        }
+    }
+
+    fun ensurePlaylistsBufferAhead(lastVisible: Int) {
+        if (playlistsFillJob?.isActive == true) return
+        val state = _playlists.value
+        val target = lastVisible + LOOKAHEAD_ROWS
+        if (state.items.size >= target || !state.hasMore) return
+        if (playlistsLookaheadJob?.isActive == true) return
+        playlistsLookaheadJob = viewModelScope.launch {
+            while (_playlists.value.items.size < target && _playlists.value.hasMore) {
+                val hasMore = runCatching { controller.appendPlaylists() }
+                    .onFailure { e ->
+                        android.util.Log.e("Library", "append playlists failed", e)
+                    }
+                    .getOrDefault(false)
+                if (!hasMore) break
+            }
+        }
+    }
+
+    suspend fun scrollPlaylistsToIndex(listState: LazyListState, targetIndex: Int) {
+        val items = _playlists.value.displayItems
+        if (items.isEmpty()) return
+        if (targetIndex > items.lastIndex) {
+            android.util.Log.w("Library", "scrub target $targetIndex > lastIndex ${items.lastIndex}")
+            return
+        }
+        listState.scrollToItem(targetIndex)
+    }
+
+    private fun startPlaylistsFill() {
+        if (playlistsFillJob?.isActive == true) return
+        playlistsFillJob = viewModelScope.launch {
+            _playlists.update { it.copy(appending = true) }
+            try {
+                runCatching { controller.fillRemainingPlaylists() }
+                    .onSuccess {
+                        if (!controller.playlistsNeedsFill()) {
+                            playlistsFillRetries = 0
+                        }
+                    }
+                    .onFailure { e ->
+                        android.util.Log.e("Library", "fill playlists failed", e)
+                        _playlists.update {
+                            it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
+                        }
+                        if (playlistsFillRetries < 3 && controller.playlistsNeedsFill()) {
+                            playlistsFillRetries++
+                            viewModelScope.launch {
+                                delay(2000L * playlistsFillRetries)
+                                startPlaylistsFill()
+                            }
+                        }
+                    }
+            } finally {
+                _playlists.update { it.copy(appending = false) }
+            }
+        }
+    }
+
+    fun resumePlaylistsFillIfNeeded() {
+        if (playlistsFillJob?.isActive == true) return
+        viewModelScope.launch {
+            if (controller.playlistsNeedsFill()) {
+                playlistsFillRetries = 0
+                startPlaylistsFill()
+            }
+        }
+    }
+
+    fun loadPlaylistDetail(playlistId: String) {
+        if (loadedPlaylistId == playlistId &&
+            _playlistDetail.value.detail?.id == playlistId &&
+            !_playlistDetail.value.loading
+        ) {
+            return
+        }
+        loadedPlaylistId = playlistId
+        _playlistDetail.value = PlaylistDetailState(
+            loading = true,
+            requestedId = playlistId,
+        )
+        viewModelScope.launch {
+            runCatching { controller.playlistDetail(playlistId) }
+                .onSuccess { result ->
+                    _playlistDetail.value = PlaylistDetailState(
+                        requestedId = playlistId,
+                        detail = result.detail,
+                        tracks = result.tracks.mapNotNull { item ->
+                            item.track?.let { track ->
+                                PlaylistDetailTrackRow(
+                                    track = track,
+                                    addedAt = item.addedAt,
+                                    uri = track.uri,
+                                )
+                            }
+                        },
+                        snapshotId = result.detail.snapshotId,
+                        isEditable = result.isEditable,
+                        isInLibrary = result.isInLibrary,
                     )
                 }
                 .onFailure { e ->
-                    _likedSongs.value = _likedSongs.value.copy(
-                        loading = false,
-                        refreshing = false,
-                        error = e.message ?: "Could not load liked songs",
+                    _playlistDetail.value = PlaylistDetailState(
+                        requestedId = playlistId,
+                        error = e.message ?: "Could not load playlist",
                     )
                 }
         }
     }
 
-    fun loadAlbums(refresh: Boolean = true) {
+    fun togglePlaylistEditMode() {
+        _playlistDetail.update { it.copy(editMode = !it.editMode, mutationError = null) }
+    }
+
+    fun togglePlaylistLibrary(playlistId: String) {
         viewModelScope.launch {
-            _albums.value = _albums.value.copy(
-                loading = !refresh && _albums.value.items.isEmpty(),
-                refreshing = refresh,
-                error = null,
-            )
-            runCatching { controller.savedAlbums() }
-                .onSuccess { items ->
-                    _albums.value = ListUiState(
-                        items = items,
-                        loading = false,
-                        refreshing = false,
-                        error = null,
-                    )
+            val current = _playlistDetail.value
+            if (current.saving || current.mutating) return@launch
+            _playlistDetail.update { it.copy(saving = true, mutationError = null) }
+            val result = runCatching {
+                if (current.isInLibrary) {
+                    controller.unfollowPlaylist(playlistId)
+                } else {
+                    controller.followPlaylist(playlistId)
+                }
+            }
+            _playlistDetail.update {
+                it.copy(
+                    saving = false,
+                    isInLibrary = if (result.isSuccess) !it.isInLibrary else it.isInLibrary,
+                    mutationError = result.exceptionOrNull()?.message,
+                )
+            }
+        }
+    }
+
+    fun renamePlaylist(playlistId: String, name: String) {
+        if (name.isBlank()) return
+        viewModelScope.launch {
+            _playlistDetail.update { it.copy(mutating = true, mutationError = null) }
+            runCatching { controller.renamePlaylist(playlistId, name) }
+                .onSuccess { detail ->
+                    _playlistDetail.update {
+                        it.copy(detail = detail, mutating = false, snapshotId = detail.snapshotId)
+                    }
                 }
                 .onFailure { e ->
-                    _albums.value = _albums.value.copy(
-                        loading = false,
-                        refreshing = false,
-                        error = e.message ?: "Could not load albums",
+                    _playlistDetail.update {
+                        it.copy(mutating = false, mutationError = e.message)
+                    }
+                }
+        }
+    }
+
+    fun removePlaylistTrack(playlistId: String, index: Int) {
+        val state = _playlistDetail.value
+        val row = state.tracks.getOrNull(index) ?: return
+        viewModelScope.launch {
+            _playlistDetail.update { it.copy(mutating = true, mutationError = null) }
+            runCatching {
+                controller.removeTrackFromPlaylist(playlistId, row.uri, state.snapshotId)
+            }
+                .onSuccess { snapshotId ->
+                    val updated = state.tracks.toMutableList().apply { removeAt(index) }
+                    _playlistDetail.update {
+                        it.copy(
+                            tracks = updated,
+                            mutating = false,
+                            snapshotId = snapshotId ?: it.snapshotId,
+                            detail = it.detail?.copy(
+                                tracks = com.lightphone.spotify.data.SpotifyPlaylistTracksRef(
+                                    total = updated.size,
+                                ),
+                            ),
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    _playlistDetail.update { it.copy(mutating = false, mutationError = e.message) }
+                }
+        }
+    }
+
+    fun movePlaylistTrack(playlistId: String, fromIndex: Int, toIndex: Int) {
+        if (fromIndex == toIndex) return
+        val state = _playlistDetail.value
+        if (fromIndex !in state.tracks.indices || toIndex !in state.tracks.indices) return
+        viewModelScope.launch {
+            _playlistDetail.update { it.copy(mutating = true, mutationError = null) }
+            runCatching {
+                controller.reorderPlaylistTrack(playlistId, fromIndex, toIndex, state.snapshotId)
+            }
+                .onSuccess { snapshotId ->
+                    val updated = state.tracks.toMutableList()
+                    val item = updated.removeAt(fromIndex)
+                    updated.add(toIndex, item)
+                    _playlistDetail.update {
+                        it.copy(
+                            tracks = updated,
+                            mutating = false,
+                            snapshotId = snapshotId ?: it.snapshotId,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    _playlistDetail.update { it.copy(mutating = false, mutationError = e.message) }
+                }
+        }
+    }
+
+    fun playPlaylistFrom(playlistId: String, startIndex: Int) {
+        viewModelScope.launch {
+            val tracks = _playlistDetail.value.tracks
+                .drop(startIndex)
+                .map { it.track.toMetadata() }
+            if (tracks.isEmpty()) {
+                val fetched = runCatching { controller.playlistTracks(playlistId) }.getOrNull()
+                if (!fetched.isNullOrEmpty()) {
+                    playTracks(fetched, 0, _playlistDetail.value.detail?.name)
+                }
+            } else {
+                playTracks(tracks, 0, _playlistDetail.value.detail?.name)
+            }
+        }
+    }
+
+    fun createPlaylist(name: String, isPublic: Boolean, onCreated: (String, String) -> Unit) {
+        viewModelScope.launch {
+            _createPlaylist.update { CreatePlaylistState(creating = true) }
+            runCatching { controller.createPlaylist(name, isPublic) }
+                .onSuccess { playlist ->
+                    _createPlaylist.value = CreatePlaylistState()
+                    onCreated(playlist.id, playlist.name)
+                }
+                .onFailure { e ->
+                    _createPlaylist.value = CreatePlaylistState(
+                        creating = false,
+                        error = e.message ?: "Could not create playlist",
                     )
                 }
+        }
+    }
+
+    fun resetCreatePlaylistState() {
+        _createPlaylist.value = CreatePlaylistState()
+    }
+
+    fun loadPlaylistPicker(trackUri: String) {
+        ensurePlaylistsLoaded()
+        viewModelScope.launch {
+            _playlistPicker.value = PlaylistPickerState(trackUri = trackUri, loading = true)
+
+            var userId = _playlists.value.currentUserId
+            var playlists = editablePlaylistsFromState(userId)
+
+            if (playlists.isEmpty()) {
+                if (userId == null) {
+                    userId = runCatching { controller.currentUserId() }.getOrNull()
+                }
+                runCatching { controller.refreshPlaylists() }
+                playlists = runCatching { controller.editablePlaylists(userId) }
+                    .getOrElse { emptyList() }
+            }
+
+            if (playlists.isEmpty()) {
+                _playlistPicker.value = PlaylistPickerState(
+                    trackUri = trackUri,
+                    error = "No editable playlists found.",
+                )
+                return@launch
+            }
+
+            val containing = runCatching {
+                controller.playlistsContainingTrack(
+                    trackUri,
+                    playlists.map { it.playlist_id },
+                )
+            }.getOrDefault(emptySet())
+
+            _playlistPicker.value = PlaylistPickerState(
+                trackUri = trackUri,
+                playlists = playlists,
+                containingPlaylistIds = containing,
+            )
+        }
+    }
+
+    private fun editablePlaylistsFromState(userId: String?): List<PlaylistEntity> {
+        if (userId == null) return emptyList()
+        return _playlists.value.items.filter { playlist ->
+            playlist.owner_id == userId || playlist.is_collaborative
+        }
+    }
+
+    fun togglePlaylistPickerSelection(playlistId: String) {
+        _playlistPicker.update { state ->
+            if (state.adding || playlistId in state.containingPlaylistIds) return@update state
+            val next = state.selectedPlaylistIds.toMutableSet()
+            if (playlistId in next) next.remove(playlistId) else next.add(playlistId)
+            state.copy(selectedPlaylistIds = next, error = null, statusMessage = null)
+        }
+    }
+
+    fun addTrackToSelectedPlaylists(onAdded: () -> Unit) {
+        val state = _playlistPicker.value
+        val uri = state.trackUri
+        val playlistIds = state.selectedPlaylistIds.toList()
+        if (uri.isBlank() || playlistIds.isEmpty()) return
+        viewModelScope.launch {
+            _playlistPicker.update { it.copy(adding = true, error = null, statusMessage = null) }
+            runCatching {
+                playlistIds.forEach { playlistId ->
+                    controller.addTrackToPlaylist(playlistId, uri)
+                }
+            }.onSuccess {
+                val count = playlistIds.size
+                val message = if (count == 1) "Added to playlist" else "Added to $count playlists"
+                _playlistPicker.update { it.copy(adding = false, statusMessage = message) }
+                onAdded()
+            }.onFailure { e ->
+                _playlistPicker.update {
+                    it.copy(adding = false, error = e.message ?: "Could not add track")
+                }
+            }
         }
     }
 
     fun loadAlbumDetail(albumId: String) {
+        _albumDetail.value = AlbumDetailState(loading = true, requestedId = albumId)
         viewModelScope.launch {
-            _albumDetail.value = AlbumDetailState(loading = true)
+            val cachedSaved = runCatching { controller.isSavedAlbumCached(albumId) }
+                .getOrDefault(false)
+            _albumDetail.update {
+                if (it.requestedId != albumId) return@update it
+                it.copy(isSaved = cachedSaved, isSavedConfirmed = false)
+            }
             runCatching { controller.albumDetail(albumId) }
                 .onSuccess { result ->
+                    if (_albumDetail.value.requestedId != albumId) return@onSuccess
                     _albumDetail.value = AlbumDetailState(
+                        requestedId = albumId,
                         album = result.album,
                         isSaved = result.isSaved,
+                        isSavedConfirmed = true,
                     )
                 }
                 .onFailure { e ->
-                    _albumDetail.value = AlbumDetailState(error = e.message ?: "Could not load album")
+                    if (_albumDetail.value.requestedId != albumId) return@onFailure
+                    _albumDetail.value = AlbumDetailState(
+                        requestedId = albumId,
+                        error = e.message ?: "Could not load album",
+                        isSaved = cachedSaved,
+                    )
                 }
         }
     }
@@ -206,23 +906,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 isSaved = if (result.isSuccess) !current.isSaved else current.isSaved,
                 error = result.exceptionOrNull()?.message,
             )
-            if (result.isSuccess) loadAlbums(refresh = true)
         }
     }
 
     fun loadArtistDetail(artistId: String) {
+        _artistDetail.value = ArtistDetailState(loading = true, requestedId = artistId)
         viewModelScope.launch {
-            _artistDetail.value = ArtistDetailState(loading = true)
             runCatching { controller.artistDetail(artistId) }
                 .onSuccess { result ->
+                    if (_artistDetail.value.requestedId != artistId) return@onSuccess
                     _artistDetail.value = ArtistDetailState(
+                        requestedId = artistId,
                         artist = result.artist,
                         topTracks = result.topTracks,
                         albums = result.albums,
                     )
                 }
                 .onFailure { e ->
-                    _artistDetail.value = ArtistDetailState(error = e.message ?: "Could not load artist")
+                    if (_artistDetail.value.requestedId != artistId) return@onFailure
+                    _artistDetail.value = ArtistDetailState(
+                        requestedId = artistId,
+                        error = e.message ?: "Could not load artist",
+                    )
                 }
         }
     }
@@ -238,16 +943,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val trimmed = query.trim()
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
-            _search.value = SearchUiState(loading = true, query = trimmed, error = null, results = null)
+            _search.value = _search.value.copy(
+                loading = true,
+                query = trimmed,
+                error = null,
+                filter = SearchFilter.All,
+            )
             runCatching {
                 withTimeout(SEARCH_TIMEOUT_MS) { controller.search(trimmed) }
             }
                 .onSuccess { results ->
-                    _search.value = SearchUiState(
+                    _search.value = _search.value.copy(
                         query = trimmed,
                         results = results,
                         loading = false,
                         error = if (results.isEmpty()) "No results" else null,
+                        filter = SearchFilter.All,
                     )
                 }
                 .onFailure { e ->
@@ -255,24 +966,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         is TimeoutCancellationException -> "Search timed out — try again."
                         else -> e.message ?: "Search failed"
                     }
-                    _search.value = SearchUiState(
+                    _search.value = _search.value.copy(
                         query = trimmed,
                         loading = false,
                         error = message,
-                        results = null,
                     )
                 }
         }
     }
 
-    fun playTracks(tracks: List<TrackMetadata>, startIndex: Int) {
+    fun setSearchFilter(filter: SearchFilter) {
+        _search.value = _search.value.copy(filter = filter)
+    }
+
+    fun playTracks(tracks: List<TrackMetadata>, startIndex: Int, contextLabel: String? = null) {
         if (tracks.isEmpty()) return
         controller.ensureServiceStarted()
-        controller.play(tracks, startIndex)
+        controller.play(tracks, startIndex, contextLabel)
     }
 
     fun playLikedFrom(index: Int) {
-        playTracks(_likedSongs.value.items, index)
+        viewModelScope.launch {
+            val tracks = runCatching { controller.likedTracksForPlayback(index) }.getOrNull()
+            if (!tracks.isNullOrEmpty()) {
+                playTracks(tracks, 0, "Liked Songs")
+            }
+        }
     }
 
     fun playAlbumFrom(albumId: String, trackIndex: Int) {
@@ -281,25 +1000,78 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val tracks = detail?.tracks?.items?.map { it.toMetadata() }
                 ?: runCatching { controller.albumTracks(albumId) }.getOrNull()
             if (!tracks.isNullOrEmpty()) {
-                playTracks(tracks, trackIndex.coerceIn(0, tracks.lastIndex))
+                val label = detail?.name ?: tracks.firstOrNull()?.album
+                playTracks(tracks, trackIndex.coerceIn(0, tracks.lastIndex), label)
             }
         }
     }
 
     fun playSearchTrack(item: SearchResultItem.Track) {
-        playTracks(listOf(item.track.toMetadata()), 0)
+        val meta = item.track.toMetadata()
+        playTracks(listOf(meta), 0, meta.album.ifBlank { null })
+    }
+
+    fun playSearchPlaylist(playlistId: String, playlistName: String? = null, onStarted: () -> Unit = {}) {
+        viewModelScope.launch {
+            val tracks = runCatching { controller.playlistTracks(playlistId) }.getOrNull()
+            if (!tracks.isNullOrEmpty()) {
+                playTracks(tracks, 0, playlistName)
+                onStarted()
+            }
+        }
+    }
+
+    fun openSearchResult(
+        item: SearchResultItem,
+        onOpenAlbum: (String, String) -> Unit,
+        onOpenArtist: (String) -> Unit,
+        onPlayTrack: (SearchResultItem.Track) -> Unit,
+        onOpenPlaylist: (String, String) -> Unit,
+    ) {
+        when (item) {
+            is SearchResultItem.Track -> onPlayTrack(item)
+            is SearchResultItem.Album -> onOpenAlbum(item.album.id, item.album.name)
+            is SearchResultItem.Artist -> onOpenArtist(item.artist.id)
+            is SearchResultItem.Playlist -> onOpenPlaylist(item.playlist.id, item.playlist.name)
+        }
     }
 
     fun playArtistTopTrack(index: Int) {
         val tracks = _artistDetail.value.topTracks.map { it.toMetadata() }
-        playTracks(tracks, index)
+        val label = _artistDetail.value.artist?.name
+        playTracks(tracks, index, label)
     }
 
-    fun refreshPlayingSaveState() {
+    private var playingExtrasLoadedForUri: String? = null
+    private var playingExtrasJob: Job? = null
+
+    fun refreshPlayingScreen() {
         val uri = playback.value.currentUri ?: return
-        viewModelScope.launch {
-            val saved = runCatching { controller.isTrackSaved(uri) }.getOrDefault(false)
-            _playingExtras.value = _playingExtras.value.copy(isTrackSaved = saved)
+        val state = playback.value
+        if (state.title.isNullOrBlank() || state.durationMs <= 0L || state.artUrl.isNullOrBlank()) {
+            controller.refreshNowPlayingFromWebApi()
+        }
+        if (uri == playingExtrasLoadedForUri) return
+        val requestedUri = uri
+        playingExtrasJob?.cancel()
+        playingExtrasJob = viewModelScope.launch {
+            val localHint = runCatching { controller.isLikedTrackCached(requestedUri) }
+                .getOrDefault(false)
+            if (playback.value.currentUri == requestedUri) {
+                _playingExtras.update { it.copy(isTrackSaved = localHint, saveError = null) }
+            }
+
+            val saved = runCatching { controller.isTrackSaved(requestedUri) }
+                .getOrElse { e ->
+                    if (playback.value.currentUri != requestedUri) return@launch
+                    _playingExtras.value = _playingExtras.value.copy(
+                        saveError = e.message ?: "Could not check liked status",
+                    )
+                    return@launch
+                }
+            if (playback.value.currentUri != requestedUri) return@launch
+            _playingExtras.value = _playingExtras.value.copy(isTrackSaved = saved, saveError = null)
+            playingExtrasLoadedForUri = requestedUri
         }
     }
 
@@ -308,7 +1080,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val current = _playingExtras.value
             if (current.savePending) return@launch
-            _playingExtras.value = current.copy(savePending = true)
+            _playingExtras.value = current.copy(savePending = true, saveError = null)
             val wasSaved = current.isTrackSaved
             val result = runCatching {
                 if (wasSaved) controller.removeTrack(uri) else controller.saveTrack(uri)
@@ -316,8 +1088,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _playingExtras.value = PlayingExtrasState(
                 isTrackSaved = if (result.isSuccess) !wasSaved else wasSaved,
                 savePending = false,
+                saveError = result.exceptionOrNull()?.message,
             )
-            if (result.isSuccess && !wasSaved) loadLikedSongs(refresh = true)
+            if (result.isSuccess) {
+                playingExtrasLoadedForUri = uri
+            }
         }
     }
 
@@ -325,8 +1100,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun pause() = controller.pause()
     fun next() = controller.next()
     fun previous() = controller.previous()
+    fun toggleShuffle() = controller.toggleShuffle()
+    fun toggleRepeat() = controller.toggleRepeat()
     fun seek(positionMs: Long) = controller.seek(positionMs)
-    fun logout() = controller.logout()
+    fun addTrackToQueue(track: TrackMetadata) {
+        controller.ensureServiceStarted()
+        controller.addToQueue(track)
+    }
+    fun moveQueueItemUp(index: Int) = controller.moveQueueItemUp(index)
+    fun moveQueueItemDown(index: Int) = controller.moveQueueItemDown(index)
+    fun moveContextItemUp(index: Int) = controller.moveContextItemUp(index)
+    fun moveContextItemDown(index: Int) = controller.moveContextItemDown(index)
+    fun clearManualQueue() = controller.clearManualQueue()
+    fun refreshQueue() = controller.refreshQueue()
+    fun logout() {
+        playingExtrasJob?.cancel()
+        playingExtrasLoadedForUri = null
+        _playingExtras.value = PlayingExtrasState()
+        controller.logout()
+    }
 
     fun setStreamingQuality(quality: StreamingQuality) {
         _settings.value = _settings.value.copy(streamingQuality = quality)
@@ -348,12 +1140,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         controller.setNormalizationType(type)
     }
 
-    fun setVolumePercent(percent: Int) {
-        val clamped = percent.coerceIn(0, 100)
-        _settings.value = _settings.value.copy(volumePercent = clamped)
-        controller.setVolume(clamped)
-    }
-
     fun setProxy(proxy: String) {
         _settings.value = _settings.value.copy(proxy = proxy)
         val trimmed = proxy.trim()
@@ -366,8 +1152,126 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearAudioCache() = controller.clearAudioCache()
 
+    fun showTrackContextMenu(uri: String, id: String) {
+        _contextMenu.value = ContextMenuUiState(target = ContextMenuTarget.Track(uri, id))
+    }
+
+    fun showAlbumContextMenu(albumId: String, uri: String) {
+        _contextMenu.value = ContextMenuUiState(
+            target = ContextMenuTarget.Album(albumId, uri),
+        )
+    }
+
+    fun showPlaylistContextMenu(playlistId: String, uri: String, ownerId: String) {
+        _contextMenu.value = ContextMenuUiState(
+            target = ContextMenuTarget.Playlist(playlistId, uri, ownerId),
+        )
+    }
+
+    fun dismissContextMenu() {
+        _contextMenu.update { it.copy(target = null) }
+    }
+
+    fun dismissCopiedOverlay() {
+        _contextMenu.update { it.copy(showCopied = false) }
+    }
+
+    fun cancelDeletePlaylist() {
+        _contextMenu.update { it.copy(deleteConfirm = null) }
+    }
+
+    fun consumeNavigateToPlaylistPicker() {
+        _contextMenu.update { it.copy(navigateToPlaylistPickerUri = null) }
+    }
+
+    fun contextMenuItemsFor(target: ContextMenuTarget, currentUserId: String?): List<PhonoContextMenuItem> =
+        when (target) {
+            is ContextMenuTarget.Track -> listOf(
+                PhonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink),
+                PhonoContextMenuItem("Add To Playlists", ContextMenuAction.AddToPlaylists),
+                PhonoContextMenuItem("Remove From Library", ContextMenuAction.RemoveFromLibrary),
+            )
+            is ContextMenuTarget.Album -> listOf(
+                PhonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink),
+                PhonoContextMenuItem("Remove From Library", ContextMenuAction.RemoveFromLibrary),
+            )
+            is ContextMenuTarget.Playlist -> buildList {
+                add(PhonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink))
+                if (currentUserId != null && target.ownerId == currentUserId) {
+                    add(PhonoContextMenuItem("Delete Playlist", ContextMenuAction.DeletePlaylist))
+                }
+            }
+        }
+
+    fun onContextMenuAction(action: ContextMenuAction) {
+        val target = _contextMenu.value.target ?: return
+        when (action) {
+            ContextMenuAction.CopyLink -> {
+                dismissContextMenu()
+                copyContextMenuLink(target)
+            }
+            ContextMenuAction.AddToPlaylists -> {
+                if (target !is ContextMenuTarget.Track) return
+                dismissContextMenu()
+                _contextMenu.update { it.copy(navigateToPlaylistPickerUri = target.uri) }
+            }
+            ContextMenuAction.RemoveFromLibrary -> {
+                dismissContextMenu()
+                removeContextMenuFromLibrary(target)
+            }
+            ContextMenuAction.DeletePlaylist -> {
+                if (target !is ContextMenuTarget.Playlist) return
+                dismissContextMenu()
+                _contextMenu.update {
+                    it.copy(deleteConfirm = DeletePlaylistConfirm(target.playlistId, ""))
+                }
+            }
+        }
+    }
+
+    fun confirmDeletePlaylist() {
+        val confirm = _contextMenu.value.deleteConfirm ?: return
+        _contextMenu.update { it.copy(deleteConfirm = null) }
+        viewModelScope.launch {
+            runCatching { controller.unfollowPlaylist(confirm.playlistId) }
+                .onFailure { e ->
+                    android.util.Log.e("Library", "deletePlaylist failed", e)
+                }
+        }
+    }
+
+    private fun copyContextMenuLink(target: ContextMenuTarget) {
+        val url = when (target) {
+            is ContextMenuTarget.Track -> spotifyShareUrl(target.uri, target.id, "track")
+            is ContextMenuTarget.Album -> spotifyShareUrl(target.uri, target.albumId, "album")
+            is ContextMenuTarget.Playlist -> spotifyShareUrl(target.uri, target.playlistId, "playlist")
+        }
+        val clipboard = getApplication<Application>().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Spotify link", url))
+        _contextMenu.update { it.copy(showCopied = true) }
+        viewModelScope.launch {
+            delay(1750)
+            if (_contextMenu.value.showCopied) dismissCopiedOverlay()
+        }
+    }
+
+    private fun removeContextMenuFromLibrary(target: ContextMenuTarget) {
+        viewModelScope.launch {
+            runCatching {
+                when (target) {
+                    is ContextMenuTarget.Track -> controller.removeTrack(target.uri)
+                    is ContextMenuTarget.Album -> controller.removeAlbum(target.albumId)
+                    is ContextMenuTarget.Playlist -> controller.unfollowPlaylist(target.playlistId)
+                }
+            }.onFailure { e ->
+                android.util.Log.e("Library", "removeFromLibrary failed", e)
+            }
+        }
+    }
+
     companion object {
         private const val SEARCH_TIMEOUT_MS = 30_000L
+        private const val LOOKAHEAD_ROWS = 150
     }
 }
 
@@ -376,7 +1280,6 @@ private fun SettingsSnapshot.toUiState(showAdvanced: Boolean) = SettingsUiState(
     gaplessEnabled = gaplessEnabled,
     normalizationEnabled = normalizationEnabled,
     normalizationType = normalizationType,
-    volumePercent = volumePercent,
     proxy = proxy.orEmpty(),
     showAdvanced = showAdvanced,
 )

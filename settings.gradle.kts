@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "SpotifyLP3"
+rootProject.name = "Phono"
 include(":app")

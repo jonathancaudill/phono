@@ -28,48 +28,10 @@ pub(crate) fn http_client() -> &'static reqwest::Client {
         reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
+            .user_agent("Spotify/124200290 Linux/0 (librespot)")
             .build()
             .expect("reqwest client")
     })
-}
-
-/// Desktop-style UA retained for optional diagnostics only.
-pub(crate) const WEB_API_USER_AGENT: &str = "Spotify/8.8.98.1234 OSX/0 (LightPhone/0.1.0)";
-
-/// Hit a few Web API routes and log status — used to distinguish Login5 auth vs rate limits.
-pub(crate) async fn probe_web_api_bearer(label: &str, bearer: &str) {
-    let client = http_client();
-    let urls = [
-        "https://api.spotify.com/v1/me",
-        "https://api.spotify.com/v1/search?q=test&type=track&limit=1&market=from_token",
-        "https://api.spotify.com/v1/me/tracks?limit=1&market=from_token&offset=0",
-        "https://api.spotify.com/v1/me/albums?limit=1&market=from_token&offset=0",
-    ];
-    for url in urls {
-        match client
-            .get(url)
-            .header("Authorization", format!("Bearer {bearer}"))
-            .header("User-Agent", WEB_API_USER_AGENT)
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                let status = resp.status();
-                let retry = resp
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "-".to_string());
-                let body = resp.text().await.unwrap_or_default();
-                let snippet: String = body.chars().take(160).collect();
-                log::info!(
-                    "Web API probe [{label}] {status} retry-after={retry} {url} body={snippet}"
-                );
-            }
-            Err(e) => log::warn!("Web API probe [{label}] {url} failed: {e}"),
-        }
-    }
 }
 
 /// Spotify's well-known desktop / "keymaster" client ID. Using one client ID for

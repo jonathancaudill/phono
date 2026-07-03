@@ -1,30 +1,30 @@
 package com.lightphone.spotify.ui.screens
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ui.AppViewModel
-import com.lightphone.spotify.ui.components.EchoContentContainer
-import com.lightphone.spotify.ui.components.EchoDetailCover
-import com.lightphone.spotify.ui.components.EchoMediaListItem
-import com.lightphone.spotify.ui.components.EchoTrackListItem
-import com.lightphone.spotify.ui.theme.EchoColors
+import com.lightphone.spotify.ui.components.CustomScrollView
+import com.lightphone.spotify.ui.components.PhonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoMediaListItem
+import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
+import com.lightphone.spotify.ui.components.PhonoTrackListItem
+import com.lightphone.spotify.ui.components.StyledText
+import com.lightphone.spotify.ui.theme.PhonoColors
+import com.lightphone.spotify.ui.theme.n
 
 @Composable
 fun ArtistDetailScreen(
@@ -38,81 +38,91 @@ fun ArtistDetailScreen(
 
     LaunchedEffect(artistId) { vm.loadArtistDetail(artistId) }
 
-    val artist = state.artist
+    val artist = state.artist?.takeIf { it.id == artistId }
 
-    EchoContentContainer(
+    PhonoContentContainer(
         title = artist?.name ?: "Artist",
         hideBackButton = false,
         onBack = onBack,
         rightIconVisible = false,
+        horizontalPadding = n(20),
         modifier = Modifier.fillMaxSize(),
     ) {
-        when {
-            state.loading -> Box(Modifier.fillMaxSize())
-            state.error != null && artist == null -> {
-                Text(state.error!!, color = EchoColors.Error)
-            }
-            else -> {
-                LazyColumn(Modifier.fillMaxSize()) {
-                    item {
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 20.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            EchoDetailCover(
-                                imageUrl = artist?.images?.firstOrNull()?.url,
-                                modifier = Modifier.size(200.dp),
-                                placeholderIcon = Icons.Default.Person,
-                            )
-                        }
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(bottom = n(20)),
+        ) {
+            when {
+                state.error != null && artist == null -> EmptyListMessage(state.error!!)
+                else -> CustomScrollView {
+                    item("meta") {
                         val followers = artist?.followers?.total
                         if (followers != null && followers > 0) {
-                            Text(
+                            StyledText(
                                 "${followers / 1000}K followers",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = EchoColors.Placeholder,
-                                modifier = Modifier.padding(bottom = 16.dp),
+                                size = 16,
+                                color = PhonoColors.Placeholder,
+                                modifier = Modifier.padding(bottom = n(16)),
                             )
                         }
                     }
                     if (state.topTracks.isNotEmpty()) {
-                        item {
-                            Text(
+                        item("popular-header") {
+                            StyledText(
                                 "Popular",
-                                style = MaterialTheme.typography.titleLarge,
-                                color = EchoColors.Foreground,
-                                modifier = Modifier.padding(bottom = 8.dp),
+                                size = 20,
+                                color = PhonoColors.Foreground,
+                                modifier = Modifier.padding(bottom = n(8)),
                             )
                         }
                         itemsIndexed(state.topTracks, key = { _, t -> t.id }) { index, track ->
-                            EchoTrackListItem(
-                                trackNumber = index + 1,
-                                name = track.name,
-                                artists = track.artists.joinToString { it.name },
-                                durationMs = track.durationMs,
-                                onClick = { onPlayTopTrack(index) },
-                            )
+                            Column {
+                                PhonoSwipeToActionRow(
+                                    onSwipeAction = { vm.addTrackToQueue(track.toMetadata()) },
+                                ) {
+                                    PhonoTrackListItem(
+                                        trackNumber = index + 1,
+                                        name = track.name,
+                                        artists = track.artists.joinToString { it.name },
+                                        durationMs = track.durationMs,
+                                        onClick = { onPlayTopTrack(index) },
+                                        onLongClick = {
+                                            vm.showTrackContextMenu(track.uri, track.id)
+                                        },
+                                    )
+                                }
+                                Spacer(Modifier.height(n(8)))
+                            }
                         }
                     }
                     if (state.albums.isNotEmpty()) {
-                        item {
-                            Text(
+                        item("albums-header") {
+                            StyledText(
                                 "Albums",
-                                style = MaterialTheme.typography.titleLarge,
-                                color = EchoColors.Foreground,
-                                modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
+                                size = 20,
+                                color = PhonoColors.Foreground,
+                                modifier = Modifier.padding(top = n(16), bottom = n(8)),
                             )
                         }
                         itemsIndexed(state.albums, key = { _, a -> a.id }) { _, album ->
-                            EchoMediaListItem(
-                                primaryText = album.name,
-                                secondaryText = album.artists.joinToString { it.name },
-                                imageUrl = album.images.firstOrNull()?.url,
-                                placeholderIcon = Icons.Default.Album,
-                                onClick = { onOpenAlbum(album.id, album.name) },
-                            )
+                            Column {
+                                PhonoMediaListItem(
+                                    primaryText = album.name,
+                                    secondaryText = album.artists.joinToString { it.name },
+                                    showImage = false,
+                                    placeholderIcon = Icons.Default.Album,
+                                    onClick = { onOpenAlbum(album.id, album.name) },
+                                    onLongClick = {
+                                        vm.showAlbumContextMenu(
+                                            album.id,
+                                            album.uri.ifBlank { "spotify:album:${album.id}" },
+                                        )
+                                    },
+                                )
+                                Spacer(Modifier.height(n(8)))
+                            }
                         }
                     }
                 }

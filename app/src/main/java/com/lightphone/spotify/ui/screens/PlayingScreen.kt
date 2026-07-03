@@ -1,141 +1,182 @@
 package com.lightphone.spotify.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
+import com.lightphone.spotify.ffi.RepeatMode
 import com.lightphone.spotify.playback.PlaybackUiState
 import com.lightphone.spotify.ui.AppViewModel
-import com.lightphone.spotify.ui.components.EchoContentContainer
-import com.lightphone.spotify.ui.components.EchoDetailCover
+import com.lightphone.spotify.ui.components.PhonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoFallbackImage
+import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.formatTime
-import com.lightphone.spotify.ui.theme.EchoColors
+import com.lightphone.spotify.ui.components.tap
+import com.lightphone.spotify.ui.theme.PhonoColors
+import com.lightphone.spotify.ui.theme.n
 
 @Composable
 fun PlayingScreen(
     vm: AppViewModel,
     onBack: () -> Unit,
     onOpenAlbum: (String) -> Unit,
+    onOpenQueue: () -> Unit,
+    onAddToPlaylist: ((String) -> Unit)? = null,
 ) {
     val playback by vm.playback.collectAsState()
     val extras by vm.playingExtras.collectAsState()
 
     LaunchedEffect(playback.currentUri) {
-        vm.refreshPlayingSaveState()
+        vm.refreshPlayingScreen()
     }
 
     val hasTrack = playback.currentUri != null || playback.title != null
 
-    EchoContentContainer(
+    PhonoContentContainer(
         title = " ",
         hideBackButton = false,
         onBack = onBack,
-        rightIconVisible = false,
+        rightIcon = Icons.AutoMirrored.Filled.QueueMusic,
+        onRightIconClick = onOpenQueue,
+        rightIconVisible = hasTrack,
+        horizontalPadding = n(20),
+        topPadding = n(0),
         modifier = Modifier.fillMaxSize(),
     ) {
         Column(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
             Column(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (hasTrack) {
-                    EchoDetailCover(
-                        imageUrl = playback.artUrl,
+                PhonoFallbackImage(
+                    imageUrl = playback.artUrl,
+                    placeholderIcon = Icons.Default.MusicNote,
+                    crossfade = false,
+                    modifier = Modifier
+                        .padding(bottom = n(20))
+                        .size(n(200)),
+                )
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .fillMaxWidth(0.9f)
+                        .padding(bottom = n(20)),
+                ) {
+                    StyledText(
+                        if (hasTrack) playback.title.orEmpty() else "No song playing",
+                        size = 22,
+                        lineHeight = 24,
+                        color = PhonoColors.Foreground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
                         modifier = Modifier
-                            .size(200.dp)
-                            .padding(bottom = 20.dp),
+                            .fillMaxWidth()
+                            .then(
+                                if (playback.albumId != null) {
+                                    Modifier.tap { playback.albumId?.let(onOpenAlbum) }
+                                } else {
+                                    Modifier
+                                }
+                            ),
                     )
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier
-                            .fillMaxWidth(0.9f)
-                            .padding(bottom = 20.dp),
-                    ) {
-                        Text(
-                            playback.title ?: "",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = EchoColors.Foreground,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.clickable {
-                                // album navigation would need album id in playback state
-                            },
-                        )
-                        Text(
-                            playback.artist ?: "",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = EchoColors.Placeholder,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                } else {
-                    Box(
-                        Modifier
-                            .size(200.dp)
-                            .background(EchoColors.PlaceholderBg)
-                            .padding(bottom = 20.dp),
+                    StyledText(
+                        if (hasTrack) playback.artist.orEmpty() else "Go back and play something!",
+                        size = 14,
+                        lineHeight = 16,
+                        color = PhonoColors.Foreground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
                     )
-                    Text("No song playing", style = MaterialTheme.typography.titleMedium, color = EchoColors.Foreground)
-                    Text("Go back and play something!", style = MaterialTheme.typography.bodyMedium, color = EchoColors.Placeholder)
                 }
 
-                if (hasTrack) {
-                    ProgressBar(playback, onSeek = { vm.seek(it) })
-                    PlaybackControls(playback, vm)
-                }
+                ProgressBar(playback, onSeek = { vm.seek(it) })
+                PlaybackControls(playback, vm)
             }
 
-            if (hasTrack) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth(0.92f)
-                        .padding(bottom = 20.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    IconButton(onClick = { vm.toggleCurrentTrackSave() }, enabled = !extras.savePending) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.92f)
+                    .height(n(50))
+                    .padding(bottom = n(20)),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (hasTrack) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (onAddToPlaylist != null && playback.currentUri != null) {
+                            Icon(
+                                Icons.Default.PlaylistAdd,
+                                contentDescription = "Add to playlist",
+                                tint = PhonoColors.Foreground,
+                                modifier = Modifier
+                                    .size(n(30))
+                                    .tap { onAddToPlaylist(playback.currentUri!!) },
+                            )
+                        }
                         Icon(
                             if (extras.isTrackSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             contentDescription = "Like",
-                            tint = EchoColors.Foreground,
-                            modifier = Modifier.size(30.dp),
+                            tint = PhonoColors.Foreground,
+                            modifier = Modifier
+                                .size(n(30))
+                                .tap(enabled = !extras.savePending) { vm.toggleCurrentTrackSave() },
                         )
                     }
-                    Box(Modifier.size(30.dp))
-                    Box(Modifier.size(30.dp))
-                    Box(Modifier.size(30.dp))
                 }
             }
         }
@@ -144,39 +185,67 @@ fun PlayingScreen(
 
 @Composable
 private fun ProgressBar(playback: PlaybackUiState, onSeek: (Long) -> Unit) {
-    val duration = playback.durationMs.coerceAtLeast(1)
-    val progress = (playback.positionMs.toFloat() / duration).coerceIn(0f, 1f)
+    var lastDurationMs by remember(playback.currentUri) { mutableLongStateOf(0L) }
+    if (playback.durationMs > 0L) {
+        lastDurationMs = playback.durationMs
+    }
+    val duration = (if (playback.durationMs > 0L) playback.durationMs else lastDurationMs).coerceAtLeast(1)
 
-    Column(Modifier.fillMaxWidth(0.9f)) {
-        Box(
+    var scrubPositionMs by remember(playback.currentUri) { mutableLongStateOf(-1L) }
+    val displayPositionMs = if (scrubPositionMs >= 0L) scrubPositionMs else playback.positionMs
+    val displayProgress = (displayPositionMs.toFloat() / duration).coerceIn(0f, 1f)
+
+    Column(
+        Modifier
+            .fillMaxWidth(0.9f)
+            .defaultMinSize(minHeight = n(40))
+            .pointerInput(duration) {
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    down.consume()
+                    fun seekAt(x: Float) {
+                        val fraction = (x / size.width).coerceIn(0f, 1f)
+                        scrubPositionMs = (duration * fraction).toLong()
+                    }
+                    seekAt(down.position.x)
+                    drag(down.id) { change ->
+                        change.consume()
+                        seekAt(change.position.x)
+                    }
+                    onSeek(scrubPositionMs.coerceAtLeast(0L))
+                    scrubPositionMs = -1L
+                }
+            },
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        BoxWithConstraints(
             Modifier
                 .fillMaxWidth()
-                .height(6.dp)
-                .clickable {
-                    onSeek((duration * 0.5f).toLong())
-                },
+                .height(n(6)),
         ) {
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(2.dp)
+                    .height(n(2))
                     .align(Alignment.Center)
-                    .background(EchoColors.Foreground.copy(alpha = 0.3f)),
+                    .background(PhonoColors.Foreground),
             )
             Box(
                 Modifier
-                    .fillMaxWidth(progress)
-                    .height(6.dp)
+                    .fillMaxWidth(displayProgress)
+                    .fillMaxHeight()
                     .align(Alignment.CenterStart)
-                    .background(EchoColors.Foreground),
+                    .background(PhonoColors.Foreground),
             )
         }
         Row(
-            Modifier.fillMaxWidth(),
+            Modifier
+                .fillMaxWidth()
+                .padding(top = n(3), bottom = n(6)),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text(formatTime(playback.positionMs), style = MaterialTheme.typography.labelSmall, color = EchoColors.Foreground)
-            Text(formatTime(duration), style = MaterialTheme.typography.labelSmall, color = EchoColors.Foreground)
+            StyledText(formatTime(displayPositionMs), size = 12, color = PhonoColors.Foreground)
+            StyledText(formatTime(duration), size = 12, color = PhonoColors.Foreground)
         }
     }
 }
@@ -186,25 +255,72 @@ private fun PlaybackControls(playback: PlaybackUiState, vm: AppViewModel) {
     Row(
         modifier = Modifier
             .fillMaxWidth(0.92f)
-            .padding(bottom = 20.dp),
+            .padding(bottom = n(20)),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(Icons.Default.Shuffle, contentDescription = null, tint = EchoColors.Foreground.copy(alpha = 0.5f), modifier = Modifier.size(30.dp))
-        IconButton(onClick = { vm.previous() }) {
-            Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", tint = EchoColors.Foreground, modifier = Modifier.size(52.dp))
-        }
-        IconButton(onClick = { if (playback.isPlaying) vm.pause() else vm.resume() }) {
-            Icon(
-                if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                contentDescription = "Play/Pause",
-                tint = EchoColors.Foreground,
-                modifier = Modifier.size(52.dp),
+        PlaybackModeIcon(
+            icon = Icons.Default.Shuffle,
+            active = playback.shuffleEnabled,
+            contentDescription = "Shuffle",
+            onClick = vm::toggleShuffle,
+        )
+        Icon(
+            Icons.Default.SkipPrevious,
+            contentDescription = "Previous",
+            tint = PhonoColors.Foreground,
+            modifier = Modifier.size(n(52)).tap { vm.previous() },
+        )
+        Icon(
+            if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+            contentDescription = "Play/Pause",
+            tint = PhonoColors.Foreground,
+            modifier = Modifier.size(n(52)).tap { if (playback.isPlaying) vm.pause() else vm.resume() },
+        )
+        Icon(
+            Icons.Default.SkipNext,
+            contentDescription = "Next",
+            tint = PhonoColors.Foreground,
+            modifier = Modifier.size(n(52)).tap { vm.next() },
+        )
+        PlaybackModeIcon(
+            icon = when (playback.repeatMode) {
+                RepeatMode.TRACK -> Icons.Default.RepeatOne
+                else -> Icons.Default.Repeat
+            },
+            active = playback.repeatMode != RepeatMode.OFF,
+            contentDescription = "Repeat",
+            onClick = vm::toggleRepeat,
+        )
+    }
+}
+
+@Composable
+private fun PlaybackModeIcon(
+    icon: ImageVector,
+    active: Boolean,
+    contentDescription: String,
+    onClick: () -> Unit,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.tap(onClick = onClick),
+    ) {
+        Icon(
+            icon,
+            contentDescription = contentDescription,
+            tint = PhonoColors.Foreground,
+            modifier = Modifier.size(n(30)),
+        )
+        Spacer(Modifier.height(n(4)))
+        if (active) {
+            Box(
+                Modifier
+                    .size(n(5))
+                    .background(PhonoColors.Foreground, CircleShape),
             )
+        } else {
+            Spacer(Modifier.height(n(5)))
         }
-        IconButton(onClick = { vm.next() }) {
-            Icon(Icons.Default.SkipNext, contentDescription = "Next", tint = EchoColors.Foreground, modifier = Modifier.size(52.dp))
-        }
-        Icon(Icons.Default.Repeat, contentDescription = null, tint = EchoColors.Foreground.copy(alpha = 0.5f), modifier = Modifier.size(30.dp))
     }
 }

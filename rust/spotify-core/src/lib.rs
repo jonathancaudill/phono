@@ -5,7 +5,8 @@
 //! and its sibling modules - never the Kotlin side.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use librespot::core::authentication::Credentials;
@@ -13,21 +14,34 @@ use librespot::core::cache::Cache;
 use librespot::core::config::SessionConfig;
 use librespot::core::spotify_id::SpotifyId;
 use librespot::core::{Session, SpotifyUri};
-use librespot::playback::config::AudioFormat;
+use librespot::metadata::audio::{AudioFileFormat, AudioItem};
+use librespot::audio::{AudioFile, Range};
+use librespot::playback::config::{AudioFormat, Bitrate};
 use librespot::playback::mixer::softmixer::SoftMixer;
 use librespot::playback::mixer::{Mixer, MixerConfig};
-use librespot::playback::player::{Player, PlayerEvent};
+use librespot::playback::player::{Player, PlayerEvent, SinkStatus};
 use librespot::playback::audio_backend;
 use tokio::runtime::Runtime;
 
 mod auth;
 mod library;
+mod queue;
 mod settings;
+mod pcm_ring;
 #[cfg(target_os = "android")]
 mod android_ctx;
+#[cfg(all(target_os = "android", feature = "audiotrack-sink"))]
+mod audio_drain;
+#[cfg(all(target_os = "android", feature = "audiotrack-sink"))]
+mod audio_sink_jni;
+#[cfg(all(target_os = "android", not(feature = "audiotrack-sink")))]
+mod audio_sink_stub;
+#[cfg(all(target_os = "android", feature = "audiotrack-sink"))]
+mod android_audiotrack_sink;
 
-pub use library::{AlbumDetailInfo, ArtistDetailInfo, EntityInfo, SavedAlbumInfo};
-pub use settings::{NormalizationType, StreamingQuality};
+pub use library::EntityInfo;
+pub use queue::{QueueSnapshot, RepeatMode};
+pub use settings::{NetworkBufferPreset, NormalizationType, StreamingQuality};
 
 uniffi::setup_scaffolding!();
 
@@ -86,16 +100,14 @@ pub trait PlayerEventListener: Send + Sync {
     fn on_connection_lost(&self);
     fn on_connection_restored(&self);
     fn on_error(&self, message: String);
+    fn on_queue_changed(&self);
+    /// Emitted when decode stalls (buffer underrun) or resumes.
+    fn on_buffering(&self, stalled: bool);
 }
 
 type SharedListener = Arc<Mutex<Option<Box<dyn PlayerEventListener>>>>;
 
-#[derive(Default)]
-struct QueueState {
-    uris: Vec<SpotifyUri>,
-    index: usize,
-    position_ms: u32,
-}
+use queue::QueueState;
 
 /// A live, connected session and everything bound to its lifetime. A new
 /// `Active` is built on every (re)connect because librespot sessions cannot be
@@ -164,13 +176,46 @@ struct EngineShared {
     cache: Cache,
     cred_dir: PathBuf,
     audio_dir: PathBuf,
+    tmp_dir: PathBuf,
     settings: settings::SettingsStore,
     listener: SharedListener,
     pkce_verifier: Mutex<Option<String>>,
     active: Mutex<Option<Active>>,
     oauth: Mutex<Option<OAuthState>>,
     refresh_mutex: Mutex<()>,
-    library_cache: library::LibraryCache,
+    /// Whether the user intends playback to be running. Tracked across session
+    /// rebuilds so an idle-timeout reconnect restores the queue *paused* instead
+    /// of auto-starting music the user had paused. Survives `Active` swaps because
+    /// it lives on the long-lived `EngineShared`.
+    playing: Arc<AtomicBool>,
+    /// Latest playhead from player events; belt-and-suspenders for reconnect rebuilds.
+    last_known_position_ms: Arc<AtomicU32>,
+    /// Queue held while `active` is dropped during reconnect so UI reads stay populated.
+    pending_queue: Mutex<Option<QueueState>>,
+    rebuild_mutex: Mutex<()>,
+    last_force_reconnect: Mutex<Option<Instant>>,
+    prefetch_generation: AtomicU32,
+    metrics_transport_reconnect: AtomicU32,
+    metrics_full_rebuild: AtomicU32,
+    metrics_stall_events: AtomicU32,
+    metrics_sink_recreate: AtomicU32,
+    metrics_audiotrack_write_errors: AtomicU32,
+}
+
+/// Debug counters for playback stability field testing (logcat / settings).
+#[derive(uniffi::Record, Clone, Debug, Default)]
+pub struct PlaybackDebugMetrics {
+    pub transport_reconnect: u32,
+    pub full_rebuild: u32,
+    pub stall_events: u32,
+    pub sink_recreate: u32,
+    pub audiotrack_write_errors: u32,
+    pub audiotrack_routing_events: u32,
+    pub sink_backend: String,
+    pub ring_occupancy_ms: u32,
+    pub pending_output_ms: u32,
+    pub producer_block_ms: u32,
+    pub drain_partial_writes: u32,
 }
 
 /// The UniFFI object handed to Kotlin.
@@ -216,79 +261,38 @@ impl LibrespotEngine {
         self.shared.is_logged_in()
     }
 
-    /// OAuth access token for api.spotify.com metadata and spclient fallback.
+    /// OAuth access token (PKCE bootstrap / spclient fallback when Login5 is unavailable).
     pub fn access_token(&self) -> Result<String, SpotifyError> {
         self.shared.access_token()
     }
 
-    /// Web API token: Login5 stored-credential refresh first (psst path), OAuth fallback.
-    pub fn web_api_access_token(&self) -> Result<String, SpotifyError> {
-        self.shared.web_api_access_token()
+    /// Resolve a context/playlist URI to tracks via spclient context-resolve.
+    pub fn context_tracks(&self, context_uri: String, limit: u32) -> Result<Vec<TrackInfo>, SpotifyError> {
+        let session = self.shared.session_or_err()?;
+        self.shared.context_tracks(&session, &context_uri, limit)
     }
 
-    /// Search the catalog via spclient `context-resolve` (`spotify:search:…`), as
-    /// documented in librespot-core's `SpClient::get_context`.
-    pub fn search_tracks(&self, query: String, limit: u32) -> Result<Vec<TrackInfo>, SpotifyError> {
-        self.shared.search_tracks(&query, limit)
+    /// Discover Daily Mix / Made-For-You playlists via native context-resolve.
+    pub fn daily_mixes(&self) -> Result<Vec<EntityInfo>, SpotifyError> {
+        self.shared.daily_mixes()
     }
 
-    /// Liked songs via spclient `context-resolve` (`spotify:user:<id>:collection`).
-    pub fn liked_tracks(&self, limit: u32) -> Result<Vec<TrackInfo>, SpotifyError> {
-        self.shared.liked_tracks(limit)
-    }
-
-    /// Saved albums via spclient Your Library (protobuf).
-    pub fn saved_albums(&self, limit: u32) -> Result<Vec<SavedAlbumInfo>, SpotifyError> {
-        self.shared.saved_albums(limit)
-    }
-
-    /// Album metadata + track list via context-resolve and extended-metadata.
-    pub fn album_detail(&self, album_id: String) -> Result<AlbumDetailInfo, SpotifyError> {
-        self.shared.album_detail(&album_id)
-    }
-
-    pub fn is_album_saved(&self, album_id: String) -> Result<bool, SpotifyError> {
-        self.shared.is_album_saved(&album_id)
-    }
-
-    pub fn save_album(&self, album_id: String) -> Result<(), SpotifyError> {
-        self.shared.save_album(&album_id)
-    }
-
-    pub fn remove_album(&self, album_id: String) -> Result<(), SpotifyError> {
-        self.shared.remove_album(&album_id)
-    }
-
-    /// Artist profile, top tracks, and albums via context-resolve + metadata.
-    pub fn artist_detail(&self, artist_id: String) -> Result<ArtistDetailInfo, SpotifyError> {
-        self.shared.artist_detail(&artist_id)
-    }
-
-    /// Catalog search (tracks, albums, artists, playlists) via context-resolve.
-    pub fn search_catalog(&self, query: String, limit: u32) -> Result<Vec<EntityInfo>, SpotifyError> {
-        self.shared.search_catalog(&query, limit)
-    }
-
-    pub fn is_track_saved(&self, uri: String) -> Result<bool, SpotifyError> {
-        self.shared.is_track_saved(&uri)
-    }
-
-    pub fn save_track(&self, uri: String) -> Result<(), SpotifyError> {
-        self.shared.save_track(&uri)
-    }
-
-    pub fn remove_track(&self, uri: String) -> Result<(), SpotifyError> {
-        self.shared.remove_track(&uri)
-    }
-
-    /// Replace the queue with `uris` and start playing at `start_index`.
-    pub fn play_uris(&self, uris: Vec<String>, start_index: u32) -> Result<(), SpotifyError> {
-        self.shared.play_uris(uris, start_index)
+    /// Replace the playback context with `uris` and start playing at `start_index`.
+    /// `context_label` is shown in the queue UI (e.g. album name). Clears manual queue.
+    pub fn play_uris(
+        &self,
+        uris: Vec<String>,
+        start_index: u32,
+        context_label: Option<String>,
+    ) -> Result<(), SpotifyError> {
+        EngineShared::ensure_playback_ready(&self.shared)?;
+        self.shared.play_uris(uris, start_index, context_label)
     }
 
     /// Convenience: play a single URI.
     pub fn play_uri(&self, uri: String) -> Result<(), SpotifyError> {
-        self.shared.play_uris(vec![uri], 0)
+        EngineShared::ensure_playback_ready(&self.shared)?;
+        self.shared.play_uris(vec![uri], 0, None)
     }
 
     pub fn pause(&self) {
@@ -296,19 +300,71 @@ impl LibrespotEngine {
     }
 
     pub fn resume(&self) {
+        let _ = EngineShared::ensure_playback_ready(&self.shared);
         self.shared.transport_resume();
     }
 
     pub fn next(&self) {
+        let _ = EngineShared::ensure_playback_ready(&self.shared);
         self.shared.transport_next();
     }
 
     pub fn previous(&self) {
+        let _ = EngineShared::ensure_playback_ready(&self.shared);
         self.shared.transport_previous();
     }
 
     pub fn seek(&self, position_ms: u32) {
+        let _ = EngineShared::ensure_playback_ready(&self.shared);
         self.shared.transport_seek(position_ms);
+    }
+
+    pub fn get_shuffle(&self) -> bool {
+        self.shared.queue_shuffle()
+    }
+
+    pub fn toggle_shuffle(&self) -> bool {
+        self.shared.toggle_shuffle()
+    }
+
+    pub fn get_repeat_mode(&self) -> RepeatMode {
+        self.shared.queue_repeat_mode()
+    }
+
+    pub fn toggle_repeat(&self) -> RepeatMode {
+        self.shared.toggle_repeat()
+    }
+
+    /// Current queue from now-playing through the end, in playback order.
+    pub fn get_queue(&self) -> QueueSnapshot {
+        self.shared.get_queue()
+    }
+
+    /// Append a track to the end of the queue without interrupting playback.
+    pub fn add_to_queue(&self, uri: String) -> Result<(), SpotifyError> {
+        self.shared.add_to_queue(uri)
+    }
+
+    /// Move a manual-queue item earlier. `index` is into [QueueSnapshot::next_in_queue].
+    pub fn move_queue_item_up(&self, index: u32) -> Result<(), SpotifyError> {
+        self.shared.move_manual_queue_item(index, true)
+    }
+
+    pub fn move_queue_item_down(&self, index: u32) -> Result<(), SpotifyError> {
+        self.shared.move_manual_queue_item(index, false)
+    }
+
+    pub fn move_context_item_up(&self, index: u32) -> Result<(), SpotifyError> {
+        self.shared.move_context_queue_item(index, true)
+    }
+
+    pub fn move_context_item_down(&self, index: u32) -> Result<(), SpotifyError> {
+        self.shared.move_context_queue_item(index, false)
+    }
+
+    /// Remove all manually queued tracks (does not affect playback context).
+    pub fn clear_manual_queue(&self) {
+        self.shared.clear_manual_queue()
     }
 
     /// Volume as a percentage 0..=100.
@@ -376,6 +432,17 @@ impl LibrespotEngine {
         self.rebuild_player_if_active();
     }
 
+    /// Network buffer preset (read-ahead tuning). Persists only; takes effect on next app launch.
+    pub fn get_network_buffer_preset(&self) -> NetworkBufferPreset {
+        self.shared.settings.get().network_buffer_preset
+    }
+
+    pub fn set_network_buffer_preset(&self, preset: NetworkBufferPreset) {
+        self.shared
+            .settings
+            .update(|s| s.network_buffer_preset = preset);
+    }
+
     /// Delete downloaded audio cache files (credentials are untouched).
     pub fn clear_audio_cache(&self) {
         self.shared.clear_audio_cache();
@@ -386,21 +453,62 @@ impl LibrespotEngine {
         self.shared.logout();
     }
 
+    /// Proactively invalidate the session after a network change so reconnect
+    /// starts on the new transport instead of waiting for keepalive timeout.
+    pub fn force_reconnect_check(&self) {
+        self.shared.force_reconnect_check();
+    }
+
+    /// True when a live session exists and has not been invalidated.
+    pub fn is_session_connected(&self) -> bool {
+        self.shared.is_session_connected()
+    }
+
+    /// Recreate the native audio output sink (e.g. after Bluetooth route change).
+    pub fn recreate_audio_sink(&self) {
+        self.shared.recreate_audio_sink();
+    }
+
+    /// Counters for reconnect/rebuild/stall diagnostics.
+    pub fn playback_debug_metrics(&self) -> PlaybackDebugMetrics {
+        self.shared.playback_debug_metrics()
+    }
+
+    /// Bank the currently playing track to its end (opportunistic full-track cache).
+    pub fn buffer_current_to_end(&self) {
+        self.shared.with_active(|a| a.player.buffer_current_to_end());
+    }
+
+    /// True when the active track is fully present in the local audio cache.
+    pub fn is_current_fully_buffered(&self) -> bool {
+        self.shared
+            .active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|a| a.player.is_current_fully_buffered())
+            .unwrap_or(false)
+    }
+
+    /// Prefetch up to `ahead` upcoming queue tracks into the shared audio cache.
+    pub fn prefetch_upcoming(&self, ahead: u32) {
+        self.shared.prefetch_upcoming(ahead);
+    }
+
+    /// Ensure session + player are ready for transport commands (rebuild if needed).
+    pub fn ensure_playback_ready(&self) -> Result<(), SpotifyError> {
+        EngineShared::ensure_playback_ready(&self.shared)
+    }
+
     /// Rebuild session + player so persisted settings take effect mid-session.
     fn rebuild_player_if_active(&self) {
         if self.shared.active.lock().unwrap().is_none() {
             return;
         }
-        let resume = self.shared.snapshot_resume();
         let this = self.shared.clone();
         let handle = this.runtime.handle().clone();
         handle.spawn(async move {
-            if let Some(active) = this.active.lock().unwrap().take() {
-                active.session.shutdown();
-            }
-            if let Some(creds) = this.cache.credentials() {
-                let _ = this.build_active(creds, resume).await;
-            }
+            this.rebuild_active_staged().await;
         });
     }
 }
@@ -413,8 +521,14 @@ impl EngineShared {
         let base = PathBuf::from(&cache_dir);
         let cred_dir = base.join("creds");
         let audio_dir = base.join("audio");
+        let tmp_dir = base.join("streaming-tmp");
         let _ = std::fs::create_dir_all(&cred_dir);
         let _ = std::fs::create_dir_all(&audio_dir);
+        let _ = std::fs::create_dir_all(&tmp_dir);
+
+        let settings = settings::SettingsStore::new(&base);
+        let buffer_preset = settings.get().network_buffer_preset;
+        settings::apply_audio_fetch_params(buffer_preset);
 
         let cache = Cache::new(
             Some(&cred_dir),
@@ -446,8 +560,9 @@ impl EngineShared {
         let mut session_config = SessionConfig::default();
         session_config.client_id = auth::CLIENT_ID.to_string();
         session_config.device_id = load_or_create_device_id(&base);
+        session_config.tmp_dir = tmp_dir.clone();
+        session_config.autoplay = Some(false);
 
-        let settings = settings::SettingsStore::new(&base);
         if let Some(ref proxy) = settings.get().proxy {
             if let Ok(url) = proxy.parse() {
                 session_config.proxy = Some(url);
@@ -460,14 +575,99 @@ impl EngineShared {
             cache,
             cred_dir,
             audio_dir,
+            tmp_dir,
             settings,
             listener: Arc::new(Mutex::new(None)),
             pkce_verifier: Mutex::new(None),
             active: Mutex::new(None),
             oauth: Mutex::new(None),
             refresh_mutex: Mutex::new(()),
-            library_cache: library::LibraryCache::new(),
+            playing: Arc::new(AtomicBool::new(false)),
+            last_known_position_ms: Arc::new(AtomicU32::new(0)),
+            pending_queue: Mutex::new(None),
+            rebuild_mutex: Mutex::new(()),
+            last_force_reconnect: Mutex::new(None),
+            prefetch_generation: AtomicU32::new(0),
+            metrics_transport_reconnect: AtomicU32::new(0),
+            metrics_full_rebuild: AtomicU32::new(0),
+            metrics_stall_events: AtomicU32::new(0),
+            metrics_sink_recreate: AtomicU32::new(0),
+            metrics_audiotrack_write_errors: AtomicU32::new(0),
         }))
+    }
+
+    fn is_session_connected(&self) -> bool {
+        self.active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|a| !a.session.is_invalid())
+            .unwrap_or(false)
+    }
+
+    fn recreate_audio_sink(&self) {
+        if let Some(active) = self.active.lock().unwrap().as_ref() {
+            active.player.recreate_audio_sink();
+            self.metrics_sink_recreate.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn playback_debug_metrics(&self) -> PlaybackDebugMetrics {
+        #[cfg(all(target_os = "android", feature = "audiotrack-sink"))]
+        let (routing, write_errs, ring_ms, pending_ms, prod_block, partial, backend) = (
+            audio_sink_jni::routing_event_count(),
+            audio_sink_jni::write_error_count(),
+            audio_sink_jni::ring_occupancy_ms(),
+            audio_sink_jni::pending_output_ms(),
+            audio_sink_jni::producer_block_ms(),
+            audio_sink_jni::drain_partial_writes(),
+            "audiotrack".to_string(),
+        );
+        #[cfg(not(all(target_os = "android", feature = "audiotrack-sink")))]
+        let (routing, write_errs, ring_ms, pending_ms, prod_block, partial, backend) =
+            (0, 0, 0, 0, 0, 0, "rodio".to_string());
+
+        PlaybackDebugMetrics {
+            transport_reconnect: self.metrics_transport_reconnect.load(Ordering::Relaxed),
+            full_rebuild: self.metrics_full_rebuild.load(Ordering::Relaxed),
+            stall_events: self.metrics_stall_events.load(Ordering::Relaxed),
+            sink_recreate: self.metrics_sink_recreate.load(Ordering::Relaxed),
+            audiotrack_write_errors: self
+                .metrics_audiotrack_write_errors
+                .load(Ordering::Relaxed)
+                .max(write_errs),
+            audiotrack_routing_events: routing,
+            sink_backend: backend,
+            ring_occupancy_ms: ring_ms,
+            pending_output_ms: pending_ms,
+            producer_block_ms: prod_block,
+            drain_partial_writes: partial,
+        }
+    }
+
+    fn snapshot_resume_with_position(&self) -> Option<QueueState> {
+        let mut snap = self.snapshot_resume()?;
+        let last = self.last_known_position_ms.load(Ordering::SeqCst);
+        if last > snap.position_ms() {
+            snap.set_position_ms(last);
+        }
+        Some(snap)
+    }
+
+    async fn rebuild_active_staged(self: Arc<Self>) {
+        let resume = self.snapshot_resume_with_position();
+        notify(&self.listener, |l| l.on_connection_lost());
+        *self.pending_queue.lock().unwrap() = resume.clone();
+        self.metrics_full_rebuild.fetch_add(1, Ordering::Relaxed);
+        if let Some(active) = self.active.lock().unwrap().take() {
+            active.session.shutdown();
+        }
+        if let Some(creds) = self.cache.credentials() {
+            match self.clone().build_active(creds, resume).await {
+                Ok(()) => notify(&self.listener, |l| l.on_connection_restored()),
+                Err(e) => log::warn!("staged rebuild failed: {e}"),
+            }
+        }
     }
 
     fn get_volume(&self) -> u8 {
@@ -495,10 +695,12 @@ impl EngineShared {
     }
 
     fn clear_audio_cache(&self) {
-        if self.audio_dir.is_dir() {
-            let _ = std::fs::remove_dir_all(&self.audio_dir);
+        for dir in [&self.audio_dir, &self.tmp_dir] {
+            if dir.is_dir() {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+            let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::create_dir_all(&self.audio_dir);
     }
 
     fn begin_login(&self) -> String {
@@ -675,12 +877,55 @@ impl EngineShared {
     }
 
     fn is_logged_in(&self) -> bool {
-        self.active
+        if self
+            .active
             .lock()
             .unwrap()
             .as_ref()
             .map(|a| !a.session.is_invalid())
             .unwrap_or(false)
+        {
+            return true;
+        }
+        self.cache.credentials().is_some()
+            && self.pending_queue.lock().unwrap().is_some()
+    }
+
+    fn ensure_playback_ready(shared: &Arc<Self>) -> Result<(), SpotifyError> {
+        if shared
+            .active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|a| !a.session.is_invalid())
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        let _guard = shared.rebuild_mutex.lock().unwrap();
+        if shared
+            .active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|a| !a.session.is_invalid())
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        let resume = shared
+            .pending_queue
+            .lock()
+            .unwrap()
+            .clone()
+            .or_else(|| shared.snapshot_resume_with_position());
+        let creds = shared
+            .cache
+            .credentials()
+            .ok_or(SpotifyError::NotLoggedIn)?;
+        let handle = shared.runtime.handle().clone();
+        handle.block_on(shared.clone().build_active(creds, resume))?;
+        Ok(())
     }
 
     /// A Spotify Web API access token. Returns the cached OAuth token while it is
@@ -755,20 +1000,6 @@ impl EngineShared {
         }
     }
 
-    fn search_tracks(&self, query: &str, limit: u32) -> Result<Vec<TrackInfo>, SpotifyError> {
-        let session = self.session_or_err()?;
-        let q = query.trim().replace(' ', "+");
-        let uri = format!("spotify:search:{q}");
-        self.context_tracks(&session, &uri, limit)
-    }
-
-    fn liked_tracks(&self, limit: u32) -> Result<Vec<TrackInfo>, SpotifyError> {
-        let session = self.session_or_err()?;
-        let username = session.username();
-        let uri = format!("spotify:user:{username}:collection");
-        self.context_tracks(&session, &uri, limit)
-    }
-
     pub(crate) fn session_or_err(&self) -> Result<Session, SpotifyError> {
         self.active
             .lock()
@@ -778,26 +1009,7 @@ impl EngineShared {
             .ok_or(SpotifyError::NotLoggedIn)
     }
 
-    /// Web API bearer: Login5 stored-credential refresh (psst), then OAuth PKCE fallback.
-    fn web_api_access_token(&self) -> Result<String, SpotifyError> {
-        let session = self.session_or_err()?;
-        let handle = self.runtime.handle().clone();
-        match handle.block_on(async move { session.login5().auth_token().await }) {
-            Ok(token) => {
-                log::info!(
-                    "web_api_access_token: Login5 bearer ({} chars)",
-                    token.access_token.len()
-                );
-                Ok(token.access_token)
-            }
-            Err(e) => {
-                log::warn!("Login5 web API token unavailable ({e}); using OAuth fallback");
-                self.access_token()
-            }
-        }
-    }
-
-    /// Diagnostic: log whether Login5 can mint a Web API token (psst path).
+    /// Diagnostic: log whether Login5 and client-token mint succeed after connect.
     fn probe_login5_token(&self) {
         let Ok(session) = self.session_or_err() else {
             return;
@@ -821,15 +1033,13 @@ impl EngineShared {
         match login5_result {
             Ok(token) => {
                 log::info!(
-                    "Login5 probe OK ({}s TTL, {} char bearer) — metadata uses Login5",
+                    "Login5 probe OK ({}s TTL, {} char bearer)",
                     token.expires_in.as_secs(),
                     token.access_token.len()
                 );
             }
             Err(e) => {
-                log::warn!(
-                    "Login5 probe failed ({e}) — metadata falls back to OAuth Bearer"
-                );
+                log::warn!("Login5 probe failed ({e}) — spclient may use OAuth fallback");
             }
         }
     }
@@ -858,7 +1068,12 @@ impl EngineShared {
             .map_err(|e| SpotifyError::Network { msg: e.to_string() })
     }
 
-    fn play_uris(&self, uris: Vec<String>, start_index: u32) -> Result<(), SpotifyError> {
+    fn play_uris(
+        &self,
+        uris: Vec<String>,
+        start_index: u32,
+        context_label: Option<String>,
+    ) -> Result<(), SpotifyError> {
         if uris.is_empty() {
             return Err(SpotifyError::InvalidUri {
                 uri: "empty queue".into(),
@@ -880,25 +1095,105 @@ impl EngineShared {
             let active = guard.as_ref().ok_or(SpotifyError::NotLoggedIn)?;
             {
                 let mut q = active.queue.lock().unwrap();
-                q.uris = parsed;
-                q.index = start_index as usize;
-                q.position_ms = 0;
+                q.set_queue(parsed, start_index as usize, context_label);
             }
             let uri = active
                 .queue
                 .lock()
                 .unwrap()
-                .uris
-                .get(start_index as usize)
-                .cloned()
+                .current_uri()
                 .ok_or(SpotifyError::InvalidUri {
                     uri: format!("index {start_index} out of range"),
                 })?;
             (active.player.clone(), uri)
         };
 
+        self.playing.store(true, Ordering::SeqCst);
         player.load(uri, true, 0);
+        self.notify_queue_changed();
         Ok(())
+    }
+
+    fn get_queue(&self) -> QueueSnapshot {
+        self.with_active_queue(|q| q.queue_snapshot())
+    }
+
+    fn add_to_queue(&self, uri: String) -> Result<(), SpotifyError> {
+        if !self.is_logged_in() {
+            return Err(SpotifyError::NotLoggedIn);
+        }
+        let parsed = parse_uri(&uri)?;
+        self.with_active_queue_mut(|q| {
+            q.add_to_queue(parsed);
+        });
+        self.refresh_next_preload();
+        self.notify_queue_changed();
+        Ok(())
+    }
+
+    fn move_manual_queue_item(&self, index: u32, up: bool) -> Result<(), SpotifyError> {
+        if !self.is_logged_in() {
+            return Err(SpotifyError::NotLoggedIn);
+        }
+        let mut success = false;
+        self.with_active_queue_mut(|q| {
+            success = if up {
+                q.move_manual_up(index as usize).is_ok()
+            } else {
+                q.move_manual_down(index as usize).is_ok()
+            };
+        });
+        if !success {
+            return Err(SpotifyError::InvalidUri {
+                uri: format!("queue index {index} out of range"),
+            });
+        }
+        self.notify_queue_changed();
+        self.refresh_next_preload();
+        Ok(())
+    }
+
+    fn move_context_queue_item(&self, index: u32, up: bool) -> Result<(), SpotifyError> {
+        if !self.is_logged_in() {
+            return Err(SpotifyError::NotLoggedIn);
+        }
+        let mut success = false;
+        self.with_active_queue_mut(|q| {
+            success = if up {
+                q.move_context_up(index as usize).is_ok()
+            } else {
+                q.move_context_down(index as usize).is_ok()
+            };
+        });
+        if !success {
+            return Err(SpotifyError::InvalidUri {
+                uri: format!("context index {index} out of range"),
+            });
+        }
+        self.notify_queue_changed();
+        self.refresh_next_preload();
+        Ok(())
+    }
+
+    fn clear_manual_queue(&self) {
+        self.with_active_queue_mut(|q| q.clear_manual_queue());
+        self.notify_queue_changed();
+        self.refresh_next_preload();
+    }
+
+    /// Re-preload the current up-next track after queue order changes mid-song.
+    /// librespot discards a stale preload when the URI differs, so this is safe
+    /// to call on every mutation.
+    fn refresh_next_preload(&self) {
+        self.with_active(|a| {
+            if let Some(uri) = a.queue.lock().unwrap().next_preload_uri() {
+                a.player.preload(uri);
+            }
+        });
+    }
+
+    fn notify_queue_changed(&self) {
+        notify(&self.listener, |l| l.on_queue_changed());
     }
 
     fn with_active<F: FnOnce(&Active)>(&self, f: F) {
@@ -908,29 +1203,31 @@ impl EngineShared {
     }
 
     fn transport_pause(&self) {
+        self.playing.store(false, Ordering::SeqCst);
         self.with_active(|a| a.player.pause());
     }
 
     fn transport_resume(&self) {
+        self.playing.store(true, Ordering::SeqCst);
         self.with_active(|a| a.player.play());
     }
 
     fn transport_next(&self) {
-        self.skip(1);
+        self.skip(1, true);
     }
 
     fn transport_previous(&self) {
-        self.skip(-1);
+        self.skip(-1, true);
     }
 
     fn transport_seek(&self, position_ms: u32) {
         self.with_active(|a| {
             a.player.seek(position_ms);
-            a.queue.lock().unwrap().position_ms = position_ms;
+            a.queue.lock().unwrap().set_position_ms(position_ms);
         });
     }
 
-    fn skip(&self, delta: i64) {
+    fn skip(&self, delta: i64, user_initiated: bool) {
         let resolved = {
             let guard = self.active.lock().unwrap();
             let active = match guard.as_ref() {
@@ -939,19 +1236,59 @@ impl EngineShared {
             };
             let next = {
                 let mut q = active.queue.lock().unwrap();
-                let new_index = q.index as i64 + delta;
-                if new_index < 0 || new_index as usize >= q.uris.len() {
-                    None
+                if delta > 0 {
+                    q.skip_next(user_initiated)
                 } else {
-                    q.index = new_index as usize;
-                    q.position_ms = 0;
-                    q.uris.get(q.index).cloned()
+                    q.skip_prev(user_initiated)
                 }
             };
             next.map(|uri| (active.player.clone(), uri))
         };
         if let Some((player, uri)) = resolved {
             player.load(uri, true, 0);
+            self.notify_queue_changed();
+            self.refresh_next_preload();
+        }
+    }
+
+    fn queue_shuffle(&self) -> bool {
+        self.with_active_queue(|q| q.shuffle())
+    }
+
+    fn toggle_shuffle(&self) -> bool {
+        let mut out = false;
+        self.with_active_queue_mut(|q| out = q.toggle_shuffle());
+        self.notify_queue_changed();
+        self.refresh_next_preload();
+        out
+    }
+
+    fn queue_repeat_mode(&self) -> RepeatMode {
+        self.with_active_queue(|q| q.repeat_mode())
+    }
+
+    fn toggle_repeat(&self) -> RepeatMode {
+        let mut out = RepeatMode::Off;
+        self.with_active_queue_mut(|q| out = q.toggle_repeat());
+        out
+    }
+
+    fn with_active_queue<F: FnOnce(&QueueState) -> R, R>(&self, f: F) -> R {
+        let guard = self.active.lock().unwrap();
+        if let Some(active) = guard.as_ref() {
+            f(&active.queue.lock().unwrap())
+        } else if let Some(pending) = self.pending_queue.lock().unwrap().as_ref() {
+            f(pending)
+        } else {
+            f(&QueueState::default())
+        }
+    }
+
+    fn with_active_queue_mut<F: FnOnce(&mut QueueState)>(&self, f: F) {
+        if let Some(active) = self.active.lock().unwrap().as_ref() {
+            f(&mut active.queue.lock().unwrap());
+        } else if let Some(pending) = self.pending_queue.lock().unwrap().as_mut() {
+            f(pending);
         }
     }
 
@@ -971,7 +1308,7 @@ impl EngineShared {
     async fn build_active(
         self: Arc<Self>,
         credentials: Credentials,
-        resume: Option<(Vec<SpotifyUri>, usize, u32)>,
+        resume: Option<QueueState>,
     ) -> Result<(), SpotifyError> {
         let session_config = self.session_config.lock().unwrap().clone();
         let session = Session::new(session_config, Some(self.cache.clone()));
@@ -984,9 +1321,6 @@ impl EngineShared {
         // Fresh client-token for this session identity (Keymaster + Linux on Android).
         session.spclient().clear_client_token();
 
-        let backend = audio_backend::find(None).ok_or(SpotifyError::Internal {
-            msg: "no audio backend compiled in (expected rodio)".into(),
-        })?;
         let mixer = Arc::new(
             SoftMixer::open(MixerConfig::default())
                 .map_err(|e| SpotifyError::Internal { msg: e.to_string() })?,
@@ -996,28 +1330,57 @@ impl EngineShared {
         let player_config = self.settings.get().player_config();
         let audio_format = AudioFormat::S16;
 
-        let player = Player::new(player_config, session.clone(), volume_getter, move || {
-            backend(None, audio_format)
-        });
+        #[cfg(all(target_os = "android", feature = "audiotrack-sink"))]
+        let sink_factory: Arc<dyn Fn() -> Box<dyn audio_backend::Sink> + Send + Sync> = {
+            use android_audiotrack_sink::AndroidAudioTrackSink;
+            use librespot::playback::audio_backend::Open;
+            Arc::new(move || {
+                Box::new(AndroidAudioTrackSink::open(None, audio_format))
+                    as Box<dyn audio_backend::Sink>
+            })
+        };
 
-        if let Some(vol) = self.cache.volume() {
-            mixer.set_volume(vol);
-        }
+        #[cfg(not(all(target_os = "android", feature = "audiotrack-sink")))]
+        let sink_factory: Arc<dyn Fn() -> Box<dyn audio_backend::Sink> + Send + Sync> = {
+            let backend = audio_backend::find(None).ok_or(SpotifyError::Internal {
+                msg: "no audio backend compiled in (expected rodio)".into(),
+            })?;
+            Arc::new(move || backend(None, audio_format))
+        };
+
+        let player = Player::new(
+            player_config,
+            session.clone(),
+            volume_getter,
+            sink_factory,
+        );
+
+        let player_for_sink_cb = player.clone();
+        let playing_flag = self.playing.clone();
+        player.set_sink_event_callback(Some(Box::new(move |status| {
+            if status == SinkStatus::Running && playing_flag.load(Ordering::SeqCst) {
+                player_for_sink_cb.play();
+            }
+        })));
+
+        // App volume is fixed at 100%; users adjust loudness via Android system volume.
+        mixer.set_volume(u16::MAX);
 
         let queue = Arc::new(Mutex::new(QueueState::default()));
-        if let Some((uris, index, position_ms)) = resume {
-            let mut q = queue.lock().unwrap();
-            q.uris = uris;
-            q.index = index;
-            q.position_ms = position_ms;
+        if let Some(snap) = resume {
+            queue.lock().unwrap().restore_snapshot(snap);
         }
 
         let rx = player.get_player_event_channel();
+        let weak = Arc::downgrade(&self);
         let event_task = self.runtime.spawn(forward_events(
             rx,
             player.clone(),
             queue.clone(),
             self.listener.clone(),
+            self.playing.clone(),
+            self.last_known_position_ms.clone(),
+            weak,
         ));
 
         spawn_monitor(
@@ -1028,10 +1391,20 @@ impl EngineShared {
 
         if let Some(uri) = {
             let q = queue.lock().unwrap();
-            q.uris.get(q.index).cloned()
+            q.current_uri()
         } {
-            let pos = queue.lock().unwrap().position_ms;
-            player.load(uri, true, pos);
+            let pos = {
+                let q = queue.lock().unwrap();
+                q.position_ms()
+                    .max(self.last_known_position_ms.load(Ordering::SeqCst))
+            };
+            // Only auto-start if the user actually had playback running. An
+            // idle-timeout reconnect of a paused queue must restore it paused.
+            let start_playing = self.playing.load(Ordering::SeqCst);
+            log::info!(
+                "build_active: uri={uri} pos={pos} start_playing={start_playing} reason=session_rebuild"
+            );
+            player.load(uri, start_playing, pos);
         }
 
         *self.active.lock().unwrap() = Some(Active {
@@ -1041,18 +1414,71 @@ impl EngineShared {
             queue,
             event_task,
         });
+        *self.pending_queue.lock().unwrap() = None;
+        self.notify_queue_changed();
         Ok(())
     }
 
-    fn snapshot_resume(&self) -> Option<(Vec<SpotifyUri>, usize, u32)> {
-        self.active.lock().unwrap().as_ref().and_then(|a| {
-            let q = a.queue.lock().unwrap();
-            if q.uris.is_empty() {
-                None
-            } else {
-                Some((q.uris.clone(), q.index, q.position_ms))
+    fn snapshot_resume(&self) -> Option<QueueState> {
+        self.active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|a| a.queue.lock().unwrap().snapshot_resume())
+    }
+
+    fn prefetch_upcoming(&self, ahead: u32) {
+        let ahead = ahead.min(3);
+        if ahead == 0 {
+            return;
+        }
+        let (session, upcoming, bitrate, generation) = {
+            let guard = self.active.lock().unwrap();
+            let Some(active) = guard.as_ref() else {
+                return;
+            };
+            let upcoming = active
+                .queue
+                .lock()
+                .unwrap()
+                .upcoming_prefetch_uris(ahead as usize);
+            if upcoming.is_empty() {
+                return;
             }
-        })
+            (
+                active.session.clone(),
+                upcoming,
+                self.settings.get().player_config().bitrate,
+                self.prefetch_generation.fetch_add(1, Ordering::SeqCst) + 1,
+            )
+        };
+        self.runtime.spawn(async move {
+            for uri in upcoming {
+                prefetch_track(&session, uri, bitrate).await;
+            }
+            let _ = generation;
+        });
+    }
+
+    fn force_reconnect_check(&self) {
+        let now = Instant::now();
+        {
+            let mut last = self.last_force_reconnect.lock().unwrap();
+            if let Some(prev) = *last {
+                if now.duration_since(prev) < Duration::from_secs(5) {
+                    return;
+                }
+            }
+            *last = Some(now);
+        }
+        if let Some(active) = self.active.lock().unwrap().as_ref() {
+            if active.session.is_invalid() {
+                return;
+            }
+            self.metrics_transport_reconnect
+                .fetch_add(1, Ordering::Relaxed);
+            active.session.shutdown();
+        }
     }
 }
 
@@ -1079,7 +1505,9 @@ fn spawn_monitor(
             };
             notify(&shared.listener, |l| l.on_connection_lost());
 
-            let resume = shared.snapshot_resume();
+            let resume = shared.snapshot_resume_with_position();
+            *shared.pending_queue.lock().unwrap() = resume.clone();
+            shared.metrics_full_rebuild.fetch_add(1, Ordering::Relaxed);
             *shared.active.lock().unwrap() = None;
 
             let mut delay = 2u64;
@@ -1106,6 +1534,36 @@ fn spawn_monitor(
         });
 }
 
+/// Caps rapid auto-skip when many consecutive tracks fail to load.
+struct UnavailableGuard {
+    count: u32,
+    window_start: Instant,
+}
+
+impl UnavailableGuard {
+    fn new() -> Self {
+        Self {
+            count: 0,
+            window_start: Instant::now(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.count = 0;
+        self.window_start = Instant::now();
+    }
+
+    /// Returns true when playback should stop (too many failures in a short window).
+    fn record(&mut self) -> bool {
+        let now = Instant::now();
+        if now.duration_since(self.window_start) > Duration::from_secs(10) {
+            self.reset();
+        }
+        self.count += 1;
+        self.count >= 5
+    }
+}
+
 /// Forward librespot player events to the Kotlin listener. Queue advancement and
 /// gapless preload are handled here for local playback.
 async fn forward_events(
@@ -1113,23 +1571,40 @@ async fn forward_events(
     player: Arc<Player>,
     queue: Arc<Mutex<QueueState>>,
     listener: SharedListener,
+    playing: Arc<AtomicBool>,
+    last_known_position_ms: Arc<AtomicU32>,
+    weak: Weak<EngineShared>,
 ) {
+    let mut unavailable_guard = UnavailableGuard::new();
     while let Some(event) = rx.recv().await {
         match event {
             PlayerEvent::Loading { track_id, .. } => {
+                unavailable_guard.reset();
+                notify(&listener, |l| l.on_buffering(true));
                 notify(&listener, |l| l.on_loading());
                 notify(&listener, |l| l.on_track_changed(uri_to_string(&track_id)));
             }
-            PlayerEvent::Playing { track_id, position_ms, .. } => {
+            PlayerEvent::Playing {
+                track_id,
+                position_ms,
+                ..
+            } => {
+                unavailable_guard.reset();
+                sync_queue_position(&queue, position_ms, &last_known_position_ms);
+                playing.store(true, Ordering::SeqCst);
+                notify(&listener, |l| l.on_buffering(false));
                 notify(&listener, |l| l.on_playing(position_ms as i64));
                 notify(&listener, |l| l.on_track_changed(uri_to_string(&track_id)));
             }
             PlayerEvent::Paused { position_ms, .. } => {
+                sync_queue_position(&queue, position_ms, &last_known_position_ms);
+                playing.store(false, Ordering::SeqCst);
                 notify(&listener, |l| l.on_paused(position_ms as i64));
             }
             PlayerEvent::PositionChanged { position_ms, .. }
             | PlayerEvent::PositionCorrection { position_ms, .. }
             | PlayerEvent::Seeked { position_ms, .. } => {
+                sync_queue_position(&queue, position_ms, &last_known_position_ms);
                 notify(&listener, |l| l.on_position_changed(position_ms as i64));
             }
             PlayerEvent::Unavailable { track_id, .. } => {
@@ -1137,43 +1612,61 @@ async fn forward_events(
                     &listener,
                     |l| l.on_unavailable(uri_to_string(&track_id)),
                 );
+                // Advance past dead tracks (skip_next, not end_of_track — repeat-one must not retry unavailable URI).
+                if unavailable_guard.record() {
+                    log::warn!("too many consecutive unavailable tracks; stopping playback");
+                    unavailable_guard.reset();
+                    playing.store(false, Ordering::SeqCst);
+                    notify(&listener, |l| l.on_end_of_track());
+                } else {
+                    let next = queue.lock().unwrap().skip_next(false);
+                    if let Some(uri) = next {
+                        player.load(uri, true, 0);
+                    } else {
+                        playing.store(false, Ordering::SeqCst);
+                        notify(&listener, |l| l.on_end_of_track());
+                    }
+                }
             }
             PlayerEvent::Stopped { track_id, .. } => {
                 log::warn!("playback stopped for {}", uri_to_string(&track_id));
+                if playing.load(Ordering::SeqCst) {
+                    if let Some(shared) = weak.upgrade() {
+                        shared
+                            .metrics_stall_events
+                            .fetch_add(1, Ordering::SeqCst);
+                        std::thread::spawn(move || {
+                            let _ = EngineShared::ensure_playback_ready(&shared);
+                        });
+                    }
+                }
             }
             PlayerEvent::TimeToPreloadNextTrack { .. } => {
-                let next = {
-                    let q = queue.lock().unwrap();
-                    if q.index + 1 < q.uris.len() {
-                        q.uris.get(q.index + 1).cloned()
-                    } else {
-                        None
-                    }
-                };
-                if let Some(uri) = next {
+                if let Some(uri) = queue.lock().unwrap().next_preload_uri() {
                     player.preload(uri);
                 }
             }
             PlayerEvent::EndOfTrack { .. } => {
-                let next = {
-                    let mut q = queue.lock().unwrap();
-                    if q.index + 1 < q.uris.len() {
-                        q.index += 1;
-                        q.position_ms = 0;
-                        q.uris.get(q.index).cloned()
-                    } else {
-                        None
-                    }
-                };
+                let next = queue.lock().unwrap().end_of_track();
                 if let Some(uri) = next {
                     player.load(uri, true, 0);
                 } else {
+                    playing.store(false, Ordering::SeqCst);
                     notify(&listener, |l| l.on_end_of_track());
                 }
             }
             _ => {}
         }
     }
+}
+
+fn sync_queue_position(
+    queue: &Arc<Mutex<QueueState>>,
+    position_ms: u32,
+    last_known_position_ms: &Arc<AtomicU32>,
+) {
+    queue.lock().unwrap().set_position_ms(position_ms);
+    last_known_position_ms.store(position_ms, Ordering::SeqCst);
 }
 
 fn notify<F: FnOnce(&dyn PlayerEventListener)>(listener: &SharedListener, f: F) {
@@ -1211,6 +1704,112 @@ fn parse_uri(input: &str) -> Result<SpotifyUri, SpotifyError> {
 
 fn uri_to_string(uri: &SpotifyUri) -> String {
     uri.to_uri().unwrap_or_default()
+}
+
+fn preferred_formats(bitrate: Bitrate) -> &'static [AudioFileFormat] {
+    use AudioFileFormat::*;
+    match bitrate {
+        Bitrate::Bitrate96 => &[
+            OGG_VORBIS_96,
+            MP3_96,
+            OGG_VORBIS_160,
+            MP3_160,
+            MP3_256,
+            OGG_VORBIS_320,
+            MP3_320,
+        ],
+        Bitrate::Bitrate160 => &[
+            OGG_VORBIS_160,
+            MP3_160,
+            OGG_VORBIS_96,
+            MP3_96,
+            MP3_256,
+            OGG_VORBIS_320,
+            MP3_320,
+        ],
+        Bitrate::Bitrate320 => &[
+            OGG_VORBIS_320,
+            MP3_320,
+            MP3_256,
+            OGG_VORBIS_160,
+            MP3_160,
+            OGG_VORBIS_96,
+            MP3_96,
+        ],
+    }
+}
+
+fn bytes_per_second(format: AudioFileFormat) -> usize {
+    use AudioFileFormat::*;
+    let kbps: f32 = match format {
+        OGG_VORBIS_96 => 12.,
+        OGG_VORBIS_160 => 20.,
+        OGG_VORBIS_320 => 40.,
+        MP3_256 => 32.,
+        MP3_320 => 40.,
+        MP3_160 => 20.,
+        MP3_96 => 12.,
+        MP3_160_ENC => 20.,
+        AAC_24 => 3.,
+        AAC_48 => 6.,
+        AAC_160 => 20.,
+        AAC_320 => 40.,
+        MP4_128 => 16.,
+        OTHER5 => 40.,
+        FLAC_FLAC => 112.,
+        XHE_AAC_12 => 1.5,
+        XHE_AAC_16 => 2.,
+        XHE_AAC_24 => 3.,
+        FLAC_FLAC_24BIT => 3.,
+    };
+    (kbps * 1024.).ceil() as usize
+}
+
+async fn resolve_playable_file(
+    session: &Session,
+    uri: SpotifyUri,
+    bitrate: Bitrate,
+) -> Option<(librespot::core::FileId, usize)> {
+    let mut item = AudioItem::get_file(session, uri).await.ok()?;
+    if item.files.is_empty() {
+        if let Some(alts) = item.alternatives.clone() {
+            for alt in alts.0 {
+                if let Ok(alt_item) = AudioItem::get_file(session, alt).await {
+                    if !alt_item.files.is_empty() {
+                        item = alt_item;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    for &fmt in preferred_formats(bitrate) {
+        if let Some(&file_id) = item.files.get(&fmt) {
+            return Some((file_id, bytes_per_second(fmt)));
+        }
+    }
+    None
+}
+
+async fn prefetch_track(session: &Session, uri: SpotifyUri, bitrate: Bitrate) {
+    let Some((file_id, bps)) = resolve_playable_file(session, uri, bitrate).await else {
+        return;
+    };
+    match AudioFile::open(session, file_id, bps).await {
+        Ok(file) => {
+            if let Ok(slc) = file.get_stream_loader_controller() {
+                if slc.range_to_end_available() {
+                    return;
+                }
+                slc.set_random_access_mode();
+                let len = slc.len();
+                if len > 0 {
+                    slc.fetch(Range::new(0, len));
+                }
+            }
+        }
+        Err(e) => log::debug!("prefetch open failed for {file_id}: {e}"),
+    }
 }
 
 fn load_or_create_device_id(base: &Path) -> String {
@@ -1370,4 +1969,145 @@ fn album_cover_url(covers: &librespot::metadata::image::Images) -> Option<String
         .iter()
         .max_by_key(|c| c.width)
         .map(|c| format!("https://i.scdn.co/image/{}", c.id))
+}
+
+/// Tests that simulate long-running sessions and background use without a live
+/// Spotify connection. They exercise the pure state machines that govern how the
+/// app behaves over hours of playback, across token expiry, and across the
+/// reconnect/rebuild that happens when the OS backgrounds (and later wakes) us.
+#[cfg(test)]
+mod long_running_tests {
+    use super::*;
+
+    fn oauth_state(access_token: &str, issued_secs_ago: u64, ttl_secs: u64) -> OAuthState {
+        let issued_at = Instant::now() - Duration::from_secs(issued_secs_ago);
+        // `expires_at` mirrors `store_oauth`: nominal expiry minus the early-refresh window.
+        let expires_at = issued_at + Duration::from_secs(ttl_secs.saturating_sub(REFRESH_EARLY_SECS).max(1));
+        OAuthState {
+            access_token: access_token.to_string(),
+            refresh_token: Some("refresh-token".to_string()),
+            expires_at,
+            issued_at,
+            token_ttl_secs: ttl_secs,
+            last_refresh_fail: None,
+        }
+    }
+
+    /// A token that has just expired (but is well within the stale-grace window)
+    /// must keep working. This is the common case when the app has been
+    /// backgrounded for ~an hour and wakes up needing metadata before a refresh
+    /// round-trip completes.
+    #[test]
+    fn freshly_expired_token_is_usable_within_grace() {
+        let ttl = 3600;
+        // Issued just past nominal expiry: token is "expired" but inside grace.
+        let state = oauth_state("valid-token", ttl + 10, ttl);
+        let now = Instant::now();
+        assert!(state.within_stale_grace(now));
+    }
+
+    /// Once the full TTL + grace window elapses, a stale token is no longer
+    /// usable and the engine must force a real refresh / re-login. Prevents the
+    /// app from clinging to a long-dead token after days in the background.
+    #[test]
+    fn token_past_grace_window_is_not_usable() {
+        let ttl = 3600;
+        let state = oauth_state("expired-token", ttl + STALE_GRACE_SECS + 30, ttl);
+        let now = Instant::now();
+        assert!(!state.within_stale_grace(now));
+    }
+
+    /// An empty access token (e.g. session restored from a refresh token only,
+    /// before the first refresh) is never treated as a usable stale token.
+    #[test]
+    fn empty_token_is_never_within_grace() {
+        let ttl = 3600;
+        let state = oauth_state("", 5, ttl);
+        let now = Instant::now();
+        assert!(!state.within_stale_grace(now));
+    }
+
+    /// The grace countdown surfaced to the spclient fallback must never drop
+    /// below a 60s floor, so a near-deadline token still buys a usable window.
+    #[test]
+    fn remaining_grace_has_minimum_floor() {
+        let ttl = 3600;
+        // Almost at the grace deadline: raw remaining would be ~10s.
+        let state = oauth_state("valid-token", ttl + STALE_GRACE_SECS - 10, ttl);
+        let now = Instant::now();
+        assert!(state.within_stale_grace(now));
+        assert_eq!(state.remaining_grace_secs(now), 60);
+    }
+
+    /// A long-lived token reports a large remaining grace, not the floor.
+    #[test]
+    fn remaining_grace_reflects_real_window_when_large() {
+        let ttl = 3600;
+        let state = oauth_state("valid-token", 10, ttl);
+        let now = Instant::now();
+        let remaining = state.remaining_grace_secs(now);
+        // ~ ttl - 10 + STALE_GRACE_SECS, comfortably above the floor.
+        assert!(remaining > 3000, "expected large grace window, got {remaining}");
+    }
+
+    /// The OAuth cache persisted to disk (so a backgrounded-then-killed process
+    /// can restore metadata access on relaunch) must round-trip exactly.
+    #[test]
+    fn persisted_oauth_cache_round_trips() {
+        let cache = PersistedOAuthCache {
+            access_token: "cached-access-token".to_string(),
+            expires_at_epoch_secs: 1_900_000_000,
+            token_ttl_secs: 3600,
+        };
+        let json = serde_json::to_string(&cache).unwrap();
+        let restored: PersistedOAuthCache = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.access_token, cache.access_token);
+        assert_eq!(restored.expires_at_epoch_secs, cache.expires_at_epoch_secs);
+        assert_eq!(restored.token_ttl_secs, cache.token_ttl_secs);
+    }
+
+    /// During long playback, a handful of consecutive unavailable tracks should
+    /// auto-skip; only a burst within the short window should stop playback so
+    /// the app doesn't sit silently dead in the user's pocket.
+    #[test]
+    fn unavailable_guard_stops_only_after_burst() {
+        let mut guard = UnavailableGuard::new();
+        // Four quick failures: keep skipping.
+        for _ in 0..4 {
+            assert!(!guard.record());
+        }
+        // Fifth within the window: stop.
+        assert!(guard.record());
+    }
+
+    /// A successful track between failures resets the counter, so isolated dead
+    /// tracks spread across a long listening session never accumulate to a stop.
+    #[test]
+    fn unavailable_guard_resets_between_good_tracks() {
+        let mut guard = UnavailableGuard::new();
+        for _ in 0..4 {
+            assert!(!guard.record());
+        }
+        guard.reset();
+        // Counter cleared: another four failures still don't trip the stop.
+        for _ in 0..4 {
+            assert!(!guard.record());
+        }
+    }
+
+    /// Failures spaced further apart than the 10s window must not accumulate:
+    /// the window rolls forward and the count restarts. Simulates rare dead
+    /// tracks encountered over hours rather than a broken-connection burst.
+    #[test]
+    fn unavailable_guard_window_rolls_over_time() {
+        let mut guard = UnavailableGuard::new();
+        for _ in 0..4 {
+            assert!(!guard.record());
+        }
+        // Simulate >10s elapsing since the window opened.
+        guard.window_start = Instant::now() - Duration::from_secs(11);
+        // This record falls in a new window, so it resets instead of tripping.
+        assert!(!guard.record());
+        assert_eq!(guard.count, 1);
+    }
 }

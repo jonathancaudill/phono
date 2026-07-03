@@ -26,6 +26,8 @@ class LibrespotPlayer(
     init {
         // Rust player events arrive on a background thread; Media3 requires main looper.
         controller.onStateChanged = { mainHandler.post { invalidateState() } }
+        // Push current timeline/playWhenReady so Media3 can promote FGS immediately.
+        invalidateState()
     }
 
     override fun getState(): State {
@@ -45,7 +47,7 @@ class LibrespotPlayer(
 
         val playbackState = when {
             s.currentUri == null -> Player.STATE_IDLE
-            s.isLoading -> Player.STATE_BUFFERING
+            s.isLoading || s.isBuffering -> Player.STATE_BUFFERING
             else -> Player.STATE_READY
         }
 

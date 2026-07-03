@@ -1,0 +1,227 @@
+package com.lightphone.spotify.ui.screens
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import com.lightphone.spotify.data.toMetadata
+import com.lightphone.spotify.ui.AppViewModel
+import com.lightphone.spotify.ui.components.CustomScrollView
+import com.lightphone.spotify.ui.components.PhonoContentContainer
+import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
+import com.lightphone.spotify.ui.components.PhonoTrackEditActions
+import com.lightphone.spotify.ui.components.PhonoTrackListItem
+import com.lightphone.spotify.ui.theme.PhonoColors
+import com.lightphone.spotify.ui.theme.PublicSans
+import com.lightphone.spotify.ui.theme.n
+import com.lightphone.spotify.ui.theme.nSp
+
+@Composable
+fun PlaylistDetailScreen(
+    vm: AppViewModel,
+    playlistId: String,
+    fallbackTitle: String,
+    onBack: () -> Unit,
+    onPlayTrack: (Int) -> Unit,
+) {
+    val state by vm.playlistDetail.collectAsState()
+    val listState = rememberLazyListState()
+    var renameDraft by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(playlistId) { vm.loadPlaylistDetail(playlistId) }
+
+    renameDraft?.let { draft ->
+        RenamePlaylistOverlay(
+            initialName = draft,
+            onConfirm = { name ->
+                vm.renamePlaylist(playlistId, name)
+                renameDraft = null
+            },
+            onCancel = { renameDraft = null },
+        )
+        return
+    }
+
+    val detail = state.detail?.takeIf { it.id == playlistId }
+    val title = detail?.name ?: fallbackTitle
+    val tracks = if (state.requestedId == playlistId) state.tracks else emptyList()
+
+    PhonoContentContainer(
+        title = title,
+        hideBackButton = false,
+        onBack = onBack,
+        rightIcon = when {
+            state.isEditable -> if (state.editMode) Icons.Default.Check else Icons.Default.Edit
+            state.isInLibrary -> Icons.Default.Remove
+            else -> Icons.Default.Add
+        },
+        onRightIconClick = {
+            if (state.isEditable) {
+                if (!state.mutating) vm.togglePlaylistEditMode()
+            } else if (!state.saving) {
+                vm.togglePlaylistLibrary(playlistId)
+            }
+        },
+        rightIconVisible = state.isEditable || detail != null,
+        rightLoading = state.mutating || state.saving,
+        onTitleClick = if (state.editMode && state.isEditable) {
+            { renameDraft = title }
+        } else {
+            null
+        },
+        horizontalPadding = n(20),
+        contentGap = n(0),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        if (state.mutationError != null) {
+            LibraryPartialSyncBanner(state.mutationError!!)
+        }
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(bottom = n(20)),
+        ) {
+            when {
+                state.error != null && detail == null -> EmptyListMessage(state.error!!)
+                state.loading && detail == null -> EmptyListMessage("Loading playlist…")
+                tracks.isEmpty() -> EmptyListMessage("No tracks in this playlist.")
+                else -> CustomScrollView(
+                    state = listState,
+                    loadedItemCount = tracks.size,
+                ) {
+                    itemsIndexed(tracks, key = { index, _ -> index }) { index, row ->
+                        val track = row.track
+                        Column {
+                            PlaylistTrackRow(
+                                name = track.name,
+                                artists = track.artists.joinToString { it.name },
+                                durationMs = track.durationMs,
+                                editMode = state.editMode && state.isEditable,
+                                mutating = state.mutating,
+                                canMoveUp = index > 0,
+                                canMoveDown = index < tracks.size - 1,
+                                onPlay = { onPlayTrack(index) },
+                                onLongClick = {
+                                    vm.showTrackContextMenu(
+                                        track.uri,
+                                        track.id.ifBlank { track.uri.removePrefix("spotify:track:") },
+                                    )
+                                },
+                                onRemove = { vm.removePlaylistTrack(playlistId, index) },
+                                onMoveUp = { vm.movePlaylistTrack(playlistId, index, index - 1) },
+                                onMoveDown = { vm.movePlaylistTrack(playlistId, index, index + 1) },
+                                onSwipeToQueue = { vm.addTrackToQueue(track.toMetadata()) },
+                            )
+                            Spacer(Modifier.height(n(8)))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistTrackRow(
+    name: String,
+    artists: String,
+    durationMs: Long,
+    editMode: Boolean,
+    mutating: Boolean,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onPlay: () -> Unit,
+    onLongClick: (() -> Unit)?,
+    onRemove: () -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onSwipeToQueue: () -> Unit,
+) {
+    val item = @Composable {
+        PhonoTrackListItem(
+            name = name,
+            artists = artists,
+            durationMs = durationMs,
+            onClick = onPlay,
+            onLongClick = onLongClick,
+            editActions = if (editMode) {
+                PhonoTrackEditActions(
+                    mutating = mutating,
+                    canMoveUp = canMoveUp,
+                    canMoveDown = canMoveDown,
+                    onRemove = onRemove,
+                    onMoveUp = onMoveUp,
+                    onMoveDown = onMoveDown,
+                )
+            } else {
+                null
+            },
+        )
+    }
+    if (editMode) {
+        item()
+    } else {
+        PhonoSwipeToActionRow(onSwipeAction = onSwipeToQueue) {
+            item()
+        }
+    }
+}
+
+@Composable
+private fun RenamePlaylistOverlay(
+    initialName: String,
+    onConfirm: (String) -> Unit,
+    onCancel: () -> Unit,
+) {
+    var name by remember(initialName) { mutableStateOf(initialName) }
+
+    PhonoContentContainer(
+        title = "Rename playlist",
+        hideBackButton = false,
+        onBack = onCancel,
+        rightIconVisible = false,
+        horizontalPadding = n(37),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        BasicTextField(
+            value = name,
+            onValueChange = { name = it },
+            textStyle = TextStyle(
+                color = PhonoColors.Foreground,
+                fontSize = nSp(22),
+                fontFamily = PublicSans,
+            ),
+            cursorBrush = SolidColor(PhonoColors.Foreground),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = n(12)),
+            singleLine = true,
+        )
+        com.lightphone.spotify.ui.components.PhonoStyledButton(
+            text = "Save",
+            onClick = { onConfirm(name.trim()) },
+        )
+    }
+}

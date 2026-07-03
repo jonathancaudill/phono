@@ -16,6 +16,7 @@ data class SpotifyArtist(
     val name: String = "",
     val uri: String = "",
     val images: List<SpotifyImage> = emptyList(),
+    val popularity: Int = 0,
 )
 
 @Serializable
@@ -27,6 +28,7 @@ data class SpotifyAlbumSimple(
     val artists: List<SpotifyArtist> = emptyList(),
     @SerialName("album_type") val albumType: String? = null,
     @SerialName("release_date") val releaseDate: String? = null,
+    val popularity: Int = 0,
 )
 
 @Serializable
@@ -39,17 +41,34 @@ data class SpotifyTrack(
     @SerialName("duration_ms") val durationMs: Long = 0,
     @SerialName("track_number") val trackNumber: Int = 0,
     @SerialName("disc_number") val discNumber: Int = 1,
+    val popularity: Int = 0,
 )
 
 @Serializable
 data class SpotifySavedAlbum(
     @SerialName("added_at") val addedAt: String? = null,
-    val album: SpotifyAlbumSimple,
+    /** Null when the album is unavailable in the user's market. */
+    val album: SpotifyAlbumSimple? = null,
+)
+
+@Serializable
+data class SpotifySavedTrack(
+    @SerialName("added_at") val addedAt: String? = null,
+    /** Null when the track is unavailable in the user's market. */
+    val track: SpotifyTrack? = null,
 )
 
 @Serializable
 data class PagedResponse<T>(
     val items: List<T> = emptyList(),
+    val next: String? = null,
+    val total: Int = 0,
+)
+
+/** Search API pages may contain null slots for unavailable results. */
+@Serializable
+data class SearchPagedResponse<T>(
+    val items: List<T?> = emptyList(),
     val next: String? = null,
     val total: Int = 0,
 )
@@ -86,10 +105,15 @@ data class TopTracksResponse(
 
 @Serializable
 data class SpotifySearchResults(
-    val tracks: PagedResponse<SpotifyTrack>? = null,
-    val albums: PagedResponse<SpotifyAlbumSimple>? = null,
-    val artists: PagedResponse<SpotifyArtist>? = null,
-    val playlists: PagedResponse<SpotifyPlaylistSimple>? = null,
+    val tracks: SearchPagedResponse<SpotifyTrack>? = null,
+    val albums: SearchPagedResponse<SpotifyAlbumSimple>? = null,
+    val artists: SearchPagedResponse<SpotifyArtist>? = null,
+    val playlists: SearchPagedResponse<SpotifyPlaylistSimple>? = null,
+)
+
+@Serializable
+data class SpotifyPlaylistTracksRef(
+    val total: Int = 0,
 )
 
 @Serializable
@@ -97,14 +121,111 @@ data class SpotifyPlaylistSimple(
     val id: String = "",
     val name: String = "",
     val uri: String = "",
-    val images: List<SpotifyImage> = emptyList(),
+    val images: List<SpotifyImage>? = null,
     val owner: SpotifyPlaylistOwner? = null,
-)
+    @SerialName("snapshot_id") val snapshotId: String? = null,
+    val tracks: SpotifyPlaylistTracksRef? = null,
+    val public: Boolean? = null,
+    val collaborative: Boolean = false,
+    val description: String? = null,
+    /** Not documented on GET /me/playlists; parsed when Spotify returns it. */
+    @SerialName("added_at") val addedAt: String? = null,
+) {
+    val trackCount: Int get() = tracks?.total ?: 0
+}
+
+@Serializable
+data class SpotifyPlaylistDetail(
+    val id: String = "",
+    val name: String = "",
+    val uri: String = "",
+    val images: List<SpotifyImage>? = null,
+    val owner: SpotifyPlaylistOwner? = null,
+    @SerialName("snapshot_id") val snapshotId: String? = null,
+    val tracks: SpotifyPlaylistTracksRef? = null,
+    val public: Boolean? = null,
+    val collaborative: Boolean = false,
+    val description: String? = null,
+) {
+    val trackCount: Int get() = tracks?.total ?: 0
+}
+
+fun SpotifyPlaylistDetail.toPlaylistSimple(): SpotifyPlaylistSimple =
+    SpotifyPlaylistSimple(
+        id = id,
+        name = name,
+        uri = uri.ifBlank { "spotify:playlist:$id" },
+        images = images,
+        owner = owner,
+        snapshotId = snapshotId,
+        tracks = tracks,
+        public = public,
+        collaborative = collaborative,
+        description = description,
+    )
 
 @Serializable
 data class SpotifyPlaylistOwner(
     val id: String = "",
     @SerialName("display_name") val displayName: String? = null,
+)
+
+@Serializable
+data class SpotifyPlaylistTrackItem(
+    @SerialName("added_at") val addedAt: String? = null,
+    val track: SpotifyTrack? = null,
+)
+
+@Serializable
+data class SpotifyCurrentUser(
+    val id: String = "",
+    @SerialName("display_name") val displayName: String? = null,
+)
+
+@Serializable
+data class CreatePlaylistBody(
+    val name: String,
+    val public: Boolean = false,
+    val description: String? = null,
+    val collaborative: Boolean = false,
+)
+
+@Serializable
+data class ChangePlaylistDetailsBody(
+    val name: String? = null,
+    val public: Boolean? = null,
+    val description: String? = null,
+    val collaborative: Boolean? = null,
+)
+
+@Serializable
+data class AddPlaylistItemsBody(
+    val uris: List<String>,
+    val position: Int? = null,
+)
+
+@Serializable
+data class RemovePlaylistTrackRef(
+    val uri: String,
+)
+
+@Serializable
+data class RemovePlaylistItemsBody(
+    val tracks: List<RemovePlaylistTrackRef>,
+    @SerialName("snapshot_id") val snapshotId: String? = null,
+)
+
+@Serializable
+data class SnapshotResponse(
+    @SerialName("snapshot_id") val snapshotId: String = "",
+)
+
+@Serializable
+data class ReorderPlaylistItemsBody(
+    @SerialName("range_start") val rangeStart: Int,
+    @SerialName("insert_before") val insertBefore: Int,
+    @SerialName("range_length") val rangeLength: Int = 1,
+    @SerialName("snapshot_id") val snapshotId: String? = null,
 )
 
 sealed class SearchResultItem {
@@ -142,9 +263,22 @@ sealed class SearchResultItem {
         override val id = playlist.id
         override val title = playlist.name
         override val subtitle = "Playlist • ${playlist.owner?.displayName ?: "Playlist"}"
-        override val imageUrl = playlist.images.firstOrNull()?.url
+        override val imageUrl = null
         override val uri = playlist.uri
     }
+}
+
+enum class SearchFilter(val label: String) {
+    All("All"),
+    Tracks("Songs"),
+    Artists("Artists"),
+    Albums("Albums"),
+    Playlists("Playlists"),
+}
+
+enum class PlaylistFilter(val label: String) {
+    YourPlaylists("Your Playlists"),
+    All("All"),
 }
 
 data class SearchResults(
@@ -153,16 +287,31 @@ data class SearchResults(
     val albums: List<SpotifyAlbumSimple> = emptyList(),
     val tracks: List<SpotifyTrack> = emptyList(),
     val playlists: List<SpotifyPlaylistSimple> = emptyList(),
+    val topResult: SearchResultItem? = null,
+    val rankedItems: List<SearchResultItem> = emptyList(),
 ) {
     fun isEmpty(): Boolean =
-        artists.isEmpty() && albums.isEmpty() && tracks.isEmpty() && playlists.isEmpty()
+        topResult == null &&
+            rankedItems.isEmpty() &&
+            artists.isEmpty() &&
+            albums.isEmpty() &&
+            tracks.isEmpty() &&
+            playlists.isEmpty()
 
-    fun toResultItems(): List<SearchResultItem> = buildList {
-        artists.forEach { add(SearchResultItem.Artist(it)) }
-        albums.forEach { add(SearchResultItem.Album(it)) }
-        tracks.forEach { add(SearchResultItem.Track(it)) }
-        playlists.forEach { add(SearchResultItem.Playlist(it)) }
+    /** Top result + interleaved remainder for the All filter. */
+    fun allItems(): List<SearchResultItem> = buildList {
+        topResult?.let { add(it) }
+        addAll(rankedItems)
     }
+
+    fun itemsForFilter(filter: SearchFilter): Pair<SearchResultItem?, List<SearchResultItem>> =
+        when (filter) {
+            SearchFilter.All -> topResult to rankedItems
+            SearchFilter.Tracks -> null to tracks.take(10).map { SearchResultItem.Track(it) }
+            SearchFilter.Artists -> null to artists.take(10).map { SearchResultItem.Artist(it) }
+            SearchFilter.Albums -> null to albums.take(10).map { SearchResultItem.Album(it) }
+            SearchFilter.Playlists -> null to playlists.take(10).map { SearchResultItem.Playlist(it) }
+        }
 }
 
 fun SpotifyTrack.toMetadata(): TrackMetadata = TrackMetadata(

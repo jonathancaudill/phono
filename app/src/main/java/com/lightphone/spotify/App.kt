@@ -9,9 +9,7 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        // Loads the native lib, initializes ndk_context, and creates the engine.
         controller = PlaybackController.get(this)
-        // Restore a previous session silently if credentials are cached.
-        controller.tryCachedLogin { }
+        controller.ensureEngineReady()
     }
 }
