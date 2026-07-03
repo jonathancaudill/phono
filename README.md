@@ -1,34 +1,22 @@
 # phono — Spotify Client for Light Phone III
 
 Thanks to **[Vandam Dinh](https://github.com/vandamd)** — especially
-[Echo](https://github.com/vandamd/echo) and the
-[Light Template](https://github.com/vandamd/light-template) — for the Light Phone UI
-patterns and product direction this client builds on. Thanks to
-**[librespot](https://github.com/librespot-org/librespot)** for the open-source Spotify
-protocol work that makes in-process Premium playback possible.
+[Echo](https://github.com/vandamd/echo) — for the Light Phone UI
+patterns and product direction this client builds on.
 
-An independent, minimal Spotify Premium client for LightOS. **Playback** runs in-process via
+An independent, minimal Spotify client for LightOS. **Playback** runs in-process via
 a patched fork of librespot (Rust). **Metadata** (search, library, albums, artists,
 playlists) uses the official Spotify Web API with **your own** developer-app credentials.
-No official Spotify app required.
 
-> Requires a Spotify **Premium** account. Playback is a protocol-level requirement of
-> librespot, not something that can be worked around.
+> Requires a Spotify **Premium** account. This is not something we have
+> *any* interest in working around, so please do not ask!
 
-**New developer?** Read [docs/README.md](docs/README.md) and [AGENTS.md](AGENTS.md) before
+**New developer? Agent? (ugh)**: Read [docs/README.md](docs/README.md) and [AGENTS.md](AGENTS.md) before
 changing code.
 
 ## How this differs from Echo
 
-| | **phono** | **Echo** |
-|---|---|---|
-| Playback | librespot in-process | Spotify Android SDK (official app installed) |
-| Metadata | Web API (your dev app) | Web API (your dev app) |
-| Spotify app required | No | Yes |
-| Android audio | Native `AudioTrack` (Path C) | Delegated to Spotify app |
-
-Both need a Spotify Developer app for library/search/browse. phono additionally needs a
-one-time Keymaster OAuth login (Step 1) for streaming.
+vandam rocks. Basically, this has a few extra features, less album art and doesn't require the Spotify app to be installed.
 
 ## Setup (required before first use)
 
@@ -60,12 +48,15 @@ The app uses **dual authentication**:
 2. On **Step 2**, paste your Client ID and Client Secret
 3. Tap **Connect Web API** and authorize when prompted
 
-**Notes:**
+**Please note:** tokens expire after **6 months** — re-run Step 2 if metadata stops working
 
-- Development Mode apps require the **app owner** to have Spotify Premium
-- Each dev app allows up to **5 authorized users** (add yourself in the dashboard)
-- Refresh tokens expire after **6 months** — re-run Step 2 if metadata stops working
-- New dev-mode apps may lack some endpoints (e.g. artist top tracks) due to Spotify API policy changes
+
+
+--- 
+# Boring stuff below ↓↓↓
+
+
+---
 
 ## Repository layout
 
