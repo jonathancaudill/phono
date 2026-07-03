@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -23,12 +22,15 @@ import androidx.compose.ui.Modifier
 import com.lightphone.spotify.data.PlaylistFilter
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.LibraryInfiniteList
-import com.lightphone.spotify.ui.components.PhonoContentContainer
 import com.lightphone.spotify.ui.components.PhonoMediaListItem
-import com.lightphone.spotify.ui.components.StyledText
-import com.lightphone.spotify.ui.components.tap
-import com.lightphone.spotify.ui.theme.PhonoColors
-import com.lightphone.spotify.ui.theme.n
+import com.lightphone.spotify.ui.light.PhonoSemanticColors
+import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.lightphone.spotify.ui.phono.PhonoScreenShell
+import com.thelightphone.sdk.ui.LightIcons
+import com.thelightphone.sdk.ui.LightText
+import com.thelightphone.sdk.ui.LightTextVariant
+import com.thelightphone.sdk.ui.LightThemeTokens
+import com.thelightphone.sdk.ui.lightClickable
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,13 +53,13 @@ fun PlaylistsScreen(
         listState.scrollToItem(0)
     }
 
-    PhonoContentContainer(
+    PhonoScreenShell(
         hideBackButton = true,
         leftIcon = Icons.Default.Add,
         onLeftIconClick = onCreatePlaylist,
-        rightIcon = Icons.Default.GraphicEq,
+        rightLightIcon = LightIcons.AUDIO_MESSAGE,
         onRightIconClick = onOpenPlaying,
-        horizontalPadding = n(20),
+        horizontalPadding = legacyNToGridDp(20),
         modifier = Modifier.fillMaxSize(),
         titleContent = {
             PlaylistFilterChips(
@@ -126,7 +128,7 @@ private fun PlaylistFilterChips(
     selected: PlaylistFilter,
     onSelect: (PlaylistFilter) -> Unit,
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(n(8))) {
+    Row(horizontalArrangement = Arrangement.spacedBy(legacyNToGridDp(8))) {
         PlaylistFilter.entries.forEach { filter ->
             PlaylistFilterChip(
                 filter = filter,
@@ -143,17 +145,17 @@ private fun PlaylistFilterChip(
     active: Boolean,
     onSelect: (PlaylistFilter) -> Unit,
 ) {
+    val colors = LightThemeTokens.colors
     Box(
         modifier = Modifier
-            .background(if (active) PhonoColors.Foreground else PhonoColors.PlaceholderBg)
-            .tap { onSelect(filter) }
-            .padding(horizontal = n(14), vertical = n(8)),
+            .background(if (active) colors.content else PhonoSemanticColors.PlaceholderBg)
+            .lightClickable { onSelect(filter) }
+            .padding(horizontal = legacyNToGridDp(12), vertical = legacyNToGridDp(6)),
     ) {
-        StyledText(
-            filter.label,
-            size = 16,
-            lineHeight = 18,
-            color = if (active) PhonoColors.Background else PhonoColors.Foreground,
+        LightText(
+            text = filter.label,
+            variant = LightTextVariant.Copy,
+            color = if (active) colors.background else colors.content,
             maxLines = 1,
         )
     }

@@ -8,21 +8,25 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Remove
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.lightphone.spotify.data.SpotifyTrack
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
-import com.lightphone.spotify.ui.components.PhonoContentContainer
 import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
 import com.lightphone.spotify.ui.components.PhonoTrackListItem
-import com.lightphone.spotify.ui.theme.n
+import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.lightphone.spotify.ui.phono.PhonoScreenShell
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Remove
 
 @Composable
 fun AlbumDetailScreen(
@@ -42,7 +46,16 @@ fun AlbumDetailScreen(
     val tracks = album?.tracks?.items.orEmpty()
     val showSaveLoading = state.loading && !state.isSavedConfirmed
 
-    PhonoContentContainer(
+    // Keep the last loaded track list visible until this screen leaves composition
+    // so the layout (and scrollbar) do not collapse a frame before pop completes.
+    var stableTracks by remember(albumId) { mutableStateOf<List<SpotifyTrack>>(emptyList()) }
+    if (tracks.isNotEmpty()) {
+        stableTracks = tracks
+    }
+    val displayTracks = if (tracks.isNotEmpty()) tracks else stableTracks
+    val hasTrackContent = displayTracks.isNotEmpty()
+
+    PhonoScreenShell(
         title = title,
         hideBackButton = false,
         onBack = onBack,
@@ -52,25 +65,25 @@ fun AlbumDetailScreen(
         onTitleClick = {
             album?.artists?.firstOrNull()?.id?.takeIf { it.isNotBlank() }?.let(onOpenArtist)
         },
-        horizontalPadding = n(20),
+        horizontalPadding = legacyNToGridDp(20),
         modifier = Modifier.fillMaxSize(),
     ) {
         Box(
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .padding(bottom = n(20)),
+                .padding(bottom = legacyNToGridDp(20)),
         ) {
             when {
-                state.loading && album == null -> EmptyListMessage("Loading…")
-                state.error != null && album == null -> EmptyListMessage(state.error!!)
-                tracks.isEmpty() -> EmptyListMessage("No tracks found in this album.")
+                !hasTrackContent && state.loading -> EmptyListMessage("Loading…")
+                !hasTrackContent && state.error != null -> EmptyListMessage(state.error!!)
+                !hasTrackContent -> EmptyListMessage("No tracks found in this album.")
                 else -> CustomScrollView {
-                    itemsIndexed(tracks, key = { index, track -> track.id.ifBlank { "$index" } }) { index, track ->
-                        val previous = tracks.getOrNull(index - 1)
+                    itemsIndexed(displayTracks, key = { index, track -> track.id.ifBlank { "$index" } }) { index, track ->
+                        val previous = displayTracks.getOrNull(index - 1)
                         Column {
                             if (previous != null && track.discNumber != previous.discNumber) {
-                                Spacer(Modifier.height(n(40)))
+                                Spacer(Modifier.height(legacyNToGridDp(40)))
                             }
                             PhonoSwipeToActionRow(
                                 onSwipeAction = { vm.addTrackToQueue(track.toMetadata()) },
@@ -89,7 +102,7 @@ fun AlbumDetailScreen(
                                     },
                                 )
                             }
-                            Spacer(Modifier.height(n(8)))
+                            Spacer(Modifier.height(legacyNToGridDp(8)))
                         }
                     }
                 }

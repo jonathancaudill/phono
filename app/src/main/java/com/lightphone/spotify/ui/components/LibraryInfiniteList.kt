@@ -4,7 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import com.lightphone.spotify.ui.theme.n
+import com.lightphone.spotify.ui.light.legacyNToGridDp
 
 /**
  * Text-only library list: LazyColumn rows = loaded Room items only.
@@ -41,7 +41,7 @@ fun <T> LibraryInfiniteList(
     CustomScrollView(
         modifier = modifier,
         state = listState,
-        verticalArrangement = Arrangement.spacedBy(n(8)),
+        verticalArrangement = Arrangement.spacedBy(legacyNToGridDp(10)),
         loadedItemCount = items.size,
         virtualItemCount = remoteTotal.takeIf { it > 0 },
         hasMoreItems = hasMore,

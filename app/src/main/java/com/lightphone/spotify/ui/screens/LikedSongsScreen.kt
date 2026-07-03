@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -22,15 +21,16 @@ import androidx.compose.ui.text.style.TextAlign
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.data.local.toTrackMetadata
 import com.lightphone.spotify.ui.components.LibraryInfiniteList
-import com.lightphone.spotify.ui.components.PhonoContentContainer
 import com.lightphone.spotify.ui.components.PhonoMediaListItem
 import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
 import com.lightphone.spotify.ui.components.ScrollbarMode
-import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.buildLibraryDateIndex
-import com.lightphone.spotify.ui.theme.PhonoColors
-import com.lightphone.spotify.ui.theme.n
+import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.lightphone.spotify.ui.phono.PhonoScreenShell
 import com.lightphone.spotify.ui.trackIdFromUri
+import com.thelightphone.sdk.ui.LightIcons
+import com.thelightphone.sdk.ui.LightText
+import com.thelightphone.sdk.ui.LightTextVariant
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,12 +50,12 @@ fun LikedSongsScreen(
         buildLibraryDateIndex(state.items) { it.added_at }
     }
 
-    PhonoContentContainer(
+    PhonoScreenShell(
         title = "Liked Songs",
         hideBackButton = true,
-        rightIcon = Icons.Default.GraphicEq,
+        rightLightIcon = LightIcons.AUDIO_MESSAGE,
         onRightIconClick = onOpenPlaying,
-        horizontalPadding = n(20),
+        horizontalPadding = legacyNToGridDp(20),
         modifier = Modifier.fillMaxSize(),
     ) {
         PullToRefreshBox(
@@ -74,7 +74,6 @@ fun LikedSongsScreen(
                     EmptyListMessage("No saved tracks found.")
                 else -> Column(Modifier.fillMaxSize()) {
                     if (state.error != null && state.items.isNotEmpty()) {
-                        // TODO: wire styled banner in separate UI task
                         LibraryPartialSyncBanner(state.error!!)
                     }
                     LibraryInfiniteList(
@@ -122,25 +121,23 @@ fun LikedSongsScreen(
 
 @Composable
 internal fun LibraryPartialSyncBanner(message: String) {
-    StyledText(
-        message,
-        size = 14,
-        color = PhonoColors.Foreground,
-        textAlign = TextAlign.Center,
+    LightText(
+        text = message,
+        variant = LightTextVariant.Detail,
+        align = TextAlign.Center,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = n(4)),
+            .padding(vertical = legacyNToGridDp(4)),
     )
 }
 
 @Composable
 internal fun EmptyListMessage(message: String) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        StyledText(
-            message,
-            size = 16,
-            color = PhonoColors.Foreground,
-            textAlign = TextAlign.Center,
+        LightText(
+            text = message,
+            variant = LightTextVariant.Detail,
+            align = TextAlign.Center,
         )
     }
 }

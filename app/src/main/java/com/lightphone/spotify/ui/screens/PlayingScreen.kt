@@ -31,7 +31,6 @@ import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -48,13 +47,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.lightphone.spotify.ffi.RepeatMode
 import com.lightphone.spotify.playback.PlaybackUiState
 import com.lightphone.spotify.ui.AppViewModel
-import com.lightphone.spotify.ui.components.PhonoContentContainer
 import com.lightphone.spotify.ui.components.PhonoFallbackImage
-import com.lightphone.spotify.ui.components.StyledText
 import com.lightphone.spotify.ui.components.formatTime
-import com.lightphone.spotify.ui.components.tap
-import com.lightphone.spotify.ui.theme.PhonoColors
-import com.lightphone.spotify.ui.theme.n
+import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.lightphone.spotify.ui.phono.PhonoHeaderIcon
+import com.lightphone.spotify.ui.phono.PhonoScreenShell
+import com.thelightphone.sdk.ui.LightText
+import com.thelightphone.sdk.ui.LightTextVariant
+import com.thelightphone.sdk.ui.LightThemeTokens
+import com.thelightphone.sdk.ui.lightClickable
 
 @Composable
 fun PlayingScreen(
@@ -73,15 +74,14 @@ fun PlayingScreen(
 
     val hasTrack = playback.currentUri != null || playback.title != null
 
-    PhonoContentContainer(
+    PhonoScreenShell(
         title = " ",
         hideBackButton = false,
         onBack = onBack,
         rightIcon = Icons.AutoMirrored.Filled.QueueMusic,
         onRightIconClick = onOpenQueue,
         rightIconVisible = hasTrack,
-        horizontalPadding = n(20),
-        topPadding = n(0),
+        horizontalPadding = legacyNToGridDp(20),
         modifier = Modifier.fillMaxSize(),
     ) {
         Column(
@@ -102,41 +102,37 @@ fun PlayingScreen(
                     placeholderIcon = Icons.Default.MusicNote,
                     crossfade = false,
                     modifier = Modifier
-                        .padding(bottom = n(20))
-                        .size(n(200)),
+                        .padding(bottom = legacyNToGridDp(20))
+                        .size(legacyNToGridDp(200)),
                 )
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
                         .fillMaxWidth(0.9f)
-                        .padding(bottom = n(20)),
+                        .padding(bottom = legacyNToGridDp(20)),
                 ) {
-                    StyledText(
-                        if (hasTrack) playback.title.orEmpty() else "No song playing",
-                        size = 22,
-                        lineHeight = 24,
-                        color = PhonoColors.Foreground,
+                    LightText(
+                        text = if (hasTrack) playback.title.orEmpty() else "No song playing",
+                        variant = LightTextVariant.Copy,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Center,
+                        align = TextAlign.Center,
                         modifier = Modifier
                             .fillMaxWidth()
                             .then(
                                 if (playback.albumId != null) {
-                                    Modifier.tap { playback.albumId?.let(onOpenAlbum) }
+                                    Modifier.lightClickable { playback.albumId?.let(onOpenAlbum) }
                                 } else {
                                     Modifier
                                 }
                             ),
                     )
-                    StyledText(
-                        if (hasTrack) playback.artist.orEmpty() else "Go back and play something!",
-                        size = 14,
-                        lineHeight = 16,
-                        color = PhonoColors.Foreground,
+                    LightText(
+                        text = if (hasTrack) playback.artist.orEmpty() else "Go back and play something!",
+                        variant = LightTextVariant.Detail,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Center,
+                        align = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -148,8 +144,8 @@ fun PlayingScreen(
             Box(
                 modifier = Modifier
                     .fillMaxWidth(0.92f)
-                    .height(n(50))
-                    .padding(bottom = n(20)),
+                    .height(legacyNToGridDp(50))
+                    .padding(bottom = legacyNToGridDp(20)),
                 contentAlignment = Alignment.Center,
             ) {
                 if (hasTrack) {
@@ -159,22 +155,18 @@ fun PlayingScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         if (onAddToPlaylist != null && playback.currentUri != null) {
-                            Icon(
-                                Icons.Default.PlaylistAdd,
+                            PhonoHeaderIcon(
+                                icon = Icons.Default.PlaylistAdd,
+                                onClick = { onAddToPlaylist(playback.currentUri!!) },
+                                modifier = Modifier.size(legacyNToGridDp(30)),
                                 contentDescription = "Add to playlist",
-                                tint = PhonoColors.Foreground,
-                                modifier = Modifier
-                                    .size(n(30))
-                                    .tap { onAddToPlaylist(playback.currentUri!!) },
                             )
                         }
-                        Icon(
-                            if (extras.isTrackSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        PhonoHeaderIcon(
+                            icon = if (extras.isTrackSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            onClick = { if (!extras.savePending) vm.toggleCurrentTrackSave() },
+                            modifier = Modifier.size(legacyNToGridDp(30)),
                             contentDescription = "Like",
-                            tint = PhonoColors.Foreground,
-                            modifier = Modifier
-                                .size(n(30))
-                                .tap(enabled = !extras.savePending) { vm.toggleCurrentTrackSave() },
                         )
                     }
                 }
@@ -185,6 +177,7 @@ fun PlayingScreen(
 
 @Composable
 private fun ProgressBar(playback: PlaybackUiState, onSeek: (Long) -> Unit) {
+    val colors = LightThemeTokens.colors
     var lastDurationMs by remember(playback.currentUri) { mutableLongStateOf(0L) }
     if (playback.durationMs > 0L) {
         lastDurationMs = playback.durationMs
@@ -198,7 +191,7 @@ private fun ProgressBar(playback: PlaybackUiState, onSeek: (Long) -> Unit) {
     Column(
         Modifier
             .fillMaxWidth(0.9f)
-            .defaultMinSize(minHeight = n(40))
+            .defaultMinSize(minHeight = legacyNToGridDp(40))
             .pointerInput(duration) {
                 awaitEachGesture {
                     val down = awaitFirstDown()
@@ -221,31 +214,31 @@ private fun ProgressBar(playback: PlaybackUiState, onSeek: (Long) -> Unit) {
         BoxWithConstraints(
             Modifier
                 .fillMaxWidth()
-                .height(n(6)),
+                .height(legacyNToGridDp(6)),
         ) {
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(n(2))
+                    .height(legacyNToGridDp(2))
                     .align(Alignment.Center)
-                    .background(PhonoColors.Foreground),
+                    .background(colors.content),
             )
             Box(
                 Modifier
                     .fillMaxWidth(displayProgress)
                     .fillMaxHeight()
                     .align(Alignment.CenterStart)
-                    .background(PhonoColors.Foreground),
+                    .background(colors.content),
             )
         }
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(top = n(3), bottom = n(6)),
+                .padding(top = legacyNToGridDp(3), bottom = legacyNToGridDp(6)),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            StyledText(formatTime(displayPositionMs), size = 12, color = PhonoColors.Foreground)
-            StyledText(formatTime(duration), size = 12, color = PhonoColors.Foreground)
+            LightText(text = formatTime(displayPositionMs), variant = LightTextVariant.Micro)
+            LightText(text = formatTime(duration), variant = LightTextVariant.Micro)
         }
     }
 }
@@ -255,7 +248,7 @@ private fun PlaybackControls(playback: PlaybackUiState, vm: AppViewModel) {
     Row(
         modifier = Modifier
             .fillMaxWidth(0.92f)
-            .padding(bottom = n(20)),
+            .padding(bottom = legacyNToGridDp(20)),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -265,23 +258,23 @@ private fun PlaybackControls(playback: PlaybackUiState, vm: AppViewModel) {
             contentDescription = "Shuffle",
             onClick = vm::toggleShuffle,
         )
-        Icon(
-            Icons.Default.SkipPrevious,
+        PhonoHeaderIcon(
+            icon = Icons.Default.SkipPrevious,
+            onClick = vm::previous,
+            modifier = Modifier.size(legacyNToGridDp(52)),
             contentDescription = "Previous",
-            tint = PhonoColors.Foreground,
-            modifier = Modifier.size(n(52)).tap { vm.previous() },
         )
-        Icon(
-            if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+        PhonoHeaderIcon(
+            icon = if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+            onClick = { if (playback.isPlaying) vm.pause() else vm.resume() },
+            modifier = Modifier.size(legacyNToGridDp(52)),
             contentDescription = "Play/Pause",
-            tint = PhonoColors.Foreground,
-            modifier = Modifier.size(n(52)).tap { if (playback.isPlaying) vm.pause() else vm.resume() },
         )
-        Icon(
-            Icons.Default.SkipNext,
+        PhonoHeaderIcon(
+            icon = Icons.Default.SkipNext,
+            onClick = vm::next,
+            modifier = Modifier.size(legacyNToGridDp(52)),
             contentDescription = "Next",
-            tint = PhonoColors.Foreground,
-            modifier = Modifier.size(n(52)).tap { vm.next() },
         )
         PlaybackModeIcon(
             icon = when (playback.repeatMode) {
@@ -302,25 +295,25 @@ private fun PlaybackModeIcon(
     contentDescription: String,
     onClick: () -> Unit,
 ) {
+    val colors = LightThemeTokens.colors
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.tap(onClick = onClick),
     ) {
-        Icon(
-            icon,
+        PhonoHeaderIcon(
+            icon = icon,
+            onClick = onClick,
+            modifier = Modifier.size(legacyNToGridDp(30)),
             contentDescription = contentDescription,
-            tint = PhonoColors.Foreground,
-            modifier = Modifier.size(n(30)),
         )
-        Spacer(Modifier.height(n(4)))
+        Spacer(Modifier.height(legacyNToGridDp(4)))
         if (active) {
             Box(
                 Modifier
-                    .size(n(5))
-                    .background(PhonoColors.Foreground, CircleShape),
+                    .size(legacyNToGridDp(5))
+                    .background(colors.content, CircleShape),
             )
         } else {
-            Spacer(Modifier.height(n(5)))
+            Spacer(Modifier.height(legacyNToGridDp(5)))
         }
     }
 }

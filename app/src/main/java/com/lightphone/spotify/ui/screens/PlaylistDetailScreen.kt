@@ -24,18 +24,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.TextStyle
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
-import com.lightphone.spotify.ui.components.PhonoContentContainer
 import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
 import com.lightphone.spotify.ui.components.PhonoTrackEditActions
 import com.lightphone.spotify.ui.components.PhonoTrackListItem
-import com.lightphone.spotify.ui.theme.PhonoColors
-import com.lightphone.spotify.ui.theme.PublicSans
-import com.lightphone.spotify.ui.theme.n
-import com.lightphone.spotify.ui.theme.nSp
+import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.lightphone.spotify.ui.phono.PhonoScreenShell
+import com.lightphone.spotify.ui.phono.PhonoTextButton
+import com.thelightphone.sdk.ui.LightThemeTokens
 
 @Composable
 fun PlaylistDetailScreen(
@@ -67,7 +65,7 @@ fun PlaylistDetailScreen(
     val title = detail?.name ?: fallbackTitle
     val tracks = if (state.requestedId == playlistId) state.tracks else emptyList()
 
-    PhonoContentContainer(
+    PhonoScreenShell(
         title = title,
         hideBackButton = false,
         onBack = onBack,
@@ -90,8 +88,8 @@ fun PlaylistDetailScreen(
         } else {
             null
         },
-        horizontalPadding = n(20),
-        contentGap = n(0),
+        horizontalPadding = legacyNToGridDp(20),
+        contentGap = legacyNToGridDp(0),
         modifier = Modifier.fillMaxSize(),
     ) {
         if (state.mutationError != null) {
@@ -101,7 +99,7 @@ fun PlaylistDetailScreen(
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .padding(bottom = n(20)),
+                .padding(bottom = legacyNToGridDp(20)),
         ) {
             when {
                 state.error != null && detail == null -> EmptyListMessage(state.error!!)
@@ -134,7 +132,7 @@ fun PlaylistDetailScreen(
                                 onMoveDown = { vm.movePlaylistTrack(playlistId, index, index + 1) },
                                 onSwipeToQueue = { vm.addTrackToQueue(track.toMetadata()) },
                             )
-                            Spacer(Modifier.height(n(8)))
+                            Spacer(Modifier.height(legacyNToGridDp(8)))
                         }
                     }
                 }
@@ -196,30 +194,28 @@ private fun RenamePlaylistOverlay(
     onCancel: () -> Unit,
 ) {
     var name by remember(initialName) { mutableStateOf(initialName) }
+    val colors = LightThemeTokens.colors
+    val typography = LightThemeTokens.typography
 
-    PhonoContentContainer(
+    PhonoScreenShell(
         title = "Rename playlist",
         hideBackButton = false,
         onBack = onCancel,
         rightIconVisible = false,
-        horizontalPadding = n(37),
+        horizontalPadding = legacyNToGridDp(37),
         modifier = Modifier.fillMaxSize(),
     ) {
         BasicTextField(
             value = name,
             onValueChange = { name = it },
-            textStyle = TextStyle(
-                color = PhonoColors.Foreground,
-                fontSize = nSp(22),
-                fontFamily = PublicSans,
-            ),
-            cursorBrush = SolidColor(PhonoColors.Foreground),
+            textStyle = typography.copy.copy(color = colors.content),
+            cursorBrush = SolidColor(colors.content),
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = n(12)),
+                .padding(vertical = legacyNToGridDp(12)),
             singleLine = true,
         )
-        com.lightphone.spotify.ui.components.PhonoStyledButton(
+        PhonoTextButton(
             text = "Save",
             onClick = { onConfirm(name.trim()) },
         )

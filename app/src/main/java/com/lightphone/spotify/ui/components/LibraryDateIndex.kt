@@ -111,4 +111,4 @@ fun LibraryDateIndex.sectionNearScrollIndex(scrollIndex: Int): MonthSection? {
 }
 
 fun monthLabel(month: Month): String =
-    month.getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.getDefault())
+    month.getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.getDefault())

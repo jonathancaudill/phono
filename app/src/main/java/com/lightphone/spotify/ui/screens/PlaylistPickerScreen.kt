@@ -18,13 +18,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
-import com.lightphone.spotify.ui.components.PhonoContentContainer
 import com.lightphone.spotify.ui.components.PhonoSquareCheckbox
-import com.lightphone.spotify.ui.components.PhonoStyledButton
-import com.lightphone.spotify.ui.components.StyledText
-import com.lightphone.spotify.ui.components.tap
-import com.lightphone.spotify.ui.theme.PhonoColors
-import com.lightphone.spotify.ui.theme.n
+import com.lightphone.spotify.ui.light.PhonoSemanticColors
+import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.lightphone.spotify.ui.phono.PhonoScreenShell
+import com.lightphone.spotify.ui.phono.PhonoTextButton
+import com.thelightphone.sdk.ui.LightText
+import com.thelightphone.sdk.ui.LightTextVariant
+import com.thelightphone.sdk.ui.LightThemeTokens
+import com.thelightphone.sdk.ui.lightClickable
 
 @Composable
 fun PlaylistPickerScreen(
@@ -41,7 +43,7 @@ fun PlaylistPickerScreen(
         vm.loadPlaylistPicker(trackUri)
     }
 
-    PhonoContentContainer(
+    PhonoScreenShell(
         title = "Add to playlist",
         hideBackButton = false,
         onBack = onBack,
@@ -49,19 +51,19 @@ fun PlaylistPickerScreen(
         onRightIconClick = { vm.addTrackToSelectedPlaylists(onAdded) },
         rightIconVisible = hasSelection,
         rightLoading = state.adding,
-        horizontalPadding = n(20),
+        horizontalPadding = legacyNToGridDp(20),
         modifier = Modifier.fillMaxSize(),
     ) {
         if (state.statusMessage != null) {
-            StyledText(
-                state.statusMessage!!,
-                size = 14,
-                color = PhonoColors.Placeholder,
+            LightText(
+                text = state.statusMessage!!,
+                variant = LightTextVariant.Detail,
+                color = PhonoSemanticColors.Placeholder,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
         if (state.error != null) {
-            StyledText(state.error!!, size = 14, color = PhonoColors.Error)
+            LightText(text = state.error!!, variant = LightTextVariant.Detail, color = PhonoSemanticColors.Error)
         }
         Column(Modifier.weight(1f)) {
             when {
@@ -84,12 +86,12 @@ fun PlaylistPickerScreen(
                     }
                 }
             }
-            PhonoStyledButton(
+            PhonoTextButton(
                 text = "New playlist",
                 onClick = onCreatePlaylist,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = n(12)),
+                    .padding(vertical = legacyNToGridDp(12)),
             )
         }
     }
@@ -103,17 +105,19 @@ private fun PlaylistPickerRow(
     disabled: Boolean,
     onToggle: () -> Unit,
 ) {
+    val colors = LightThemeTokens.colors
+    val textColor = if (disabled) PhonoSemanticColors.DisabledIcon else colors.content
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .defaultMinSize(minHeight = n(50))
-            .tap(enabled = !disabled, onClick = onToggle),
+            .defaultMinSize(minHeight = legacyNToGridDp(50))
+            .lightClickable(enabled = !disabled, onClick = onToggle),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
             modifier = Modifier
-                .width(n(36))
-                .padding(end = n(8)),
+                .width(legacyNToGridDp(36))
+                .padding(end = legacyNToGridDp(8)),
             contentAlignment = Alignment.Center,
         ) {
             PhonoSquareCheckbox(checked = selected, enabled = !disabled)
@@ -121,20 +125,18 @@ private fun PlaylistPickerRow(
         Column(
             Modifier
                 .weight(1f)
-                .padding(end = n(10)),
+                .padding(end = legacyNToGridDp(10)),
         ) {
-            StyledText(
-                name,
-                size = 22,
-                lineHeight = 24,
-                color = if (disabled) PhonoColors.DisabledIcon else PhonoColors.Foreground,
+            LightText(
+                text = name,
+                variant = LightTextVariant.Copy,
+                color = textColor,
                 maxLines = 1,
             )
-            StyledText(
-                ownerName,
-                size = 16,
-                lineHeight = 18,
-                color = if (disabled) PhonoColors.DisabledIcon else PhonoColors.Foreground,
+            LightText(
+                text = ownerName,
+                variant = LightTextVariant.Detail,
+                color = textColor,
                 maxLines = 1,
             )
         }

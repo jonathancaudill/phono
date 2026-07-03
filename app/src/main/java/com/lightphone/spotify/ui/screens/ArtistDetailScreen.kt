@@ -18,13 +18,14 @@ import androidx.compose.ui.Modifier
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
-import com.lightphone.spotify.ui.components.PhonoContentContainer
 import com.lightphone.spotify.ui.components.PhonoMediaListItem
 import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
 import com.lightphone.spotify.ui.components.PhonoTrackListItem
-import com.lightphone.spotify.ui.components.StyledText
-import com.lightphone.spotify.ui.theme.PhonoColors
-import com.lightphone.spotify.ui.theme.n
+import com.lightphone.spotify.ui.light.PhonoSemanticColors
+import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.lightphone.spotify.ui.phono.PhonoScreenShell
+import com.thelightphone.sdk.ui.LightText
+import com.thelightphone.sdk.ui.LightTextVariant
 
 @Composable
 fun ArtistDetailScreen(
@@ -40,19 +41,19 @@ fun ArtistDetailScreen(
 
     val artist = state.artist?.takeIf { it.id == artistId }
 
-    PhonoContentContainer(
+    PhonoScreenShell(
         title = artist?.name ?: "Artist",
         hideBackButton = false,
         onBack = onBack,
         rightIconVisible = false,
-        horizontalPadding = n(20),
+        horizontalPadding = legacyNToGridDp(20),
         modifier = Modifier.fillMaxSize(),
     ) {
         Box(
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .padding(bottom = n(20)),
+                .padding(bottom = legacyNToGridDp(20)),
         ) {
             when {
                 state.error != null && artist == null -> EmptyListMessage(state.error!!)
@@ -60,21 +61,20 @@ fun ArtistDetailScreen(
                     item("meta") {
                         val followers = artist?.followers?.total
                         if (followers != null && followers > 0) {
-                            StyledText(
-                                "${followers / 1000}K followers",
-                                size = 16,
-                                color = PhonoColors.Placeholder,
-                                modifier = Modifier.padding(bottom = n(16)),
+                            LightText(
+                                text = "${followers / 1000}K followers",
+                                variant = LightTextVariant.Detail,
+                                color = PhonoSemanticColors.Placeholder,
+                                modifier = Modifier.padding(bottom = legacyNToGridDp(16)),
                             )
                         }
                     }
                     if (state.topTracks.isNotEmpty()) {
                         item("popular-header") {
-                            StyledText(
-                                "Popular",
-                                size = 20,
-                                color = PhonoColors.Foreground,
-                                modifier = Modifier.padding(bottom = n(8)),
+                            LightText(
+                                text = "Popular",
+                                variant = LightTextVariant.Copy,
+                                modifier = Modifier.padding(bottom = legacyNToGridDp(8)),
                             )
                         }
                         itemsIndexed(state.topTracks, key = { _, t -> t.id }) { index, track ->
@@ -93,17 +93,16 @@ fun ArtistDetailScreen(
                                         },
                                     )
                                 }
-                                Spacer(Modifier.height(n(8)))
+                                Spacer(Modifier.height(legacyNToGridDp(8)))
                             }
                         }
                     }
                     if (state.albums.isNotEmpty()) {
                         item("albums-header") {
-                            StyledText(
-                                "Albums",
-                                size = 20,
-                                color = PhonoColors.Foreground,
-                                modifier = Modifier.padding(top = n(16), bottom = n(8)),
+                            LightText(
+                                text = "Albums",
+                                variant = LightTextVariant.Copy,
+                                modifier = Modifier.padding(top = legacyNToGridDp(16), bottom = legacyNToGridDp(8)),
                             )
                         }
                         itemsIndexed(state.albums, key = { _, a -> a.id }) { _, album ->
@@ -121,7 +120,7 @@ fun ArtistDetailScreen(
                                         )
                                     },
                                 )
-                                Spacer(Modifier.height(n(8)))
+                                Spacer(Modifier.height(legacyNToGridDp(8)))
                             }
                         }
                     }

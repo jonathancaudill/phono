@@ -28,14 +28,17 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.lightphone.spotify.debug.DebugSessionLog
-import com.lightphone.spotify.ui.theme.PhonoColors
+import com.lightphone.spotify.ui.light.PhonoSemanticColors
+import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.theme.n
-import com.lightphone.spotify.ui.theme.nSp
+import com.thelightphone.sdk.ui.LightText
+import com.thelightphone.sdk.ui.LightTextVariant
+import com.thelightphone.sdk.ui.LightThemeTokens
 import kotlin.math.abs
 
 /** Visual scrollbar track width (drawn at the screen's right gutter). */
 internal val SCRUBBAR_TOUCH_WIDTH: Dp = n(24)
-/** Empty margin to the right of list text — matches [PhonoContentContainer] horizontal padding. */
+/** Empty margin to the right of list text — matches screen shell horizontal padding. */
 internal val SCROLLBAR_SCREEN_GUTTER: Dp = n(20)
 internal val SCRUB_YEARS_COLUMN_WIDTH: Dp = n(56)
 internal val SCRUB_MONTHS_COLUMN_WIDTH: Dp = n(168)
@@ -73,15 +76,16 @@ internal fun LibraryAlphaScrubVisuals(
     alphaIndex: LibraryAlphaIndex,
     modifier: Modifier = Modifier,
     screenEdgeGutter: Dp = SCROLLBAR_SCREEN_GUTTER,
-    scrimColor: Color = PhonoColors.Background,
+    scrimColor: Color? = null,
 ) {
     if (!controller.overlayOpen || controller.alphaSelection == null) return
+    val resolvedScrim = scrimColor ?: LightThemeTokens.colors.background
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .drawBehind {
-                drawRect(color = scrimColor, size = Size(size.width, size.height))
+                drawRect(color = resolvedScrim, size = Size(size.width, size.height))
             }
             .pointerInput(Unit) {
                 awaitEachGesture {
@@ -126,17 +130,18 @@ internal fun LibraryScrubVisuals(
     dateIndex: LibraryDateIndex,
     modifier: Modifier = Modifier,
     screenEdgeGutter: Dp = SCROLLBAR_SCREEN_GUTTER,
-    scrimColor: Color = PhonoColors.Background,
+    scrimColor: Color? = null,
 ) {
     val open = controller.overlayOpen
     val selection = controller.selection
     if (!open || selection == null) return
+    val resolvedScrim = scrimColor ?: LightThemeTokens.colors.background
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .drawBehind {
-                drawRect(color = scrimColor, size = Size(size.width, size.height))
+                drawRect(color = resolvedScrim, size = Size(size.width, size.height))
             }
             .pointerInput(Unit) {
                 awaitEachGesture {
@@ -174,14 +179,12 @@ internal fun LibraryScrubVisuals(
                 selectedIndex = selection.selectedMonth?.let { selected ->
                     monthsInYear.indexOfFirst { it.month == selected.month }
                 }?.takeIf { it >= 0 },
-                centerTextSize = 24,
                 modifier = Modifier.width(SCRUB_MONTHS_COLUMN_WIDTH),
             )
             Spacer(Modifier.width(SCRUB_COLUMN_GAP))
             ScrubWheelColumn(
                 labels = dateIndex.years.map { it.toString() },
                 selectedIndex = dateIndex.years.indexOf(selection.selectedYear).takeIf { it >= 0 },
-                centerTextSize = 22,
                 modifier = Modifier.width(SCRUB_YEARS_COLUMN_WIDTH),
             )
         }
@@ -189,13 +192,29 @@ internal fun LibraryScrubVisuals(
 }
 
 @Composable
+private fun scrubWheelVariant(distanceFromCenter: Int): LightTextVariant = when (distanceFromCenter) {
+    0 -> LightTextVariant.Copy
+    1 -> LightTextVariant.Detail
+    2 -> LightTextVariant.Superfine
+    else -> LightTextVariant.Micro
+}
+
+@Composable
+private fun scrubWheelLineHeight(distanceFromCenter: Int): Dp = when (distanceFromCenter) {
+    0 -> legacyNToGridDp(24)
+    1 -> legacyNToGridDp(18)
+    2 -> legacyNToGridDp(16)
+    else -> legacyNToGridDp(14)
+}
+
+@Composable
 private fun ScrubWheelColumn(
     labels: List<String>,
     selectedIndex: Int?,
-    centerTextSize: Int,
     modifier: Modifier = Modifier,
 ) {
     if (labels.isEmpty() || selectedIndex == null) return
+    val colors = LightThemeTokens.colors
 
     Box(
         modifier = modifier.fillMaxHeight(),
@@ -220,23 +239,23 @@ private fun ScrubWheelColumn(
                 }
                 val slotCenterY = maxHeight * slotFraction
                 val distanceFromCenter = abs(slotIndex - SCRUB_WHEEL_CENTER_SLOT)
-                val (textSize, alpha, blurRadiusDp) = when (distanceFromCenter) {
-                    0 -> Triple(centerTextSize, 1f, 0.dp)
-                    1 -> Triple(centerTextSize - 4, 0.5f, 0.dp)
-                    2 -> Triple(centerTextSize - 5, 0.35f, 0.dp)
-                    else -> Triple(centerTextSize - 6, 0.25f, 3.dp)
+                val (alpha, blurRadiusDp) = when (distanceFromCenter) {
+                    0 -> 1f to 0.dp
+                    1 -> 0.5f to 0.dp
+                    2 -> 0.35f to 0.dp
+                    else -> 0.25f to 3.dp
                 }
                 val textColor = if (distanceFromCenter == 0) {
-                    PhonoColors.Foreground
+                    colors.content
                 } else {
-                    PhonoColors.InactiveTab
+                    PhonoSemanticColors.InactiveTab
                 }
                 val blurRadiusPx = with(density) { blurRadiusDp.toPx() }
-                val lineHeight = with(density) { nSp(textSize).toDp() }
+                val lineHeight = scrubWheelLineHeight(distanceFromCenter)
 
-                StyledText(
+                LightText(
                     text = labels[itemIndex],
-                    size = textSize,
+                    variant = scrubWheelVariant(distanceFromCenter),
                     color = textColor,
                     maxLines = 1,
                     modifier = Modifier
@@ -261,23 +280,20 @@ private fun ScrubLabelColumn(
     selectedIndex: Int?,
     modifier: Modifier = Modifier,
 ) {
+    val colors = LightThemeTokens.colors
     Column(
         modifier = modifier
             .fillMaxHeight()
-            .padding(vertical = n(12)),
+            .padding(vertical = legacyNToGridDp(12)),
         verticalArrangement = Arrangement.SpaceEvenly,
         horizontalAlignment = Alignment.End,
     ) {
         labels.forEachIndexed { index, label ->
-            StyledText(
+            LightText(
                 text = label,
-                modifier = Modifier.padding(vertical = n(4)),
-                size = 15,
-                color = if (index == selectedIndex) {
-                    PhonoColors.Foreground
-                } else {
-                    PhonoColors.InactiveTab
-                },
+                variant = LightTextVariant.Detail,
+                color = if (index == selectedIndex) colors.content else PhonoSemanticColors.InactiveTab,
+                modifier = Modifier.padding(vertical = legacyNToGridDp(4)),
             )
         }
     }
