@@ -16,7 +16,8 @@ sealed interface SessionEvent {
 
 data class SignOutOptions(
     val clearWebApiTokens: Boolean = true,
-    val clearDevAppCredentials: Boolean = false,
+    /** When true (default for Logout), client ID/secret are removed so Step 2 must be re-entered. */
+    val clearDevAppCredentials: Boolean = true,
 )
 
 /**

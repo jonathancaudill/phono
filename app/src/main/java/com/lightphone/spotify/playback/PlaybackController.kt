@@ -145,7 +145,12 @@ class PlaybackController private constructor(
         webApiAuth = webApiAuth,
         clearTrackMetadata = { trackMetadata.clear() },
         clearImageMemoryCache = { Coil.imageLoader(appContext).memoryCache?.clear() },
-        rustLogout = { if (engineReady) requireEngine().logout() },
+        rustLogout = {
+            if (engineReady) {
+                runCatching { requireEngine().logout() }
+            }
+            clearPlaybackCredentialFiles()
+        },
     )
 
     val sessionEvents = sessionCoordinator.events
@@ -351,6 +356,16 @@ class PlaybackController private constructor(
     private fun hasCachedPlaybackCredentials(): Boolean =
         File(appContext.filesDir, "spotify-cache/creds/credentials.json").exists()
 
+    /** Belt-and-suspenders: ensure disk creds are gone even if the engine was never attached. */
+    private fun clearPlaybackCredentialFiles() {
+        val credDir = File(appContext.filesDir, "spotify-cache/creds")
+        listOf(
+            "credentials.json",
+            "oauth_refresh_token",
+            "oauth_access_cache.json",
+        ).forEach { name -> File(credDir, name).delete() }
+    }
+
     fun isUnmeteredNetwork(): Boolean {
         val network = connectivityManager.activeNetwork ?: return false
         val caps = connectivityManager.getNetworkCapabilities(network) ?: return false
@@ -531,9 +546,9 @@ class PlaybackController private constructor(
                 PlaybackUiState(
                     loggedIn = false,
                     authInitialized = true,
-                    webApiReady = webApiAuth.sessionState.value is
-                        com.lightphone.spotify.data.webapi.WebApiSessionState.Authorized,
-                    webApiSessionState = webApiAuth.sessionState.value,
+                    webApiReady = false,
+                    webApiSessionState =
+                        com.lightphone.spotify.data.webapi.WebApiSessionState.NotConfigured,
                     networkOnline = isNetworkOnline(),
                 ),
             )

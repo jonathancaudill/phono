@@ -103,11 +103,15 @@ class WebApiAuth(private val context: Context) {
     }
 
     /** Exchange authorization code for tokens (Authorization Code + secret). */
-    fun exchangeCode(code: String): Result<Unit> = synchronized(lock) {
-        val clientId = getClientId() ?: return Result.failure(IllegalStateException("No client ID"))
-        val secret = prefs.getString(KEY_CLIENT_SECRET, null)
-            ?: return Result.failure(IllegalStateException("No client secret"))
-        runCatching {
+    fun exchangeCode(code: String): Result<Unit> {
+        val creds = synchronized(lock) {
+            val clientId = getClientId() ?: return Result.failure(IllegalStateException("No client ID"))
+            val secret = prefs.getString(KEY_CLIENT_SECRET, null)
+                ?: return Result.failure(IllegalStateException("No client secret"))
+            clientId to secret
+        }
+        val (clientId, secret) = creds
+        return runCatching {
             val body = FormBody.Builder()
                 .add("grant_type", "authorization_code")
                 .add("code", code)
@@ -123,12 +127,12 @@ class WebApiAuth(private val context: Context) {
             val responseBody = response.body?.string() ?: ""
             if (!response.isSuccessful) {
                 if (responseBody.contains("invalid_grant")) {
-                    clearTokensInternal()
+                    synchronized(lock) { clearTokensInternal() }
                 }
                 throw IOException("Token exchange failed: HTTP ${response.code} $responseBody")
             }
             val tokens = json.decodeFromString<TokenResponse>(responseBody)
-            storeTokensInternal(tokens)
+            synchronized(lock) { storeTokensInternal(tokens) }
         }
     }
 
@@ -136,28 +140,29 @@ class WebApiAuth(private val context: Context) {
      * Returns a valid bearer token, refreshing proactively when near expiry.
      * On invalid_grant, clears tokens so the UI can re-run Step 2.
      */
-    fun currentBearer(): String = synchronized(lock) {
-        val access = prefs.getString(KEY_ACCESS_TOKEN, null)
-        val refresh = prefs.getString(KEY_REFRESH_TOKEN, null)
-        if (access.isNullOrBlank() || refresh.isNullOrBlank()) {
-            throw WebApiAuthException("Web API not authorized — complete Step 2 setup")
-        }
-        val expiresAt = prefs.getLong(KEY_EXPIRES_AT_MS, 0L)
-        if (System.currentTimeMillis() + REFRESH_EARLY_MS >= expiresAt) {
-            refreshTokensInternal() ?: throw WebApiAuthException(
-                "Session expired — re-authorize your dev app in Step 2",
-            )
-        }
-        prefs.getString(KEY_ACCESS_TOKEN, null)
-            ?: throw WebApiAuthException("Web API not authorized")
-    }
-
-    fun refreshTokens(): Result<Unit> = synchronized(lock) {
-        runCatching {
-            if (refreshTokensInternal() == null) {
-                throw WebApiAuthException("Token refresh failed — re-authorize Step 2")
+    fun currentBearer(): String {
+        synchronized(lock) {
+            val access = prefs.getString(KEY_ACCESS_TOKEN, null)
+            val refresh = prefs.getString(KEY_REFRESH_TOKEN, null)
+            if (access.isNullOrBlank() || refresh.isNullOrBlank()) {
+                throw WebApiAuthException("Web API not authorized — complete Step 2 setup")
+            }
+            val expiresAt = prefs.getLong(KEY_EXPIRES_AT_MS, 0L)
+            if (System.currentTimeMillis() + REFRESH_EARLY_MS < expiresAt) {
+                return access
             }
         }
+        refreshTokensInternal() ?: throw WebApiAuthException(
+            "Session expired — re-authorize your dev app in Step 2",
+        )
+        return synchronized(lock) {
+            prefs.getString(KEY_ACCESS_TOKEN, null)
+                ?: throw WebApiAuthException("Web API not authorized")
+        }
+    }
+
+    fun refreshTokens(): Result<Unit> = runCatching {
+        refreshTokensInternal() ?: throw WebApiAuthException("Token refresh failed — re-authorize Step 2")
     }
 
     fun clearTokens() = synchronized(lock) {
@@ -179,9 +184,13 @@ class WebApiAuth(private val context: Context) {
     }
 
     private fun refreshTokensInternal(): String? {
-        val clientId = prefs.getString(KEY_CLIENT_ID, null)?.takeIf { it.isNotBlank() } ?: return null
-        val secret = prefs.getString(KEY_CLIENT_SECRET, null) ?: return null
-        val refresh = prefs.getString(KEY_REFRESH_TOKEN, null) ?: return null
+        val creds = synchronized(lock) {
+            val clientId = prefs.getString(KEY_CLIENT_ID, null)?.takeIf { it.isNotBlank() } ?: return null
+            val secret = prefs.getString(KEY_CLIENT_SECRET, null) ?: return null
+            val refresh = prefs.getString(KEY_REFRESH_TOKEN, null) ?: return null
+            Triple(clientId, secret, refresh)
+        }
+        val (clientId, secret, refresh) = creds
         val body = FormBody.Builder()
             .add("grant_type", "refresh_token")
             .add("refresh_token", refresh)
@@ -196,13 +205,15 @@ class WebApiAuth(private val context: Context) {
         val responseBody = response.body?.string() ?: ""
         if (!response.isSuccessful) {
             if (responseBody.contains("invalid_grant")) {
-                clearTokensInternal()
+                synchronized(lock) { clearTokensInternal() }
             }
             return null
         }
         val tokens = json.decodeFromString<TokenResponse>(responseBody)
-        storeTokensInternal(tokens)
-        return prefs.getString(KEY_ACCESS_TOKEN, null)
+        return synchronized(lock) {
+            storeTokensInternal(tokens)
+            prefs.getString(KEY_ACCESS_TOKEN, null)
+        }
     }
 
     private fun storeTokensInternal(tokens: TokenResponse) {

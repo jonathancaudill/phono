@@ -14,3 +14,11 @@
 
 # Media3
 -keep class androidx.media3.** { *; }
+
+# CameraX + ML Kit (QR scanner on Web API setup)
+-keep class androidx.camera.** { *; }
+-keep class com.google.mlkit.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_barcode.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_common.** { *; }
+-dontwarn com.google.mlkit.**
+-dontwarn com.google.android.gms.**
