@@ -52,7 +52,7 @@ The app uses **dual authentication**:
 The setup page runs entirely in your browser — credentials are never sent to a server. The QR
 code encodes your client secret in plain text; generate and scan in private.
 
-**PLEASE NOTE:** Credentials may expire around 6 months. Just re-enter them!
+**PLEASE NOTE:** Credentials may expire around 6 months. Just rotate the secret and redo steps 2-3!
 
 
 ## Repository layout
