@@ -1760,10 +1760,6 @@ async fn forward_events(
                 notify(&listener, |l| l.on_position_changed(position_ms as i64));
             }
             PlayerEvent::Unavailable { track_id, .. } => {
-                notify(
-                    &listener,
-                    |l| l.on_unavailable(uri_to_string(&track_id)),
-                );
                 let is_current = queue
                     .lock()
                     .unwrap()
@@ -1778,6 +1774,10 @@ async fn forward_events(
                     );
                     continue;
                 }
+                notify(
+                    &listener,
+                    |l| l.on_unavailable(uri_to_string(&track_id)),
+                );
                 // Advance past dead tracks (skip_next, not end_of_track — repeat-one must not retry unavailable URI).
                 if unavailable_guard.record() {
                     log::warn!("too many consecutive unavailable tracks; stopping playback");

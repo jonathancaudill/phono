@@ -41,11 +41,11 @@ import kotlin.math.abs
 internal val SCRUBBAR_TOUCH_WIDTH: Dp = n(24)
 /** Empty margin to the right of list text — matches screen shell horizontal padding. */
 internal val SCROLLBAR_SCREEN_GUTTER: Dp = n(20)
-internal val SCRUB_YEARS_COLUMN_WIDTH: Dp = n(56)
-internal val SCRUB_MONTHS_COLUMN_WIDTH: Dp = n(168)
+/** Wide enough for Copy-variant year + trailing tick without clipping. */
+internal val SCRUB_YEARS_COLUMN_WIDTH: Dp = n(120)
+internal val SCRUB_MONTHS_COLUMN_WIDTH: Dp = n(120)
 private val SCRUB_COLUMN_GAP: Dp = n(20)
-/** Short tick to the right of each label — finger rests here so text stays readable. */
-private val SCRUB_DEADZONE_TICK_WIDTH: Dp = n(36)
+/** Tick to the right of each label — fills column width after the label. */
 private val SCRUB_DEADZONE_TICK_HEIGHT: Dp = n(2)
 private val SCRUB_DEADZONE_TICK_GAP: Dp = n(4)
 
@@ -243,6 +243,7 @@ private fun ScrubWheelColumn(
 
                 Row(
                     modifier = Modifier
+                        .fillMaxWidth()
                         .align(Alignment.TopEnd)
                         .offset(y = slotCenterY - lineHeight / 2)
                         .graphicsLayer {
@@ -262,7 +263,7 @@ private fun ScrubWheelColumn(
                     Spacer(Modifier.width(SCRUB_DEADZONE_TICK_GAP))
                     Box(
                         Modifier
-                            .width(SCRUB_DEADZONE_TICK_WIDTH)
+                            .weight(1f)
                             .height(SCRUB_DEADZONE_TICK_HEIGHT)
                             .background(textColor),
                     )
