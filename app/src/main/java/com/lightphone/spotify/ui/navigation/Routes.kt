@@ -7,6 +7,7 @@ object Routes {
     const val Main = "main"
     const val Playing = "playing"
     const val Queue = "queue"
+    const val SearchInput = "search_input?query={query}"
     const val SearchResults = "search_results/{query}"
     const val Album = "album/{albumId}?title={title}"
     const val Artist = "artist/{artistId}"
@@ -14,6 +15,7 @@ object Routes {
     const val CreatePlaylist = "create_playlist"
     const val PlaylistPicker = "playlist_picker/{trackUri}"
 
+    fun searchInput(query: String = "") = "search_input?query=${Uri.encode(query)}"
     fun searchResults(query: String) = "search_results/${Uri.encode(query)}"
     fun album(albumId: String, title: String = "") =
         "album/$albumId?title=${Uri.encode(title)}"

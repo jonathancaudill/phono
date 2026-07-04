@@ -28,3 +28,10 @@ data class PlaylistTrackUriEntity(
     val playlist_id: String,
     val track_uri: String,
 )
+
+/** Last snapshot_id for which [playlist_track_uris] was fully rebuilt. */
+@Entity(tableName = "playlist_uri_index")
+data class PlaylistUriIndexEntity(
+    @PrimaryKey val playlist_id: String,
+    val indexed_snapshot_id: String?,
+)

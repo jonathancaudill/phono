@@ -66,6 +66,9 @@ fun SettingsScreen(
     ) {
         LightScrollView(modifier = Modifier.weight(1f)) {
             Column(Modifier.fillMaxWidth()) {
+                SectionLabel("Appearance")
+                SettingsToggleRow("Dark mode", settings.darkTheme, vm::setDarkTheme)
+
                 SectionLabel("Playback")
                 SettingsToggleRow("Gapless playback", settings.gaplessEnabled, vm::setGaplessEnabled)
                 SettingsToggleRow("Normalize volume", settings.normalizationEnabled, vm::setNormalizationEnabled)
@@ -160,7 +163,8 @@ private fun SettingsToggleRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         LightIcon(
-            icon = if (checked) LightIcons.TOGGLE_ON else LightIcons.TOGGLE_OFF,
+            // LightIcons names are inverted vs the artwork (knob-left is labeled ON).
+            icon = if (checked) LightIcons.TOGGLE_OFF else LightIcons.TOGGLE_ON,
             modifier = Modifier.padding(end = legacyNToGridDp(10)),
             contentDescription = null,
         )

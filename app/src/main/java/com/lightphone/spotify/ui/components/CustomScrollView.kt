@@ -219,8 +219,11 @@ private fun CustomScrollListBody(
             virtualItemCount ?: 0,
             loadedItemCount ?: state.layoutInfo.totalItemsCount,
         ).coerceAtLeast(state.layoutInfo.totalItemsCount)
+        // TopEnd in a collapsed (0-width) parent places the strip on the left edge of the screen.
+        // Skip drawing until we have a real width (also covers overlay-dismiss layout races).
+        val scrollbarPlacementReady = containerWidthPx > touchStripWidthPx * 2f
 
-        if (scrubHoldOnly && metrics != null && containerHeightPx > 0f) {
+        if (scrubHoldOnly && metrics != null && containerHeightPx > 0f && scrollbarPlacementReady) {
             val stripLeftPx = containerWidthPx - touchStripWidthPx
 
             Box(
@@ -293,7 +296,7 @@ private fun CustomScrollListBody(
                                     }
 
                                     val final = selection
-                                    if (final.reachedMonthsZone && final.selectedMonth != null) {
+                                    if (final.selectedMonth != null) {
                                         jumpTarget = final.selectedMonth.startIndex
                                     }
                                 }
@@ -338,7 +341,7 @@ private fun CustomScrollListBody(
                         .padding(end = n(2)),
                 )
             }
-        } else if (!scrubHoldOnly && itemsAvailable > 0) {
+        } else if (!scrubHoldOnly && itemsAvailable > 0 && scrollbarPlacementReady) {
             val scrollbarState = state.phonoScrollbarState(itemsAvailable)
             val onThumbMoved = rememberPhonoScrollbarScroller(state, itemsAvailable)
             if (scrollbarState.thumbTrackSizePercent > 0f) {

@@ -29,8 +29,9 @@ import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.unit.IntOffset
-import com.lightphone.spotify.ui.theme.PhonoColors
+import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.theme.n
+import com.thelightphone.sdk.ui.LightThemeTokens
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -56,8 +57,9 @@ fun PhonoSwipeToActionRow(
         label = "swipeRowOffset",
     )
 
+    val colors = LightThemeTokens.colors
     val revealProgress = (animatedOffset / actionWidthPx).coerceIn(0f, 1f)
-    val iconColor = lerp(PhonoColors.Placeholder, PhonoColors.Foreground, revealProgress)
+    val iconColor = lerp(PhonoSemanticColors.Placeholder, colors.content, revealProgress)
 
     Box(
         modifier = modifier
@@ -119,7 +121,7 @@ fun PhonoSwipeToActionRow(
             modifier = Modifier
                 .offset { IntOffset(animatedOffset.roundToInt(), 0) }
                 .fillMaxWidth()
-                .background(PhonoColors.Background),
+                .background(colors.background),
         ) {
             content()
         }

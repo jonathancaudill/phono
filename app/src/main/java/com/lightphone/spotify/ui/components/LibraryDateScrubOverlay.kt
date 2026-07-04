@@ -1,6 +1,7 @@
 package com.lightphone.spotify.ui.components
 
 import android.os.Build
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -27,7 +29,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.lightphone.spotify.debug.DebugSessionLog
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.theme.n
@@ -43,6 +44,10 @@ internal val SCROLLBAR_SCREEN_GUTTER: Dp = n(20)
 internal val SCRUB_YEARS_COLUMN_WIDTH: Dp = n(56)
 internal val SCRUB_MONTHS_COLUMN_WIDTH: Dp = n(168)
 private val SCRUB_COLUMN_GAP: Dp = n(20)
+/** Short tick to the right of each label — finger rests here so text stays readable. */
+private val SCRUB_DEADZONE_TICK_WIDTH: Dp = n(36)
+private val SCRUB_DEADZONE_TICK_HEIGHT: Dp = n(2)
+private val SCRUB_DEADZONE_TICK_GAP: Dp = n(4)
 
 internal enum class ScrubColumn {
     Months,
@@ -157,23 +162,6 @@ internal fun LibraryScrubVisuals(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             val monthsInYear = dateIndex.monthsForYear(selection.selectedYear)
-            // #region agent log
-            DebugSessionLog.log(
-                location = "LibraryDateScrubOverlay.kt:LibraryScrubVisuals",
-                message = "scrub overlay labels",
-                hypothesisId = "B,D",
-                runId = "post-fix",
-                data = mapOf(
-                    "selectedYear" to selection.selectedYear,
-                    "selectedMonth" to selection.selectedMonth?.let { "${it.year}-${it.month.name}" },
-                    "monthsInYearCount" to monthsInYear.size,
-                    "monthsInYearLabels" to monthsInYear.map { monthLabel(it.month) }.toString(),
-                    "yearsCount" to dateIndex.years.size,
-                    "yearsLabels" to dateIndex.years.map { it.toString() }.toString(),
-                    "allSectionsCount" to dateIndex.sections.size,
-                ),
-            )
-            // #endregion
             ScrubWheelColumn(
                 labels = monthsInYear.map { monthLabel(it.month) },
                 selectedIndex = selection.selectedMonth?.let { selected ->
@@ -253,11 +241,7 @@ private fun ScrubWheelColumn(
                 val blurRadiusPx = with(density) { blurRadiusDp.toPx() }
                 val lineHeight = scrubWheelLineHeight(distanceFromCenter)
 
-                LightText(
-                    text = labels[itemIndex],
-                    variant = scrubWheelVariant(distanceFromCenter),
-                    color = textColor,
-                    maxLines = 1,
+                Row(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .offset(y = slotCenterY - lineHeight / 2)
@@ -267,7 +251,22 @@ private fun ScrubWheelColumn(
                                 renderEffect = BlurEffect(blurRadiusPx, blurRadiusPx)
                             }
                         },
-                )
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    LightText(
+                        text = labels[itemIndex],
+                        variant = scrubWheelVariant(distanceFromCenter),
+                        color = textColor,
+                        maxLines = 1,
+                    )
+                    Spacer(Modifier.width(SCRUB_DEADZONE_TICK_GAP))
+                    Box(
+                        Modifier
+                            .width(SCRUB_DEADZONE_TICK_WIDTH)
+                            .height(SCRUB_DEADZONE_TICK_HEIGHT)
+                            .background(textColor),
+                    )
+                }
             }
         }
     }
@@ -302,7 +301,6 @@ private fun ScrubLabelColumn(
 internal data class ScrubSelectionState(
     val selectedYear: Int,
     val selectedMonth: MonthSection?,
-    val reachedMonthsZone: Boolean,
 )
 
 internal fun initialScrubSelection(dateIndex: LibraryDateIndex, scrollIndex: Int): ScrubSelectionState {
@@ -313,7 +311,6 @@ internal fun initialScrubSelection(dateIndex: LibraryDateIndex, scrollIndex: Int
     return ScrubSelectionState(
         selectedYear = year,
         selectedMonth = month,
-        reachedMonthsZone = false,
     )
 }
 
@@ -348,17 +345,14 @@ internal fun updateScrubSelection(
         ScrubColumn.Months -> {
             val months = dateIndex.monthsForYear(current.selectedYear)
             if (months.isEmpty()) {
-                current.copy(reachedMonthsZone = true)
+                current
             } else {
                 val monthIndex = indexForVerticalPosition(
                     yPx = yPx,
                     count = months.size,
                     heightPx = heightPx,
                 )
-                current.copy(
-                    selectedMonth = months[monthIndex],
-                    reachedMonthsZone = true,
-                )
+                current.copy(selectedMonth = months[monthIndex])
             }
         }
 

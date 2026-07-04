@@ -36,7 +36,8 @@ data class PlaylistsUiState(
         get() = when (filter) {
             PlaylistFilter.All -> items
             PlaylistFilter.YourPlaylists -> {
-                val userId = currentUserId ?: return emptyList()
+                val userId = currentUserId
+                if (userId == null) return items
                 items.filter { it.owner_id == userId }
             }
         }

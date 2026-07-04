@@ -13,8 +13,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
-import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
+import com.thelightphone.sdk.ui.LightThemeTokens
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 /** Trigger buffer fill when this many rows from the loaded edge are visible. */
@@ -58,7 +58,7 @@ fun LazyItemScope.LibraryListRunway(appending: Boolean) {
         contentAlignment = Alignment.Center,
     ) {
         if (appending) {
-            CircularProgressIndicator(color = PhonoColors.Foreground)
+            CircularProgressIndicator(color = LightThemeTokens.colors.content)
         }
     }
 }

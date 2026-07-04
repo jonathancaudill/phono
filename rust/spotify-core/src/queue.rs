@@ -1,5 +1,26 @@
 use librespot::core::SpotifyUri;
 use rand::seq::SliceRandom;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct QueueCheckpointWire {
+    pub context_uris: Vec<String>,
+    pub context_label: Option<String>,
+    pub context_index: usize,
+    pub manual_queue: Vec<String>,
+    pub play_order: Vec<QueueEntryWire>,
+    pub play_index: usize,
+    pub position_ms: u32,
+    pub shuffle: bool,
+    pub repeat_context: bool,
+    pub repeat_track: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) enum QueueEntryWire {
+    Manual { uri: String },
+    Context { index: usize },
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum QueueEntry {
@@ -114,6 +135,70 @@ impl QueueState {
 
     pub fn restore_snapshot(&mut self, snap: QueueState) {
         *self = snap;
+    }
+
+    /// Serializable queue snapshot for TTL-bounded disk checkpoint.
+    pub(crate) fn to_checkpoint_wire(&self) -> Option<QueueCheckpointWire> {
+        if self.context_uris.is_empty() {
+            return None;
+        }
+        Some(QueueCheckpointWire {
+            context_uris: self
+                .context_uris
+                .iter()
+                .filter_map(|u| u.to_uri().ok())
+                .collect(),
+            context_label: self.context_label.clone(),
+            context_index: self.context_index,
+            manual_queue: self
+                .manual_queue
+                .iter()
+                .filter_map(|u| u.to_uri().ok())
+                .collect(),
+            play_order: self
+                .play_order
+                .iter()
+                .filter_map(|entry| match entry {
+                    QueueEntry::Manual(uri) => Some(QueueEntryWire::Manual {
+                        uri: uri.to_uri().ok()?,
+                    }),
+                    QueueEntry::Context(idx) => Some(QueueEntryWire::Context { index: *idx }),
+                })
+                .collect(),
+            play_index: self.play_index,
+            position_ms: self.position_ms,
+            shuffle: self.shuffle,
+            repeat_context: self.repeat_context,
+            repeat_track: self.repeat_track,
+        })
+    }
+
+    pub(crate) fn from_checkpoint_wire(wire: QueueCheckpointWire) -> Result<Self, String> {
+        let parse = |s: &str| -> Result<SpotifyUri, String> {
+            SpotifyUri::from_uri(s.trim()).map_err(|e| e.to_string())
+        };
+        let context_uris: Result<Vec<_>, _> = wire.context_uris.iter().map(|s| parse(s)).collect();
+        let manual_queue: Result<Vec<_>, _> = wire.manual_queue.iter().map(|s| parse(s)).collect();
+        let play_order: Result<Vec<QueueEntry>, String> = wire
+            .play_order
+            .iter()
+            .map(|entry| match entry {
+                QueueEntryWire::Manual { uri } => parse(uri).map(QueueEntry::Manual),
+                QueueEntryWire::Context { index } => Ok(QueueEntry::Context(*index)),
+            })
+            .collect();
+        Ok(Self {
+            context_uris: context_uris?,
+            context_label: wire.context_label,
+            context_index: wire.context_index,
+            manual_queue: manual_queue?,
+            play_order: play_order?,
+            play_index: wire.play_index,
+            position_ms: wire.position_ms,
+            shuffle: wire.shuffle,
+            repeat_context: wire.repeat_context,
+            repeat_track: wire.repeat_track,
+        })
     }
 
     /// Legacy linear-only snapshot fields — used by tests documenting linear restore.

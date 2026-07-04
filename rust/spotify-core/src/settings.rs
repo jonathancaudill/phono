@@ -22,7 +22,7 @@ pub enum StreamingQuality {
 
 impl Default for StreamingQuality {
     fn default() -> Self {
-        Self::High
+        Self::Normal
     }
 }
 

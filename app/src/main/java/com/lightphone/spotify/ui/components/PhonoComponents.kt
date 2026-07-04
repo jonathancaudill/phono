@@ -34,8 +34,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.PhonoHeaderIcon
-import com.thelightphone.sdk.ui.LightIcon
-import com.thelightphone.sdk.ui.LightIcons
 import com.thelightphone.sdk.ui.LightText
 import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
@@ -77,8 +75,10 @@ fun PhonoSquareCheckbox(
         contentAlignment = Alignment.Center,
     ) {
         if (checked) {
-            LightIcon(
-                icon = LightIcons.ACCEPT,
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = null,
+                tint = colors.background,
                 modifier = Modifier.size(legacyNToGridDp(14)),
             )
         }

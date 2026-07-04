@@ -50,7 +50,7 @@ class SpotifyRepository(
     private val libraryRepository: LibraryRepository,
     private val detailCache: DetailCacheRepository,
 ) {
-    private val searchCache = ConcurrentHashMap<String, Pair<Long, SearchResults>>()
+    private val searchCache = ConcurrentHashMap<String, EphemeralEntry<SearchResults>>()
     private val ephemeralAlbumCache = ConcurrentHashMap<String, EphemeralEntry<AlbumDetailResult>>()
     private val ephemeralPlaylistCache = ConcurrentHashMap<String, EphemeralEntry<PlaylistDetailResult>>()
     private var dailyMixesCache: Pair<Long, List<SpotifyPlaylistSimple>>? = null
@@ -96,12 +96,17 @@ class SpotifyRepository(
         val key = query.trim()
         if (key.isEmpty()) return SearchResults(query = "")
         val now = System.currentTimeMillis()
-        searchCache[key]?.let { (at, items) ->
-            if (now - at < CACHE_TTL_MS) return items
+        searchCache[key]?.let { entry ->
+            if (now - entry.at < SEARCH_TTL_MS) {
+                entry.touch(now)
+                return entry.value
+            }
+            searchCache.remove(key)
         }
         val apiResults = webApi.search(key, limitPerType)
         val items = apiResults.toSearchResults(key)
-        searchCache[key] = now to items
+        evictOldestIfNeeded(searchCache, SEARCH_CACHE_CAP)
+        searchCache[key] = EphemeralEntry(items, now, now)
         return items
     }
 
@@ -124,7 +129,8 @@ class SpotifyRepository(
             }
             ephemeralPlaylistCache.remove(playlistId)
         }
-        detailCache.getPinnedPlaylistDetail(playlistId)?.let { (detail, tracks, _) ->
+        val authoritativeSnapshot = libraryRepository.getPlaylistSnapshot(playlistId)
+        detailCache.getPinnedPlaylistDetail(playlistId, authoritativeSnapshot)?.let { (detail, tracks, _) ->
             val userId = currentUserIdSuspend()
             val isEditable = detail.owner?.id == userId || detail.collaborative
             val uri = detail.uri.ifBlank { "spotify:playlist:$playlistId" }
@@ -164,16 +170,42 @@ class SpotifyRepository(
         playlistIds: List<String>,
     ): Set<String> {
         val normalized = normalizeUri(trackUri)
-        val found = mutableSetOf<String>()
+        val idSet = playlistIds.toSet()
+        val found = detailCache.playlistIdsContaining(normalized)
+            .filterTo(mutableSetOf()) { it in idSet }
         for (playlistId in playlistIds) {
-            when {
-                detailCache.playlistContainsTrack(playlistId, normalized) -> found.add(playlistId)
-                ephemeralPlaylistCache[playlistId]?.value?.tracks?.any { item ->
-                    item.track?.uri?.let { normalizeUri(it) } == normalized
-                } == true -> found.add(playlistId)
-            }
+            if (playlistId in found) continue
+            val inEphemeral = ephemeralPlaylistCache[playlistId]?.value?.tracks?.any { item ->
+                item.track?.uri?.let { normalizeUri(it) } == normalized
+            } == true
+            if (inEphemeral) found.add(playlistId)
         }
         return found
+    }
+
+    /**
+     * Snapshot-gated background index of editable playlist track URIs.
+     * Only re-fetches playlists whose [PlaylistEntity.snapshot_id] differs from the last index.
+     */
+    suspend fun syncPlaylistUriIndex() {
+        val userId = runCatching { currentUserIdSuspend() }.getOrNull() ?: return
+        val editable = editablePlaylists(userId)
+        for (playlist in editable) {
+            if (!detailCache.needsUriReindex(playlist.playlist_id, playlist.snapshot_id)) continue
+            runCatching {
+                val items = paginatePlaylistTrackItems(playlist.playlist_id, limit = URI_INDEX_TRACK_LIMIT)
+                val uris = items.mapNotNull { item ->
+                    item.track?.uri?.takeIf { it.isNotBlank() }
+                }
+                detailCache.replaceTrackUris(playlist.playlist_id, uris, playlist.snapshot_id)
+            }.onFailure { e ->
+                android.util.Log.w(
+                    "PlaylistUriIndex",
+                    "index failed for ${playlist.playlist_id}",
+                    e,
+                )
+            }
+        }
     }
 
     suspend fun isSavedAlbumCached(albumId: String): Boolean =
@@ -187,36 +219,75 @@ class SpotifyRepository(
     }
 
     suspend fun renamePlaylist(playlistId: String, name: String): SpotifyPlaylistDetail {
-        webApi.changePlaylistDetails(playlistId, name = name.trim())
-        return webApi.playlist(playlistId)
+        val trimmed = name.trim()
+        webApi.changePlaylistDetails(playlistId, name = trimmed)
+        val detail = webApi.playlist(playlistId)
+        libraryRepository.updatePlaylistName(playlistId, trimmed)
+        val snapshot = detail.snapshotId?.takeIf { it.isNotBlank() }
+            ?: error("Playlist detail missing snapshot_id after rename")
+        onPlaylistMutated(playlistId, snapshot, invalidateTracks = true)
+        return detail
     }
 
-    suspend fun addTrackToPlaylist(playlistId: String, uri: String, position: Int? = null): String? {
+    suspend fun addTrackToPlaylist(
+        playlistId: String,
+        uri: String,
+        snapshotId: String? = null,
+        position: Int? = null,
+    ): String {
         val normalized = normalizeUri(uri)
-        return webApi.addPlaylistItems(playlistId, listOf(normalized), position)
+        val resolvedSnapshot = snapshotId
+            ?: libraryRepository.getPlaylistSnapshot(playlistId)
+            ?: detailCache.indexedSnapshotId(playlistId)
+        val newSnapshot = webApi.addPlaylistItems(
+            playlistId,
+            listOf(normalized),
+            position,
+            resolvedSnapshot,
+        )
+        onPlaylistMutated(
+            playlistId = playlistId,
+            newSnapshot = newSnapshot,
+            addedUri = normalized,
+        )
+        return newSnapshot
     }
 
     suspend fun removeTrackFromPlaylist(
         playlistId: String,
         uri: String,
         snapshotId: String?,
-    ): String? = webApi.removePlaylistItems(playlistId, listOf(normalizeUri(uri)), snapshotId)
+    ): String {
+        val normalized = normalizeUri(uri)
+        val newSnapshot = webApi.removePlaylistItems(playlistId, listOf(normalized), snapshotId)
+        onPlaylistMutated(
+            playlistId = playlistId,
+            newSnapshot = newSnapshot,
+            removedUri = normalized,
+        )
+        return newSnapshot
+    }
 
     suspend fun reorderPlaylistTrack(
         playlistId: String,
         fromIndex: Int,
         toIndex: Int,
         snapshotId: String?,
-    ): String? {
-        if (fromIndex == toIndex) return snapshotId
+    ): String {
+        if (fromIndex == toIndex) {
+            return snapshotId ?: libraryRepository.getPlaylistSnapshot(playlistId)
+                ?: error("No snapshot_id for playlist")
+        }
         val insertBefore = if (toIndex > fromIndex) toIndex + 1 else toIndex
-        return webApi.reorderPlaylistItems(
+        val newSnapshot = webApi.reorderPlaylistItems(
             playlistId = playlistId,
             rangeStart = fromIndex,
             insertBefore = insertBefore,
             rangeLength = 1,
             snapshotId = snapshotId,
         )
+        onPlaylistMutated(playlistId, newSnapshot, invalidateTracks = true)
+        return newSnapshot
     }
 
     suspend fun followPlaylist(playlistId: String) {
@@ -228,6 +299,7 @@ class SpotifyRepository(
     suspend fun unfollowPlaylist(playlistId: String) {
         webApi.unfollowPlaylist(playlistId)
         libraryRepository.removePlaylist(playlistId)
+        detailCache.clearPlaylistUriIndex(playlistId)
     }
 
     suspend fun editablePlaylists(userId: String? = null): List<PlaylistEntity> {
@@ -289,11 +361,13 @@ class SpotifyRepository(
                 ),
             ),
         )
+        onAlbumMutated(albumId, isSaved = true)
     }
 
     suspend fun removeAlbum(albumId: String) {
         webApi.removeLibrary(listOf("spotify:album:$albumId"))
         libraryRepository.removeSavedAlbum(albumId)
+        onAlbumMutated(albumId, isSaved = false)
     }
 
     fun albumTracks(albumId: String): List<TrackMetadata> =
@@ -315,10 +389,20 @@ class SpotifyRepository(
         dailyMixesCache?.let { (at, items) ->
             if (now - at < CACHE_TTL_MS) return items
         }
-        val items = webApi.myPlaylists(50).filter { playlist ->
+        val all = mutableListOf<SpotifyPlaylistSimple>()
+        var offset = 0
+        while (offset < DAILY_MIXES_SCAN_LIMIT) {
+            val page = webApi.myPlaylistsPage(offset)
+            if (page.items.isEmpty()) break
+            all.addAll(page.items)
+            offset += page.items.size
+            if (offset >= page.total) break
+        }
+        val items = all.filter { playlist ->
             playlist.name.contains("Daily Mix", ignoreCase = true) ||
                 playlist.name.contains("Discover Weekly", ignoreCase = true) ||
-                playlist.name.contains("Release Radar", ignoreCase = true)
+                playlist.name.contains("Release Radar", ignoreCase = true) ||
+                playlist.name.contains("Made For You", ignoreCase = true)
         }
         dailyMixesCache = now to items
         return items
@@ -326,6 +410,47 @@ class SpotifyRepository(
 
     suspend fun clearLibraryCache() {
         libraryRepository.clearAll()
+    }
+
+    fun clearSessionCaches() {
+        searchCache.clear()
+        ephemeralAlbumCache.clear()
+        ephemeralPlaylistCache.clear()
+        dailyMixesCache = null
+        currentUserIdCache = null
+    }
+
+    private suspend fun onPlaylistMutated(
+        playlistId: String,
+        newSnapshot: String,
+        addedUri: String? = null,
+        removedUri: String? = null,
+        invalidateTracks: Boolean = false,
+    ) {
+        libraryRepository.updatePlaylistSnapshot(playlistId, newSnapshot)
+        when {
+            addedUri != null -> detailCache.addTrackUri(playlistId, addedUri, newSnapshot)
+            removedUri != null -> detailCache.removeTrackUri(playlistId, removedUri, newSnapshot)
+            invalidateTracks -> detailCache.invalidatePinnedPlaylistTracks(playlistId)
+        }
+        ephemeralPlaylistCache.remove(playlistId)
+    }
+
+    private suspend fun onAlbumMutated(albumId: String, isSaved: Boolean) {
+        ephemeralAlbumCache.remove(albumId)
+        if (isSaved) {
+            detailCache.patchAlbumIsSaved(albumId, isSaved = true)
+        } else {
+            detailCache.deleteAlbumDetail(albumId)
+        }
+    }
+
+    private fun invalidateEphemeralPlaylist(playlistId: String) {
+        ephemeralPlaylistCache.remove(playlistId)
+    }
+
+    private fun invalidateEphemeralAlbum(albumId: String) {
+        ephemeralAlbumCache.remove(albumId)
     }
 
     private data class EphemeralEntry<T>(
@@ -359,8 +484,12 @@ class SpotifyRepository(
 
     companion object {
         private const val CACHE_TTL_MS = 5 * 60_000L
+        private const val SEARCH_TTL_MS = 2 * 60_000L
+        private const val SEARCH_CACHE_CAP = 25
         private const val EPHEMERAL_ALBUM_CAP = 20
         private const val EPHEMERAL_PLAYLIST_CAP = 10
+        private const val URI_INDEX_TRACK_LIMIT = 10_000
+        private const val DAILY_MIXES_SCAN_LIMIT = 200
     }
 
     private fun normalizeUri(uri: String): String = uri.substringBefore('?').trim()

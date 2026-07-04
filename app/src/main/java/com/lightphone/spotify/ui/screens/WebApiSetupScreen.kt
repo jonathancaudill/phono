@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.viewinterop.AndroidView
 import com.lightphone.spotify.data.webapi.WebApiAuth
+import com.lightphone.spotify.data.webapi.WebApiSessionState
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
@@ -41,6 +42,9 @@ fun WebApiSetupScreen(vm: AppViewModel) {
     var showWebView by remember { mutableStateOf(false) }
     var authUrl by remember { mutableStateOf<String?>(null) }
     val colors = LightThemeTokens.colors
+
+    val sessionState = playback.webApiSessionState
+    val credentialsConfigured = sessionState !is WebApiSessionState.NotConfigured
 
     if (showWebView && authUrl != null) {
         Box(Modifier.fillMaxSize().background(colors.background)) {
@@ -99,11 +103,32 @@ fun WebApiSetupScreen(vm: AppViewModel) {
         contentGap = legacyNToGridDp(16),
         modifier = Modifier.fillMaxSize(),
     ) {
+        if (sessionState is WebApiSessionState.Expired) {
+            LightText(
+                text = "Your Web API session expired. Reconnect to browse your library — playback is unaffected.",
+                variant = LightTextVariant.Detail,
+                color = PhonoSemanticColors.Placeholder,
+            )
+            Spacer(Modifier.height(legacyNToGridDp(4)))
+            PhonoTextButton(
+                text = "Reconnect Web API",
+                onClick = {
+                    authUrl = vm.buildWebApiAuthorizeUrl()
+                    showWebView = true
+                },
+            )
+            playback.error?.let { message ->
+                LightText(text = message, variant = LightTextVariant.Detail, color = PhonoSemanticColors.Error)
+            }
+            return@PhonoScreenShell
+        }
+
         LightText(
             text = "Enter your Spotify Developer app credentials. Create one at developer.spotify.com/dashboard.",
             variant = LightTextVariant.Detail,
             color = PhonoSemanticColors.Placeholder,
         )
+        if (!credentialsConfigured) {
         LightText(
             text = "Redirect URI (copy exactly into dashboard):\n${WebApiAuth.REDIRECT_URI}\nPackage: com.lightphone.spotify",
             variant = LightTextVariant.Detail,
@@ -121,10 +146,14 @@ fun WebApiSetupScreen(vm: AppViewModel) {
             password = true,
         )
         Spacer(Modifier.height(legacyNToGridDp(4)))
+        }
         PhonoTextButton(
             text = "Connect Web API",
             onClick = {
-                if (clientId.isNotBlank() && clientSecret.isNotBlank()) {
+                if (credentialsConfigured) {
+                    authUrl = vm.buildWebApiAuthorizeUrl()
+                    showWebView = true
+                } else if (clientId.isNotBlank() && clientSecret.isNotBlank()) {
                     vm.saveWebApiCredentials(clientId.trim(), clientSecret.trim())
                     authUrl = vm.buildWebApiAuthorizeUrl()
                     showWebView = true

@@ -5,6 +5,7 @@ import android.net.Uri
 sealed class OverlayDestination {
     data object Playing : OverlayDestination()
     data object Queue : OverlayDestination()
+    data class SearchInput(val initialQuery: String = "") : OverlayDestination()
     data class SearchResults(val query: String) : OverlayDestination()
     data class Album(val id: String, val title: String = "") : OverlayDestination()
     data class Artist(val id: String) : OverlayDestination()
@@ -15,6 +16,7 @@ sealed class OverlayDestination {
     fun toRoute(): String = when (this) {
         Playing -> Routes.Playing
         Queue -> Routes.Queue
+        is SearchInput -> Routes.searchInput(initialQuery)
         is SearchResults -> Routes.searchResults(query)
         is Album -> Routes.album(id, title)
         is Artist -> Routes.artist(id)
@@ -29,6 +31,7 @@ sealed class OverlayDestination {
             return when (base) {
                 Routes.Playing -> Playing
                 Routes.Queue -> Queue
+                "search_input" -> SearchInput(Uri.decode(arguments["query"].orEmpty()))
                 "search_results" -> SearchResults(Uri.decode(arguments["query"].orEmpty()))
                 "album" -> Album(
                     id = arguments["albumId"].orEmpty(),

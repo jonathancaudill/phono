@@ -101,6 +101,15 @@ interface PlaylistDao {
 
     @Query("SELECT MIN(sort_index) FROM playlists")
     suspend fun minSortIndex(): Int?
+
+    @Query("UPDATE playlists SET snapshot_id = :snapshotId WHERE playlist_id = :playlistId")
+    suspend fun updateSnapshot(playlistId: String, snapshotId: String?)
+
+    @Query("SELECT snapshot_id FROM playlists WHERE playlist_id = :playlistId LIMIT 1")
+    suspend fun getSnapshot(playlistId: String): String?
+
+    @Query("UPDATE playlists SET name = :name WHERE playlist_id = :playlistId")
+    suspend fun updateName(playlistId: String, name: String)
 }
 
 @Dao

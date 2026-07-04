@@ -55,6 +55,27 @@ object PhonoAudioTrackSink {
 
     private var routeThread: HandlerThread? = null
     private var routeHandler: Handler? = null
+    private val stallWatchRunnable = object : Runnable {
+        override fun run() {
+            val handler = routeHandler ?: return
+            val keepWatching = lock.withLock {
+                val t = track ?: return@withLock false
+                if (transportPaused || t.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                    positionTracker.clearStall()
+                    return@withLock false
+                }
+                val stalledMs = positionTracker.stalledMs(t, sampleRate, bytesPerFrame)
+                if (stalledMs >= STALL_RECREATE_MS) {
+                    Log.w(TAG, "playhead stalled ${stalledMs}ms — scheduling recreate")
+                    coordinatorRecreate("stalled")
+                }
+                true
+            }
+            if (keepWatching) {
+                handler.postDelayed(this, STALL_POLL_MS)
+            }
+        }
+    }
 
     /** Exposed for [NativeInit.registerAudioSink] direct-buffer registration. */
     @JvmStatic
@@ -71,9 +92,22 @@ object PhonoAudioTrackSink {
             if (routeThread == null) {
                 routeThread = HandlerThread("PhonoAudioRoute").apply { start() }
                 routeHandler = Handler(routeThread!!.looper)
-                routeHandler?.post { stallWatchLoop() }
             }
         }
+    }
+
+    private fun cancelStallWatchCallbacks() {
+        routeHandler?.removeCallbacks(stallWatchRunnable)
+    }
+
+    private fun startStallWatch() {
+        cancelStallWatchCallbacks()
+        routeHandler?.postDelayed(stallWatchRunnable, STALL_POLL_MS)
+    }
+
+    private fun stopStallWatch() {
+        cancelStallWatchCallbacks()
+        lock.withLock { positionTracker.clearStall() }
     }
 
     @JvmStatic
@@ -128,6 +162,7 @@ object PhonoAudioTrackSink {
                 track?.takeIf { it.playState == AudioTrack.PLAYSTATE_PLAYING }?.pause()
             }
         }
+        stopStallWatch()
     }
 
     @JvmStatic
@@ -138,10 +173,14 @@ object PhonoAudioTrackSink {
                 track?.takeIf { it.playState != AudioTrack.PLAYSTATE_PLAYING }?.play()
             }
         }
+        if (track != null) {
+            startStallWatch()
+        }
     }
 
     @JvmStatic
     fun stop() {
+        stopStallWatch()
         lock.withLock {
             transportPaused = false
             writePending = ByteArray(0)
@@ -265,6 +304,7 @@ object PhonoAudioTrackSink {
             newTrack.setVolume(lastVolume)
             if (!transportPaused) {
                 newTrack.play()
+                startStallWatch()
             }
             track = newTrack
             Log.i(
@@ -359,32 +399,13 @@ object PhonoAudioTrackSink {
                 positionTracker.reset()
                 if (wasPlaying) {
                     createAndPlayLocked()
+                } else {
+                    stopStallWatch()
                 }
             }
         } finally {
             coordinator.endRecreate()
         }
-    }
-
-    private fun stallWatchLoop() {
-        val handler = routeHandler ?: return
-        handler.postDelayed(object : Runnable {
-            override fun run() {
-                val stalledMs = lock.withLock {
-                    val t = track ?: return@withLock 0L
-                    if (transportPaused || t.playState != AudioTrack.PLAYSTATE_PLAYING) {
-                        positionTracker.clearStall()
-                        return@withLock 0L
-                    }
-                    positionTracker.stalledMs(t, sampleRate, bytesPerFrame)
-                }
-                if (stalledMs >= STALL_RECREATE_MS) {
-                    Log.w(TAG, "playhead stalled ${stalledMs}ms — scheduling recreate")
-                    coordinatorRecreate("stalled")
-                }
-                handler.postDelayed(this, STALL_POLL_MS)
-            }
-        }, STALL_POLL_MS)
     }
 
     private fun handleWriteResultLocked(written: Int, attempted: Int): Int {
@@ -417,6 +438,8 @@ object PhonoAudioTrackSink {
     }
 
     private fun releaseTrackLocked() {
+        cancelStallWatchCallbacks()
+        positionTracker.clearStall()
         track?.let { t ->
             runCatching {
                 if (t.playState != AudioTrack.PLAYSTATE_STOPPED) {
@@ -433,6 +456,10 @@ object PhonoAudioTrackSink {
 
 /** ExoPlayer-style playhead smoothing and pending latency estimate. */
 private class PhonoAudioPositionTracker {
+    private companion object {
+        const val LOG_INTERVAL_MS = 5_000L
+    }
+
     private var totalFramesWritten = 0L
     private var lastRoutedDeviceId = Int.MIN_VALUE
     private var lastLogAtMs = 0L
@@ -497,9 +524,9 @@ private class PhonoAudioPositionTracker {
     }
 
     fun maybeLogStats(track: AudioTrack?, sampleRate: Int, bytesPerFrame: Int) {
-        if (!BuildConfig.DEBUG && writeCallCount % 512 != 0L) return
+        if (!BuildConfig.DEBUG) return
         val now = SystemClock.elapsedRealtime()
-        if (now - lastLogAtMs < 5_000L && writeCallCount % 512 != 0L) return
+        if (now - lastLogAtMs < LOG_INTERVAL_MS) return
         lastLogAtMs = now
         val t = track ?: return
         val pending = pendingFrames(t)

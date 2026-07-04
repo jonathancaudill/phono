@@ -22,12 +22,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
-import com.lightphone.spotify.ui.theme.PhonoColors
 import com.lightphone.spotify.ui.theme.n
+import com.thelightphone.sdk.ui.LightThemeTokens
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -276,8 +277,9 @@ private fun PhonoGrabbableScrollbarVisual(
     trackWidth: Dp = n(1),
     thumbWidth: Dp = n(5),
     thumbRightOverhang: Dp = n(2),
-    color: androidx.compose.ui.graphics.Color = PhonoColors.Foreground,
+    color: Color? = null,
 ) {
+    val resolvedColor = color ?: LightThemeTokens.colors.content
     val density = LocalDensity.current
     val trackWidthPx = with(density) { trackWidth.toPx() }
     val thumbWidthPx = with(density) { thumbWidth.toPx() }
@@ -287,12 +289,12 @@ private fun PhonoGrabbableScrollbarVisual(
         val trackLeft = size.width - trackWidthPx
         val thumbLeft = size.width - thumbWidthPx + thumbRightOverhangPx
         drawRect(
-            color = color,
+            color = resolvedColor,
             topLeft = Offset(trackLeft, 0f),
             size = Size(trackWidthPx, size.height),
         )
         drawRect(
-            color = color,
+            color = resolvedColor,
             topLeft = Offset(thumbLeft, thumbY),
             size = Size(thumbWidthPx, thumbHeight),
         )
@@ -307,7 +309,7 @@ fun PhonoGrabbableScrollbar(
     trackWidth: Dp = n(1),
     thumbWidth: Dp = n(5),
     thumbRightOverhang: Dp = n(2),
-    color: androidx.compose.ui.graphics.Color = PhonoColors.Foreground,
+    color: Color? = null,
 ) {
     PhonoGrabbableScrollbarVisual(
         thumbY = layout.thumbY,

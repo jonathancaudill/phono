@@ -15,8 +15,7 @@ import com.lightphone.spotify.R
 
 /**
  * Foreground service that hosts the Media3 [MediaSession] backed by
- * [LibrespotPlayer]. Gives the OS lock-screen / notification media controls
- * while audio is produced natively by librespot.
+ * [LibrespotPlayer]. Engine creation is deferred until first playback or login.
  */
 @UnstableApi
 class PlaybackService : MediaSessionService() {
@@ -28,28 +27,22 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
-        // startForegroundService() requires startForeground() within a few seconds.
-        // Engine init + Spotify login in onCreate can exceed that budget.
-        promoteToForeground(getString(R.string.playback_notification_initializing))
         ensureNotificationChannel()
-        val controller = PlaybackController.get(this)
-        val engine = PlaybackEngineHolder.createEngine(this)
-        PlaybackEngineHolder.attachEngine(controller, engine)
-        val player = LibrespotPlayer(controller)
-        mediaSession = MediaSession.Builder(this, player).build()
-        PlaybackEngineHolder.markServiceReady()
+        promoteToForeground(getString(R.string.playback_notification_initializing))
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Each startForegroundService() delivery resets the FGS start deadline.
         if (!foregroundStarted) {
             promoteToForeground(getString(R.string.playback_notification_initializing))
         }
+        ensureEngineAndSession()
         return super.onStartCommand(intent, flags, startId)
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? =
-        mediaSession
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
+        ensureEngineAndSession()
+        return mediaSession
+    }
 
     override fun onUpdateNotification(
         session: MediaSession,
@@ -80,6 +73,15 @@ class PlaybackService : MediaSessionService() {
         PlaybackEngineHolder.clearService()
         foregroundStarted = false
         super.onDestroy()
+    }
+
+    private fun ensureEngineAndSession() {
+        if (mediaSession != null) return
+        val controller = PlaybackController.get(this)
+        PlaybackEngineHolder.ensureEngineAttached(this, controller)
+        if (mediaSession != null) return
+        mediaSession = MediaSession.Builder(this, LibrespotPlayer(controller)).build()
+        PlaybackEngineHolder.markServiceReady()
     }
 
     private fun ensureNotificationChannel() {
