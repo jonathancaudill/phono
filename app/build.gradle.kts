@@ -39,9 +39,9 @@ android {
         // Path C: native AudioTrack sink (set false to fall back to rodio/cpal).
         buildConfigField("boolean", "USE_AUDIOTRACK_SINK", "true")
 
-        // Light Phone III is arm64; x86_64 included for the emulator.
+        // Light Phone III is arm64-only. For emulator: add "x86_64" here (and rustup target).
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += listOf("arm64-v8a")
         }
     }
 
@@ -123,12 +123,19 @@ dependencies {
     ksp("androidx.room:room-compiler:2.8.4")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation("org.mockito:mockito-core:5.14.2")
+    testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
 }
 
 // --- Rust cross-compile + UniFFI binding generation -------------------------
 // Builds rust/spotify-core into jniLibs and regenerates Kotlin bindings.
 val cargoBuild by tasks.registering(Exec::class) {
     workingDir = rootDir
+    val abis = android.defaultConfig.ndk.abiFilters.joinToString(" ")
+    if (abis.isNotBlank()) {
+        environment("ANDROID_ABIS", abis)
+    }
     commandLine("bash", "scripts/build-rust.sh")
 }
 
