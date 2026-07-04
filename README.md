@@ -20,7 +20,7 @@ changing code.
 vandam rocks. Basically, this has a few extra features, less album art and doesn't require the Spotify app to be installed.
 
 
-## Setup (required before first use)
+# Setup (read this please!)
 
 The app uses **dual authentication**:
 
@@ -35,7 +35,7 @@ The app uses **dual authentication**:
 1. Go to [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
 2. Click **Create App**
 3. Fill in app name and description
-4. Set **Redirect URI** to `http://127.0.0.1:43821/callback` (must match exactly — no trailing slash)
+4. Set **Redirect URI** to `http://127.0.0.1:43821/callback` (must match exactly!!)
 5. Select **Web API** under "Which API/SDKs are you planning to use?"
 6. Accept terms and click **Save**
 7. Open **Settings** and copy your **Client ID** and **Client Secret**
