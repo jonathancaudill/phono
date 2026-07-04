@@ -5,6 +5,9 @@ import android.content.SharedPreferences
 import android.util.Base64
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -57,23 +60,33 @@ class WebApiAuth(private val context: Context) {
 
     private val lock = Any()
 
-    fun hasCredentials(): Boolean =
+    private val _sessionState = MutableStateFlow(computeSessionState())
+    val sessionState: StateFlow<WebApiSessionState> = _sessionState.asStateFlow()
+
+    fun hasCredentials(): Boolean = synchronized(lock) {
         prefs.getString(KEY_CLIENT_ID, null)?.isNotBlank() == true &&
             prefs.getString(KEY_CLIENT_SECRET, null)?.isNotBlank() == true
+    }
 
     fun isAuthorized(): Boolean = synchronized(lock) {
         hasCredentials() && prefs.getString(KEY_ACCESS_TOKEN, null)?.isNotBlank() == true &&
             prefs.getString(KEY_REFRESH_TOKEN, null)?.isNotBlank() == true
     }
 
-    fun saveCredentials(clientId: String, clientSecret: String) {
+    fun saveCredentials(clientId: String, clientSecret: String) = synchronized(lock) {
         prefs.edit()
             .putString(KEY_CLIENT_ID, clientId.trim())
             .putString(KEY_CLIENT_SECRET, clientSecret.trim())
+            .remove(KEY_ACCESS_TOKEN)
+            .remove(KEY_REFRESH_TOKEN)
+            .remove(KEY_EXPIRES_AT_MS)
             .apply()
+        emitSessionState()
     }
 
-    fun getClientId(): String? = prefs.getString(KEY_CLIENT_ID, null)?.takeIf { it.isNotBlank() }
+    fun getClientId(): String? = synchronized(lock) {
+        prefs.getString(KEY_CLIENT_ID, null)?.takeIf { it.isNotBlank() }
+    }
 
     fun buildAuthorizeUrl(): String {
         val clientId = getClientId()
@@ -89,7 +102,7 @@ class WebApiAuth(private val context: Context) {
         }
     }
 
-  /** Exchange authorization code for tokens (Authorization Code + secret). */
+    /** Exchange authorization code for tokens (Authorization Code + secret). */
     fun exchangeCode(code: String): Result<Unit> = synchronized(lock) {
         val clientId = getClientId() ?: return Result.failure(IllegalStateException("No client ID"))
         val secret = prefs.getString(KEY_CLIENT_SECRET, null)
@@ -110,12 +123,12 @@ class WebApiAuth(private val context: Context) {
             val responseBody = response.body?.string() ?: ""
             if (!response.isSuccessful) {
                 if (responseBody.contains("invalid_grant")) {
-                    clearTokens()
+                    clearTokensInternal()
                 }
                 throw IOException("Token exchange failed: HTTP ${response.code} $responseBody")
             }
             val tokens = json.decodeFromString<TokenResponse>(responseBody)
-            storeTokens(tokens)
+            storeTokensInternal(tokens)
         }
     }
 
@@ -147,20 +160,26 @@ class WebApiAuth(private val context: Context) {
         }
     }
 
-    fun clearTokens() {
+    fun clearTokens() = synchronized(lock) {
+        clearTokensInternal()
+    }
+
+    fun clearAll() = synchronized(lock) {
+        prefs.edit().clear().apply()
+        emitSessionState()
+    }
+
+    private fun clearTokensInternal() {
         prefs.edit()
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)
             .remove(KEY_EXPIRES_AT_MS)
             .apply()
-    }
-
-    fun clearAll() {
-        prefs.edit().clear().apply()
+        emitSessionState()
     }
 
     private fun refreshTokensInternal(): String? {
-        val clientId = getClientId() ?: return null
+        val clientId = prefs.getString(KEY_CLIENT_ID, null)?.takeIf { it.isNotBlank() } ?: return null
         val secret = prefs.getString(KEY_CLIENT_SECRET, null) ?: return null
         val refresh = prefs.getString(KEY_REFRESH_TOKEN, null) ?: return null
         val body = FormBody.Builder()
@@ -177,22 +196,36 @@ class WebApiAuth(private val context: Context) {
         val responseBody = response.body?.string() ?: ""
         if (!response.isSuccessful) {
             if (responseBody.contains("invalid_grant")) {
-                clearTokens()
+                clearTokensInternal()
             }
             return null
         }
         val tokens = json.decodeFromString<TokenResponse>(responseBody)
-        storeTokens(tokens)
+        storeTokensInternal(tokens)
         return prefs.getString(KEY_ACCESS_TOKEN, null)
     }
 
-    private fun storeTokens(tokens: TokenResponse) {
+    private fun storeTokensInternal(tokens: TokenResponse) {
         val expiresAt = System.currentTimeMillis() + tokens.expiresIn * 1000L
         val editor = prefs.edit()
             .putString(KEY_ACCESS_TOKEN, tokens.accessToken)
             .putLong(KEY_EXPIRES_AT_MS, expiresAt)
         tokens.refreshToken?.let { editor.putString(KEY_REFRESH_TOKEN, it) }
         editor.apply()
+        emitSessionState()
+    }
+
+    private fun computeSessionState(): WebApiSessionState {
+        val hasCreds = prefs.getString(KEY_CLIENT_ID, null)?.isNotBlank() == true &&
+            prefs.getString(KEY_CLIENT_SECRET, null)?.isNotBlank() == true
+        if (!hasCreds) return WebApiSessionState.NotConfigured
+        val hasTokens = prefs.getString(KEY_ACCESS_TOKEN, null)?.isNotBlank() == true &&
+            prefs.getString(KEY_REFRESH_TOKEN, null)?.isNotBlank() == true
+        return if (hasTokens) WebApiSessionState.Authorized else WebApiSessionState.Expired
+    }
+
+    private fun emitSessionState() {
+        _sessionState.value = computeSessionState()
     }
 
     private fun basicAuth(clientId: String, secret: String): String {

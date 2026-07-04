@@ -4,6 +4,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,6 +56,13 @@ object LightBarButtonDefaults {
 typealias LightTopBarButton = LightBarButton
 typealias LightBottomBarItem = LightBarButton
 
+/** Returns a copy of this button with [LightBarButton.onClick] cleared (for parent-owned hit targets). */
+internal fun LightBarButton.withoutOnClick(): LightBarButton = when (this) {
+    is LightBarButton.Text -> copy(onClick = null)
+    is LightBarButton.Icon -> copy(onClick = null)
+    is LightBarButton.LightIcon -> copy(onClick = null)
+}
+
 @Composable
 internal fun LightBarButtonView(
     button: LightBarButton?,
@@ -74,14 +82,16 @@ internal fun LightBarButtonView(
         return
     }
 
-    val baseModifier = Modifier.let { modifier ->
-        if (button.onClick != null) modifier.lightClickable { button.onClick?.invoke() } else modifier
-    }
+    val barHeight = heightUnits.gridUnitsAsDp()
+    val clickable = button.onClick
 
     when (button) {
         is LightBarButton.Text -> {
             Box(
-                modifier = baseModifier.height(heightUnits.gridUnitsAsDp()),
+                modifier = Modifier
+                    .height(barHeight)
+                    .widthIn(min = barHeight)
+                    .then(if (clickable != null) Modifier.lightClickable(onClick = clickable) else Modifier),
                 contentAlignment = Alignment.Center,
             ) {
                 LightText(
@@ -94,25 +104,41 @@ internal fun LightBarButtonView(
         }
 
         is LightBarButton.Icon -> {
-            val size = button.sizeUnits.gridUnitsAsDp()
+            val iconSize = button.sizeUnits.gridUnitsAsDp()
+            val hitWidth = maxOf(iconSize, barHeight)
             val contentColor = button.tint ?: LightThemeTokens.colors.content
-            Image(
-                painter = button.painter,
-                contentDescription = button.contentDescription,
-                contentScale = ContentScale.Fit,
-                colorFilter = ColorFilter.tint(contentColor),
-                modifier = baseModifier.size(size),
-            )
+            Box(
+                modifier = Modifier
+                    .size(width = hitWidth, height = barHeight)
+                    .then(if (clickable != null) Modifier.lightClickable(onClick = clickable) else Modifier),
+                contentAlignment = Alignment.Center,
+            ) {
+                Image(
+                    painter = button.painter,
+                    contentDescription = button.contentDescription,
+                    contentScale = ContentScale.Fit,
+                    colorFilter = ColorFilter.tint(contentColor),
+                    modifier = Modifier.size(iconSize),
+                )
+            }
         }
 
         is LightBarButton.LightIcon -> {
-            LightIcon(
-                icon = button.icon,
-                size = button.sizeUnits,
-                tint = button.tint,
-                modifier = baseModifier,
-                contentDescription = button.contentDescription,
-            )
+            val iconSize = button.sizeUnits.gridUnitsAsDp()
+            val hitWidth = maxOf(iconSize, barHeight)
+            Box(
+                modifier = Modifier
+                    .size(width = hitWidth, height = barHeight)
+                    .then(if (clickable != null) Modifier.lightClickable(onClick = clickable) else Modifier),
+                contentAlignment = Alignment.Center,
+            ) {
+                LightIcon(
+                    icon = button.icon,
+                    size = button.sizeUnits,
+                    tint = button.tint,
+                    contentDescription = button.contentDescription,
+                )
+            }
         }
     }
 }

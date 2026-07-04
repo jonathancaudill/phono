@@ -202,6 +202,7 @@ data class ChangePlaylistDetailsBody(
 data class AddPlaylistItemsBody(
     val uris: List<String>,
     val position: Int? = null,
+    @SerialName("snapshot_id") val snapshotId: String? = null,
 )
 
 @Serializable

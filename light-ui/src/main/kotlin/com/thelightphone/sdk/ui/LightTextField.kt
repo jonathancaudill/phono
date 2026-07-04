@@ -27,13 +27,17 @@ fun LightTextField(
     placeholder: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Fraction of the field width for the underline (1f = full width). */
+    underlineWidthFraction: Float = UNDERLINE_WIDTH_FRACTION,
 ) {
     val colors = LightThemeTokens.colors
     Column(modifier = modifier.fillMaxWidth()) {
         LightText(
             text = label,
             variant = LightTextVariant.Detail,
-            modifier = Modifier.padding(top = 1f.gridUnitsAsDp()),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 1f.gridUnitsAsDp()),
         )
         val isPlaceholder = value.isBlank()
         Column(
@@ -52,7 +56,7 @@ fun LightTextField(
             Spacer(modifier = Modifier.height(VALUE_TO_UNDERLINE_GAP_GRID_UNITS.gridUnitsAsDp()))
             Spacer(
                 modifier = Modifier
-                    .fillMaxWidth(UNDERLINE_WIDTH_FRACTION)
+                    .fillMaxWidth(underlineWidthFraction)
                     .height(UNDERLINE_THICKNESS_PX.designVerticalPxToDp())
                     .background(colors.content),
             )

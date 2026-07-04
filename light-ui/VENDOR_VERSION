@@ -1,3 +1,7 @@
 0.0.9
 548b25d
 keyboard: com.thelightphone.lp3keyboard:ui:0.0.11 via GitHub Packages (gpr.user/gpr.key in local.properties)
+
+phono local patches (re-apply after scripts/sync-light-ui.sh):
+- LightBarButton: icon/text hit targets use full bar height and min width (not glyph bounds only)
+- LightBottomBar: weighted/full slots own the clickable area (full slot width × bar height)

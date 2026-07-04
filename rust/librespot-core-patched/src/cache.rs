@@ -245,6 +245,17 @@ impl FsSizeLimiter {
         Self::prune_internal(|| self.limiter.lock().expect(CACHE_LIMITER_POISON_MSG).pop())
     }
 
+    fn resync_from_disk(&self, path: &Path, limit: u64) -> Result<(), Error> {
+        let mut limiter = SizeLimiter::new(limit);
+        Self::init_dir(&mut limiter, path);
+        Self::prune_internal(|| limiter.pop())?;
+        *self
+            .limiter
+            .lock()
+            .expect(CACHE_LIMITER_POISON_MSG) = limiter;
+        Ok(())
+    }
+
     fn new(path: &Path, limit: u64) -> Result<Self, Error> {
         let mut limiter = SizeLimiter::new(limit);
 
@@ -437,6 +448,14 @@ impl Cache {
             limiter.remove(&path);
         }
 
+        Ok(())
+    }
+
+    /// Rebuild the audio size limiter from on-disk files (e.g. after manual cache wipe).
+    pub fn resync_audio_from_disk(&self, limit: u64) -> Result<(), Error> {
+        if let (Some(path), Some(limiter)) = (&self.audio_location, &self.size_limiter) {
+            limiter.resync_from_disk(path, limit)?;
+        }
         Ok(())
     }
 }

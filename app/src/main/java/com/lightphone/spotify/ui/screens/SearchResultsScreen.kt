@@ -76,17 +76,36 @@ fun SearchResultsScreen(
             )
             Spacer(Modifier.size(legacyNToGridDp(12)))
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                val display = state.results?.displayFor(state.filter)
+                val display = state.displayResults?.displayFor(state.filter)
                 when {
-                    state.loading && state.results == null -> Unit
                     state.error != null && display.isNullOrEmpty() ->
                         EmptyListMessage(state.error!!)
-                    display.isNullOrEmpty() ->
+                    state.initialLoading && display.isNullOrEmpty() ->
+                        EmptyListMessage("Searching…")
+                    state.isEmpty ->
                         EmptyListMessage("No results found for \"$query\".")
+                    display.isNullOrEmpty() ->
+                        EmptyListMessage("Searching…")
                     else -> {
-                        val results = state.results ?: return@Box
+                        val results = state.displayResults ?: return@Box
                         val items = results.displayFor(state.filter)
-                        CustomScrollView(verticalArrangement = Arrangement.spacedBy(legacyNToGridDp(8))) {
+                        Column(Modifier.fillMaxSize()) {
+                            if (state.refreshing) {
+                                LightText(
+                                    text = "Searching…",
+                                    variant = LightTextVariant.Detail,
+                                    color = PhonoSemanticColors.Placeholder,
+                                    modifier = Modifier.padding(bottom = legacyNToGridDp(8)),
+                                )
+                            }
+                            state.refreshError?.let { message ->
+                                LibraryPartialSyncBanner(message)
+                                Spacer(Modifier.size(legacyNToGridDp(8)))
+                            }
+                            CustomScrollView(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(legacyNToGridDp(8)),
+                            ) {
                             items(items, key = { "${it::class.simpleName}-${it.id}" }) { item ->
                                 when (item) {
                                     is SearchResultItem.Track -> PhonoSwipeToActionRow(
@@ -158,6 +177,7 @@ fun SearchResultsScreen(
                                     )
                                 }
                             }
+                        }
                         }
                     }
                 }

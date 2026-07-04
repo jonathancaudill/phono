@@ -1,5 +1,6 @@
 package com.lightphone.spotify.ui.navigation
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.background
@@ -13,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
@@ -22,7 +24,6 @@ import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
-import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.lightphone.spotify.ui.AppViewModel
@@ -31,6 +32,7 @@ import com.lightphone.spotify.ui.components.PhonoTabBar
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.consumeScrimTouches
+import com.lightphone.spotify.ui.phono.leftEdgeSwipeBack
 import com.lightphone.spotify.ui.screens.AlbumDetailScreen
 import com.lightphone.spotify.ui.screens.AlbumsScreen
 import com.lightphone.spotify.ui.screens.ArtistDetailScreen
@@ -41,14 +43,27 @@ import com.lightphone.spotify.ui.screens.PlaylistDetailScreen
 import com.lightphone.spotify.ui.screens.PlaylistPickerScreen
 import com.lightphone.spotify.ui.screens.PlaylistsScreen
 import com.lightphone.spotify.ui.screens.QueueScreen
+import com.lightphone.spotify.ui.screens.SearchInputScreen
 import com.lightphone.spotify.ui.screens.SearchResultsScreen
 import com.lightphone.spotify.ui.screens.SearchScreen
 import com.lightphone.spotify.ui.screens.SettingsScreen
 import com.thelightphone.sdk.ui.LightText
 import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
+import com.thelightphone.sdk.ui.gridUnitsAsDp
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 internal const val OverlayRoot = "overlay_root"
+
+private data class PhonoShellPlaybackState(
+    val loggedIn: Boolean,
+    val sessionExpired: Boolean,
+    val reconnecting: Boolean,
+    val networkOnline: Boolean,
+    val statusMessage: String?,
+    val error: String?,
+)
 
 @Composable
 fun PhonoShell(
@@ -57,26 +72,64 @@ fun PhonoShell(
 ) {
     val overlayNavController = rememberNavController()
     val overlayNav = rememberOverlayNavigator(overlayNavController)
-    val overlayBackStackEntry by overlayNavController.currentBackStackEntryAsState()
-    val overlayRoute = overlayBackStackEntry?.destination?.route?.substringBefore('?')
-    val playback by vm.playback.collectAsState()
+    // visibleEntries includes the exiting route for the exit frame; currentBackStackEntry does not.
+    // Gating on current only collapses NavHost to 0×0 while the detail (and scrollbar) still draw.
+    val visibleOverlayEntries by overlayNavController.visibleEntries.collectAsState()
+    val shellPlayback by remember(vm) {
+        vm.playback.map { p ->
+            PhonoShellPlaybackState(
+                loggedIn = p.loggedIn,
+                sessionExpired = p.sessionExpired,
+                reconnecting = p.reconnecting,
+                networkOnline = p.networkOnline,
+                statusMessage = p.statusMessage,
+                error = p.error,
+            )
+        }.distinctUntilChanged()
+    }.collectAsState(
+        initial = PhonoShellPlaybackState(
+            loggedIn = vm.playback.value.loggedIn,
+            sessionExpired = vm.playback.value.sessionExpired,
+            reconnecting = vm.playback.value.reconnecting,
+            networkOnline = vm.playback.value.networkOnline,
+            statusMessage = vm.playback.value.statusMessage,
+            error = vm.playback.value.error,
+        ),
+    )
     val currentTab by shellVm.currentTab.collectAsState()
 
-    LaunchedEffect(playback.loggedIn) {
-        if (!playback.loggedIn) {
+    LaunchedEffect(shellPlayback.loggedIn) {
+        if (!shellPlayback.loggedIn) {
             overlayNav.popToRoot()
         }
     }
 
-    val showOverlayLayer = overlayRoute != null && overlayRoute != OverlayRoot
+    val showOverlayLayer = visibleOverlayEntries.any { entry ->
+        val route = entry.destination.route?.substringBefore('?')
+        route != null && route != OverlayRoot
+    }
+    val contextMenu by vm.contextMenu.collectAsState()
+    val modalOpen = contextMenu.target != null ||
+        contextMenu.showCopied ||
+        contextMenu.deleteConfirm != null
+    val swipeBackEnabled = showOverlayLayer && !modalOpen
     val navbarStatusMessage = when {
-        playback.sessionExpired -> null
-        playback.reconnecting -> "Reconnecting…"
-        !playback.networkOnline -> "Device offline"
+        shellPlayback.sessionExpired -> null
+        shellPlayback.reconnecting -> "Reconnecting…"
+        !shellPlayback.networkOnline -> "Device offline"
         else -> null
     }
-    val showSessionBanner = playback.sessionExpired && playback.statusMessage != null
+    val showSessionBanner = shellPlayback.sessionExpired && shellPlayback.statusMessage != null
     val colors = LightThemeTokens.colors
+
+    BackHandler(enabled = modalOpen || showOverlayLayer) {
+        when {
+            contextMenu.showCopied -> vm.dismissCopiedOverlay()
+            contextMenu.deleteConfirm != null -> vm.cancelDeletePlaylist()
+            contextMenu.target != null -> vm.dismissContextMenu()
+            showOverlayLayer -> overlayNavController.popBackStack()
+        }
+    }
 
     Column(
         Modifier
@@ -84,7 +137,7 @@ fun PhonoShell(
             .background(colors.background),
     ) {
         if (showSessionBanner) {
-            playback.statusMessage?.let { msg ->
+            shellPlayback.statusMessage?.let { msg ->
                 LightText(
                     text = msg,
                     variant = LightTextVariant.Detail,
@@ -95,7 +148,7 @@ fun PhonoShell(
                 )
             }
         }
-        playback.error?.let { err ->
+        shellPlayback.error?.let { err ->
             if (!showSessionBanner) {
                 LightText(
                     text = err,
@@ -144,8 +197,8 @@ fun PhonoShell(
                         )
                         PhonoTab.Search -> SearchScreen(
                             vm = vm,
-                            onSubmit = { query ->
-                                overlayNav.navigate(OverlayDestination.SearchResults(query))
+                            onOpenEditor = { query ->
+                                overlayNav.navigate(OverlayDestination.SearchInput(query))
                             },
                         )
                         PhonoTab.Settings -> SettingsScreen(
@@ -172,11 +225,20 @@ fun PhonoShell(
                             .consumeScrimTouches(),
                     )
                 }
+                // size(0.dp) when idle so touches reach tabs; stay fillMaxSize while any non-root
+                // entry is still visible (including the exit frame) so scrollbars keep TopEnd.
                 NavHost(
                     navController = overlayNavController,
                     startDestination = OverlayRoot,
                     modifier = if (showOverlayLayer) {
-                        Modifier.fillMaxSize()
+                        Modifier
+                            .fillMaxSize()
+                            .leftEdgeSwipeBack(
+                                enabled = swipeBackEnabled,
+                                edgeWidth = 1.5f.gridUnitsAsDp(),
+                                distanceThreshold = 3f.gridUnitsAsDp(),
+                                onBack = { overlayNavController.popBackStack() },
+                            )
                     } else {
                         Modifier.size(0.dp)
                     },
@@ -186,7 +248,9 @@ fun PhonoShell(
                     popExitTransition = { ExitTransition.None },
                     sizeTransform = { null },
                 ) {
-                    composable(OverlayRoot) {}
+                    composable(OverlayRoot) {
+                        Box(Modifier.fillMaxSize())
+                    }
                     overlayDestinations(
                         vm = vm,
                         overlayNav = overlayNav,
@@ -198,6 +262,7 @@ fun PhonoShell(
             ContextMenuHost(
                 vm = vm,
                 onNavigateToPlaylistPicker = { uri ->
+                    vm.loadPlaylistPicker(uri)
                     overlayNav.navigate(OverlayDestination.PlaylistPicker(uri))
                 },
             )
@@ -219,6 +284,7 @@ private fun NavGraphBuilder.overlayDestinations(
             },
             onOpenQueue = { overlayNav.navigate(OverlayDestination.Queue) },
             onAddToPlaylist = { uri ->
+                vm.loadPlaylistPicker(uri)
                 overlayNav.navigate(OverlayDestination.PlaylistPicker(uri))
             },
         )
@@ -226,6 +292,26 @@ private fun NavGraphBuilder.overlayDestinations(
     composable(Routes.Queue) {
         QueueScreen(
             vm = vm,
+            onBack = { overlayNavController.popBackStack() },
+        )
+    }
+    composable(
+        route = Routes.SearchInput,
+        arguments = listOf(
+            navArgument("query") {
+                type = NavType.StringType
+                defaultValue = ""
+            },
+        ),
+    ) { entry ->
+        val initialQuery = entry.arguments?.getString("query").orEmpty()
+        SearchInputScreen(
+            initialQuery = initialQuery,
+            onSubmit = { query ->
+                vm.updateSearchQuery(query)
+                overlayNavController.popBackStack()
+                overlayNav.navigate(OverlayDestination.SearchResults(query))
+            },
             onBack = { overlayNavController.popBackStack() },
         )
     }

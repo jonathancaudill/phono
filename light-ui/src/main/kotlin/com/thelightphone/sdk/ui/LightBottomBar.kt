@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -54,56 +55,29 @@ fun LightBottomBar(
             0 -> Unit
 
             1 -> {
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    LightBottomBarItemView(items[0])
-                }
+                LightBottomBarFullSlot(item = items[0])
             }
 
             2 -> {
-                LightBottomBarSlot(align = Alignment.CenterStart) {
-                    LightBottomBarItemView(items[0])
-                }
-                LightBottomBarSlot(align = Alignment.CenterEnd) {
-                    LightBottomBarItemView(items[1])
-                }
+                LightBottomBarSlot(align = Alignment.CenterStart, item = items[0])
+                LightBottomBarSlot(align = Alignment.CenterEnd, item = items[1])
             }
 
             3 -> {
                 if (isMixedIconTextIconLayout(items)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        items.forEach { item ->
-                            LightBottomBarItemView(item)
-                        }
+                    items.forEach { item ->
+                        LightBottomBarSlot(align = Alignment.Center, item = item)
                     }
                 } else {
-                    LightBottomBarSlot(align = Alignment.CenterStart) {
-                        LightBottomBarItemView(items[0])
-                    }
-                    LightBottomBarSlot(align = Alignment.Center) {
-                        LightBottomBarItemView(items[1])
-                    }
-                    LightBottomBarSlot(align = Alignment.CenterEnd) {
-                        LightBottomBarItemView(items[2])
-                    }
+                    LightBottomBarSlot(align = Alignment.CenterStart, item = items[0])
+                    LightBottomBarSlot(align = Alignment.Center, item = items[1])
+                    LightBottomBarSlot(align = Alignment.CenterEnd, item = items[2])
                 }
             }
 
             else -> {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    items.forEach { item ->
-                        LightBottomBarItemView(item)
-                    }
+                items.forEach { item ->
+                    LightBottomBarSlot(align = Alignment.Center, item = item)
                 }
             }
         }
@@ -111,15 +85,33 @@ fun LightBottomBar(
 }
 
 @Composable
+private fun LightBottomBarFullSlot(item: LightBottomBarItem?) {
+    val onClick = item?.onClick
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .fillMaxHeight()
+            .then(if (onClick != null) Modifier.lightClickable(onClick = onClick) else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        LightBottomBarItemView(item?.withoutOnClick())
+    }
+}
+
+@Composable
 private fun RowScope.LightBottomBarSlot(
     align: Alignment,
-    content: @Composable () -> Unit,
+    item: LightBottomBarItem?,
 ) {
+    val onClick = item?.onClick
     Box(
-        modifier = Modifier.weight(1f),
+        modifier = Modifier
+            .weight(1f)
+            .fillMaxHeight()
+            .then(if (onClick != null) Modifier.lightClickable(onClick = onClick) else Modifier),
         contentAlignment = align,
     ) {
-        content()
+        LightBottomBarItemView(item?.withoutOnClick())
     }
 }
 

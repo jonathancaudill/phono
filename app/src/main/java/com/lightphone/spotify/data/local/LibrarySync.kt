@@ -9,6 +9,26 @@ import com.lightphone.spotify.data.webapi.SpotifyWebApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlin.math.min
+
+/** Advance [next_offset] page-by-page so empty API pages cannot stall fill. */
+private fun computeBatchNextOffset(
+    startOffset: Int,
+    remoteTotal: Int,
+    pages: List<Pair<Int, Int>>,
+    pageSize: Int,
+): Int {
+    var nextOffset = startOffset
+    pages.sortedBy { it.first }.forEach { (offset, itemCount) ->
+        if (offset < nextOffset) return@forEach
+        nextOffset = if (itemCount > 0) {
+            offset + itemCount
+        } else {
+            min(offset + pageSize, remoteTotal)
+        }
+    }
+    return nextOffset
+}
 
 /**
  * Network fetch + Room persistence for liked tracks and saved albums.
@@ -88,10 +108,24 @@ internal class LikedTracksSync(
                         inserted += page.items.size
                     }
                 }
-                if (pages.isEmpty()) return@withTransaction
-                val last = pages.maxBy { it.first }
-                val nextOffset = last.first + last.second.items.size
-                updateSyncState(last.second, nextOffset = nextOffset, isRefresh = false)
+                val syncNow = syncDao.get(LibraryResource.LIKED_TRACKS) ?: return@withTransaction
+                val nextOffset = computeBatchNextOffset(
+                    syncNow.next_offset,
+                    syncNow.remote_total,
+                    pages.map { (o, p) -> o to p.items.size },
+                    SpotifyWebApi.LIBRARY_PAGE_LIMIT,
+                )
+                val lastWithItems = pages.filter { it.second.items.isNotEmpty() }.maxByOrNull { it.first }
+                if (lastWithItems != null) {
+                    updateSyncState(lastWithItems.second, nextOffset = nextOffset, isRefresh = false)
+                } else {
+                    syncDao.upsert(
+                        syncNow.copy(
+                            next_offset = nextOffset,
+                            last_synced_at = System.currentTimeMillis(),
+                        ),
+                    )
+                }
             }
         }
         return inserted
@@ -204,10 +238,24 @@ internal class SavedAlbumsSync(
                         inserted += page.items.size
                     }
                 }
-                if (pages.isEmpty()) return@withTransaction
-                val last = pages.maxBy { it.first }
-                val nextOffset = last.first + last.second.items.size
-                updateSyncState(last.second, nextOffset = nextOffset, isRefresh = false)
+                val syncNow = syncDao.get(LibraryResource.SAVED_ALBUMS) ?: return@withTransaction
+                val nextOffset = computeBatchNextOffset(
+                    syncNow.next_offset,
+                    syncNow.remote_total,
+                    pages.map { (o, p) -> o to p.items.size },
+                    SpotifyWebApi.LIBRARY_PAGE_LIMIT,
+                )
+                val lastWithItems = pages.filter { it.second.items.isNotEmpty() }.maxByOrNull { it.first }
+                if (lastWithItems != null) {
+                    updateSyncState(lastWithItems.second, nextOffset = nextOffset, isRefresh = false)
+                } else {
+                    syncDao.upsert(
+                        syncNow.copy(
+                            next_offset = nextOffset,
+                            last_synced_at = System.currentTimeMillis(),
+                        ),
+                    )
+                }
             }
         }
         return inserted
@@ -322,10 +370,24 @@ internal class UserPlaylistsSync(
                         inserted += page.items.size
                     }
                 }
-                if (pages.isEmpty()) return@withTransaction
-                val last = pages.maxBy { it.first }
-                val nextOffset = last.first + last.second.items.size
-                updateSyncState(last.second, nextOffset = nextOffset, isRefresh = false)
+                val syncNow = syncDao.get(LibraryResource.USER_PLAYLISTS) ?: return@withTransaction
+                val nextOffset = computeBatchNextOffset(
+                    syncNow.next_offset,
+                    syncNow.remote_total,
+                    pages.map { (o, p) -> o to p.items.size },
+                    SpotifyWebApi.LIBRARY_PAGE_LIMIT,
+                )
+                val lastWithItems = pages.filter { it.second.items.isNotEmpty() }.maxByOrNull { it.first }
+                if (lastWithItems != null) {
+                    updateSyncState(lastWithItems.second, nextOffset = nextOffset, isRefresh = false)
+                } else {
+                    syncDao.upsert(
+                        syncNow.copy(
+                            next_offset = nextOffset,
+                            last_synced_at = System.currentTimeMillis(),
+                        ),
+                    )
+                }
             }
         }
         return inserted

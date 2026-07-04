@@ -173,6 +173,19 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
     fun myPlaylists(limit: Int = 50): List<SpotifyPlaylistSimple> =
         paginatePlaylists(limit.coerceIn(1, 50))
 
+    fun myPlaylistsPage(offset: Int, limit: Int = LIBRARY_PAGE_LIMIT): LibraryPage<SpotifyPlaylistSimple> {
+        val pageLimit = limit.coerceIn(1, LIBRARY_PAGE_LIMIT)
+        val safeOffset = offset.coerceAtLeast(0)
+        val page = get<PagedResponse<SpotifyPlaylistSimple?>>(
+            "/me/playlists?limit=$pageLimit&offset=$safeOffset",
+        )
+        return LibraryPage(
+            items = page.items.filterNotNull().filter { it.id.isNotBlank() },
+            total = page.total,
+            offset = safeOffset,
+        )
+    }
+
     fun playlist(playlistId: String): SpotifyPlaylistDetail =
         get("/playlists/$playlistId")
 
@@ -222,22 +235,33 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
         return putReturning("/playlists/$playlistId", body)
     }
 
-    fun addPlaylistItems(playlistId: String, uris: List<String>, position: Int? = null): String? {
-        if (uris.isEmpty()) return null
+    fun addPlaylistItems(
+        playlistId: String,
+        uris: List<String>,
+        position: Int? = null,
+        snapshotId: String? = null,
+    ): String {
+        if (uris.isEmpty()) error("No URIs to add")
         val body = json.encodeToString(
             AddPlaylistItemsBody.serializer(),
-            AddPlaylistItemsBody(uris = uris, position = position),
+            AddPlaylistItemsBody(uris = uris, position = position, snapshotId = snapshotId),
         )
         val response = postRaw("/playlists/$playlistId/items", body)
-        return if (response.isBlank()) null else json.decodeFromString<SnapshotResponse>(response).snapshotId
+        val id = if (response.isBlank()) {
+            ""
+        } else {
+            json.decodeFromString<SnapshotResponse>(response).snapshotId
+        }
+        require(id.isNotBlank()) { "Add to playlist succeeded but returned no snapshot_id" }
+        return id
     }
 
     fun removePlaylistItems(
         playlistId: String,
         uris: List<String>,
         snapshotId: String? = null,
-    ): String? {
-        if (uris.isEmpty()) return null
+    ): String {
+        if (uris.isEmpty()) error("removePlaylistItems requires at least one URI")
         val body = json.encodeToString(
             RemovePlaylistItemsBody.serializer(),
             RemovePlaylistItemsBody(
@@ -246,7 +270,13 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
             ),
         )
         val response = deleteReturning("/playlists/$playlistId/items", body)
-        return if (response.isBlank()) null else json.decodeFromString<SnapshotResponse>(response).snapshotId
+        val id = if (response.isBlank()) {
+            null
+        } else {
+            json.decodeFromString<SnapshotResponse>(response).snapshotId
+        }
+        require(!id.isNullOrBlank()) { "Remove from playlist succeeded but returned no snapshot_id" }
+        return id
     }
 
     fun reorderPlaylistItems(
@@ -255,7 +285,7 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
         insertBefore: Int,
         rangeLength: Int = 1,
         snapshotId: String? = null,
-    ): String? {
+    ): String {
         val body = json.encodeToString(
             ReorderPlaylistItemsBody.serializer(),
             ReorderPlaylistItemsBody(
@@ -266,7 +296,13 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
             ),
         )
         val response = putRaw("/playlists/$playlistId/items/reorder", body)
-        return if (response.isBlank()) null else json.decodeFromString<SnapshotResponse>(response).snapshotId
+        val id = if (response.isBlank()) {
+            null
+        } else {
+            json.decodeFromString<SnapshotResponse>(response).snapshotId
+        }
+        require(!id.isNullOrBlank()) { "Reorder succeeded but returned no snapshot_id" }
+        return id
     }
 
     fun unfollowPlaylist(playlistId: String) {

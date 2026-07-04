@@ -7,6 +7,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lightphone.spotify.ui.AppViewModel
@@ -15,22 +16,44 @@ import com.lightphone.spotify.ui.screens.EmptyListMessage
 import com.lightphone.spotify.ui.screens.LoginScreen
 import com.lightphone.spotify.ui.screens.WebApiSetupScreen
 import com.thelightphone.sdk.ui.LightThemeTokens
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+
+private data class AppAuthState(
+    val authInitialized: Boolean,
+    val loggedIn: Boolean,
+    val webApiReady: Boolean,
+)
 
 @Composable
 fun SpotifyApp(vm: AppViewModel = viewModel()) {
-    val playback by vm.playback.collectAsState()
+    val auth by remember(vm) {
+        vm.playback.map { p ->
+            AppAuthState(
+                authInitialized = p.authInitialized,
+                loggedIn = p.loggedIn,
+                webApiReady = p.webApiReady,
+            )
+        }.distinctUntilChanged()
+    }.collectAsState(
+        initial = AppAuthState(
+            authInitialized = vm.playback.value.authInitialized,
+            loggedIn = vm.playback.value.loggedIn,
+            webApiReady = vm.playback.value.webApiReady,
+        ),
+    )
     val libraryBootstrapping by vm.libraryBootstrapping.collectAsState()
     LightPhonoTheme {
         when {
-            !playback.authInitialized -> Box(
+            !auth.authInitialized -> Box(
                 Modifier
                     .fillMaxSize()
                     .background(LightThemeTokens.colors.background),
             ) {
                 EmptyListMessage("Loading…")
             }
-            !playback.loggedIn -> LoginScreen(vm)
-            !playback.webApiReady -> WebApiSetupScreen(vm)
+            !auth.loggedIn -> LoginScreen(vm)
+            !auth.webApiReady -> WebApiSetupScreen(vm)
             else -> {
                 LaunchedEffect(Unit) { vm.onLoggedIn() }
                 if (libraryBootstrapping) {

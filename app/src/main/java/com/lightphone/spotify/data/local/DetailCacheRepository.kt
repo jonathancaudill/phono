@@ -14,6 +14,7 @@ class DetailCacheRepository(
     private val albumDao = database.albumDetailDao()
     private val playlistDetailDao = database.playlistDetailDao()
     private val playlistTrackUriDao = database.playlistTrackUriDao()
+    private val playlistUriIndexDao = database.playlistUriIndexDao()
     private val savedAlbumDao = database.savedAlbumDao()
     private val playlistDao = database.playlistDao()
 
@@ -46,9 +47,11 @@ class DetailCacheRepository(
 
     suspend fun getPinnedPlaylistDetail(
         playlistId: String,
+        authoritativeSnapshot: String? = null,
     ): Triple<SpotifyPlaylistDetail, List<SpotifyPlaylistTrackItem>, String?>? {
         if (!isUserPlaylist(playlistId)) return null
         val row = playlistDetailDao.get(playlistId) ?: return null
+        if (authoritativeSnapshot != null && row.snapshot_id != authoritativeSnapshot) return null
         if (System.currentTimeMillis() - row.fetched_at > PINNED_STALE_MS) return null
         return runCatching {
             val detail = json.decodeFromString<SpotifyPlaylistDetail>(row.detail_json)
@@ -73,19 +76,99 @@ class DetailCacheRepository(
                 fetched_at = System.currentTimeMillis(),
             ),
         )
-        playlistTrackUriDao.deleteForPlaylist(playlistId)
         val uris = tracks.mapNotNull { item ->
-            item.track?.uri?.takeIf { it.isNotBlank() }?.let { uri ->
-                PlaylistTrackUriEntity(playlist_id = playlistId, track_uri = normalizeUri(uri))
-            }
+            item.track?.uri?.takeIf { it.isNotBlank() }
         }
-        if (uris.isNotEmpty()) {
-            playlistTrackUriDao.insertAll(uris)
-        }
+        replaceTrackUris(playlistId, uris, snapshotId)
     }
 
     suspend fun playlistContainsTrack(playlistId: String, trackUri: String): Boolean =
         playlistTrackUriDao.contains(playlistId, normalizeUri(trackUri))
+
+    suspend fun playlistIdsContaining(trackUri: String): Set<String> =
+        playlistTrackUriDao.playlistIdsContaining(normalizeUri(trackUri)).toSet()
+
+    suspend fun indexedSnapshotId(playlistId: String): String? =
+        playlistUriIndexDao.get(playlistId)?.indexed_snapshot_id
+
+    suspend fun needsUriReindex(playlistId: String, currentSnapshotId: String?): Boolean {
+        val indexed = playlistUriIndexDao.get(playlistId)?.indexed_snapshot_id
+        return indexed == null || indexed != currentSnapshotId
+    }
+
+    suspend fun replaceTrackUris(
+        playlistId: String,
+        trackUris: List<String>,
+        snapshotId: String?,
+    ) {
+        playlistTrackUriDao.deleteForPlaylist(playlistId)
+        val rows = trackUris.mapNotNull { uri ->
+            uri.takeIf { it.isNotBlank() }?.let {
+                PlaylistTrackUriEntity(playlist_id = playlistId, track_uri = normalizeUri(it))
+            }
+        }
+        if (rows.isNotEmpty()) {
+            playlistTrackUriDao.insertAll(rows)
+        }
+        playlistUriIndexDao.upsert(
+            PlaylistUriIndexEntity(
+                playlist_id = playlistId,
+                indexed_snapshot_id = snapshotId,
+            ),
+        )
+    }
+
+    suspend fun addTrackUri(playlistId: String, trackUri: String, snapshotId: String?) {
+        val normalized = normalizeUri(trackUri)
+        playlistTrackUriDao.insert(
+            PlaylistTrackUriEntity(playlist_id = playlistId, track_uri = normalized),
+        )
+        if (snapshotId != null) {
+            playlistUriIndexDao.upsert(
+                PlaylistUriIndexEntity(
+                    playlist_id = playlistId,
+                    indexed_snapshot_id = snapshotId,
+                ),
+            )
+        }
+    }
+
+    suspend fun removeTrackUri(playlistId: String, trackUri: String, snapshotId: String?) {
+        playlistTrackUriDao.delete(playlistId, normalizeUri(trackUri))
+        if (snapshotId != null) {
+            playlistUriIndexDao.upsert(
+                PlaylistUriIndexEntity(
+                    playlist_id = playlistId,
+                    indexed_snapshot_id = snapshotId,
+                ),
+            )
+        }
+    }
+
+    suspend fun clearPlaylistUriIndex(playlistId: String) {
+        playlistTrackUriDao.deleteForPlaylist(playlistId)
+        playlistUriIndexDao.delete(playlistId)
+    }
+
+    suspend fun clearAllUserData() {
+        albumDao.clearAll()
+        playlistDetailDao.clearAll()
+        playlistTrackUriDao.clearAll()
+        playlistUriIndexDao.clearAll()
+    }
+
+    suspend fun invalidatePinnedPlaylistTracks(playlistId: String) {
+        playlistDetailDao.delete(playlistId)
+    }
+
+    suspend fun patchAlbumIsSaved(albumId: String, isSaved: Boolean) {
+        val row = albumDao.get(albumId) ?: return
+        albumDao.upsert(row.copy(is_saved = isSaved, fetched_at = System.currentTimeMillis()))
+    }
+
+    suspend fun deleteAlbumDetail(albumId: String) {
+        albumDao.delete(albumId)
+    }
 
     private fun normalizeUri(uri: String): String = uri.substringBefore('?').trim()
 

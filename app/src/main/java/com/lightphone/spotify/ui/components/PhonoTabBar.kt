@@ -1,10 +1,15 @@
 package com.lightphone.spotify.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -14,14 +19,20 @@ import androidx.compose.ui.unit.dp
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.navigation.PhonoTab
-import com.thelightphone.sdk.ui.LightBarButton
-import com.thelightphone.sdk.ui.LightBottomBar
+import com.thelightphone.sdk.ui.LightIcon
 import com.thelightphone.sdk.ui.LightText
 import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
 import com.thelightphone.sdk.ui.gridUnitsAsDp
+import com.thelightphone.sdk.ui.lightClickable
 
-private const val TAB_ICON_SIZE_UNITS = 2.35f
+/** Slightly above LightBarButtonDefaults (2f) so tab icons read clearly on LP3. */
+private const val TAB_ICON_SIZE_UNITS = 2.55f
+
+private const val BAR_HEIGHT_UNITS = 3.5f
+private const val TOP_MARGIN_UNITS = 0.5f
+/** LightBottomBar uses 2u; keep a hair of inset without large empty edge gutters. */
+private const val HORIZONTAL_PADDING_UNITS = 0.35f
 
 /** Bottom bar footprint: 0.5 grid top margin + 3.5 grid bar height. */
 val PhonoNavbarBarHeight: Dp @Composable get() = 4f.gridUnitsAsDp()
@@ -41,34 +52,50 @@ fun PhonoTabBar(
     modifier: Modifier = Modifier,
 ) {
     val colors = LightThemeTokens.colors
+    val barHeight = BAR_HEIGHT_UNITS.gridUnitsAsDp()
+    val hitSize = barHeight
+
     Column(
         modifier
             .fillMaxWidth()
             .background(colors.background),
     ) {
-        LightBottomBar(
-            items = tabs.map { tab ->
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = TOP_MARGIN_UNITS.gridUnitsAsDp())
+                .height(barHeight)
+                .padding(horizontal = HORIZONTAL_PADDING_UNITS.gridUnitsAsDp()),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            tabs.forEach { tab ->
                 val active = tab == currentTab
                 val tint = if (active) colors.content else PhonoSemanticColors.InactiveTab
-                when {
-                    tab.lightIcon != null -> LightBarButton.LightIcon(
-                        icon = tab.lightIcon,
-                        onClick = { onTabSelected(tab) },
-                        contentDescription = tab.label,
-                        sizeUnits = TAB_ICON_SIZE_UNITS,
-                        tint = tint,
-                    )
-                    tab.icon != null -> LightBarButton.Icon(
-                        painter = rememberVectorPainter(tab.icon),
-                        onClick = { onTabSelected(tab) },
-                        contentDescription = tab.label,
-                        sizeUnits = TAB_ICON_SIZE_UNITS,
-                        tint = tint,
-                    )
-                    else -> error("Tab ${tab.label} has no icon")
+                Box(
+                    modifier = Modifier
+                        .size(hitSize)
+                        .lightClickable(onClick = { onTabSelected(tab) }),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    when {
+                        tab.lightIcon != null -> LightIcon(
+                            icon = tab.lightIcon,
+                            size = TAB_ICON_SIZE_UNITS,
+                            tint = tint,
+                            contentDescription = tab.label,
+                        )
+                        tab.icon != null -> Icon(
+                            painter = rememberVectorPainter(tab.icon),
+                            contentDescription = tab.label,
+                            tint = tint,
+                            modifier = Modifier.size(TAB_ICON_SIZE_UNITS.gridUnitsAsDp()),
+                        )
+                        else -> error("Tab ${tab.label} has no icon")
+                    }
                 }
-            },
-        )
+            }
+        }
         if (statusMessage != null) {
             OfflineStrip(statusMessage)
         }

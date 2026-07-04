@@ -5,7 +5,7 @@
 //! and its sibling modules - never the Kotlin side.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -25,6 +25,7 @@ use tokio::runtime::Runtime;
 
 mod auth;
 mod library;
+mod playback_checkpoint;
 mod queue;
 mod settings;
 mod pcm_ring;
@@ -72,6 +73,8 @@ pub enum SpotifyError {
     TrackUnavailable,
     #[error("internal error: {msg}")]
     Internal { msg: String },
+    #[error("stale rebuild superseded")]
+    StaleRebuild,
 }
 
 /// A track surfaced to the UI (search results, library, now-playing). Built
@@ -193,6 +196,7 @@ struct EngineShared {
     /// Queue held while `active` is dropped during reconnect so UI reads stay populated.
     pending_queue: Mutex<Option<QueueState>>,
     rebuild_mutex: Mutex<()>,
+    rebuild_generation: AtomicU64,
     last_force_reconnect: Mutex<Option<Instant>>,
     prefetch_generation: AtomicU32,
     metrics_transport_reconnect: AtomicU32,
@@ -200,6 +204,7 @@ struct EngineShared {
     metrics_stall_events: AtomicU32,
     metrics_sink_recreate: AtomicU32,
     metrics_audiotrack_write_errors: AtomicU32,
+    last_checkpoint_save: Mutex<Option<Instant>>,
 }
 
 /// Debug counters for playback stability field testing (logcat / settings).
@@ -586,6 +591,7 @@ impl EngineShared {
             last_known_position_ms: Arc::new(AtomicU32::new(0)),
             pending_queue: Mutex::new(None),
             rebuild_mutex: Mutex::new(()),
+            rebuild_generation: AtomicU64::new(0),
             last_force_reconnect: Mutex::new(None),
             prefetch_generation: AtomicU32::new(0),
             metrics_transport_reconnect: AtomicU32::new(0),
@@ -593,7 +599,12 @@ impl EngineShared {
             metrics_stall_events: AtomicU32::new(0),
             metrics_sink_recreate: AtomicU32::new(0),
             metrics_audiotrack_write_errors: AtomicU32::new(0),
+            last_checkpoint_save: Mutex::new(None),
         }))
+    }
+
+    fn cache_base_dir(&self) -> &Path {
+        self.cred_dir.parent().unwrap_or(&self.cred_dir)
     }
 
     fn is_session_connected(&self) -> bool {
@@ -663,9 +674,15 @@ impl EngineShared {
             active.session.shutdown();
         }
         if let Some(creds) = self.cache.credentials() {
-            match self.clone().build_active(creds, resume).await {
+            match self.clone().orchestrate_rebuild(creds, resume).await {
                 Ok(()) => notify(&self.listener, |l| l.on_connection_restored()),
-                Err(e) => log::warn!("staged rebuild failed: {e}"),
+                Err(e) => {
+                    log::warn!("staged rebuild failed: {e}");
+                    notify(
+                        &self.listener,
+                        |l| l.on_error(format!("Playback reconnect failed: {e}")),
+                    );
+                }
             }
         }
     }
@@ -701,6 +718,9 @@ impl EngineShared {
             }
             let _ = std::fs::create_dir_all(dir);
         }
+        let _ = self
+            .cache
+            .resync_audio_from_disk(AUDIO_CACHE_LIMIT_BYTES);
     }
 
     fn begin_login(&self) -> String {
@@ -725,7 +745,8 @@ impl EngineShared {
         let tokens = handle.block_on(auth::exchange_code(&code, &verifier))?;
         let credentials = Credentials::with_access_token(&tokens.access_token);
         self.store_oauth(tokens);
-        handle.block_on(self.clone().build_active(credentials, None))?;
+        handle.block_on(self.clone().orchestrate_rebuild(credentials, None))?;
+        #[cfg(debug_assertions)]
         self.probe_login5_token();
         Ok(())
     }
@@ -758,9 +779,13 @@ impl EngineShared {
             });
         }
         let handle = self.runtime.handle().clone();
-        handle.block_on(self.clone().build_active(creds, None))?;
+        let resume = playback_checkpoint::load_if_fresh(self.cache_base_dir());
+        // Cold restore is always paused — user taps play to resume.
+        self.playing.store(false, Ordering::SeqCst);
+        handle.block_on(self.clone().orchestrate_rebuild(creds, resume))?;
         // Prime the OAuth fallback token for spclient/playback.
         let _ = self.access_token();
+        #[cfg(debug_assertions)]
         self.probe_login5_token();
         Ok(true)
     }
@@ -876,19 +901,23 @@ impl EngineShared {
         );
     }
 
-    fn is_logged_in(&self) -> bool {
-        if self
-            .active
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|a| !a.session.is_invalid())
-            .unwrap_or(false)
-        {
-            return true;
-        }
+    fn has_credentials(&self) -> bool {
         self.cache.credentials().is_some()
-            && self.pending_queue.lock().unwrap().is_some()
+    }
+
+    fn is_reconnecting(&self) -> bool {
+        self.pending_queue.lock().unwrap().is_some()
+            && !self
+                .active
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|a| !a.session.is_invalid())
+                .unwrap_or(false)
+    }
+
+    fn is_logged_in(&self) -> bool {
+        self.has_credentials()
     }
 
     fn ensure_playback_ready(shared: &Arc<Self>) -> Result<(), SpotifyError> {
@@ -902,30 +931,59 @@ impl EngineShared {
         {
             return Ok(());
         }
-        let _guard = shared.rebuild_mutex.lock().unwrap();
-        if shared
-            .active
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|a| !a.session.is_invalid())
-            .unwrap_or(false)
-        {
-            return Ok(());
-        }
+        let creds = shared
+            .cache
+            .credentials()
+            .ok_or(SpotifyError::NotLoggedIn)?;
         let resume = shared
             .pending_queue
             .lock()
             .unwrap()
             .clone()
             .or_else(|| shared.snapshot_resume_with_position());
-        let creds = shared
-            .cache
-            .credentials()
-            .ok_or(SpotifyError::NotLoggedIn)?;
         let handle = shared.runtime.handle().clone();
-        handle.block_on(shared.clone().build_active(creds, resume))?;
+        handle.block_on(shared.clone().orchestrate_rebuild(creds, resume))?;
+        shared.notify_connection_restored_if_ready();
         Ok(())
+    }
+
+    fn has_valid_active(&self) -> bool {
+        self.active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|a| !a.session.is_invalid())
+            .unwrap_or(false)
+    }
+
+    fn notify_connection_restored_if_ready(&self) {
+        if self.has_valid_active() {
+            notify(&self.listener, |l| l.on_connection_restored());
+        }
+    }
+
+    fn maybe_save_checkpoint(&self) {
+        let now = Instant::now();
+        {
+            let mut last = self.last_checkpoint_save.lock().unwrap();
+            if let Some(prev) = *last {
+                if now.duration_since(prev) < playback_checkpoint::debounce_interval() {
+                    return;
+                }
+            }
+            *last = Some(now);
+        }
+        if let Some(q) = self
+            .active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|a| a.queue.lock().unwrap().clone())
+        {
+            playback_checkpoint::save(self.cache_base_dir(), &q);
+        } else if let Some(q) = self.pending_queue.lock().unwrap().clone() {
+            playback_checkpoint::save(self.cache_base_dir(), &q);
+        }
     }
 
     /// A Spotify Web API access token. Returns the cached OAuth token while it is
@@ -1010,6 +1068,7 @@ impl EngineShared {
     }
 
     /// Diagnostic: log whether Login5 and client-token mint succeed after connect.
+    #[cfg(debug_assertions)]
     fn probe_login5_token(&self) {
         let Ok(session) = self.session_or_err() else {
             return;
@@ -1193,6 +1252,7 @@ impl EngineShared {
     }
 
     fn notify_queue_changed(&self) {
+        self.maybe_save_checkpoint();
         notify(&self.listener, |l| l.on_queue_changed());
     }
 
@@ -1205,6 +1265,7 @@ impl EngineShared {
     fn transport_pause(&self) {
         self.playing.store(false, Ordering::SeqCst);
         self.with_active(|a| a.player.pause());
+        self.maybe_save_checkpoint();
     }
 
     fn transport_resume(&self) {
@@ -1293,22 +1354,53 @@ impl EngineShared {
     }
 
     fn logout(&self) {
+        // Invalidate any in-flight rebuild before tearing down state.
+        self.rebuild_generation.fetch_add(1, Ordering::SeqCst);
         // Remove credentials first so any in-flight reconnect monitor gives up,
         // then invalidate the session so the monitor wakes and exits.
         let _ = std::fs::remove_file(self.cred_dir.join("credentials.json"));
         let _ = std::fs::remove_file(self.refresh_token_path());
+        let _ = std::fs::remove_file(self.oauth_cache_path());
+        *self.pending_queue.lock().unwrap() = None;
+        *self.pkce_verifier.lock().unwrap() = None;
         *self.oauth.lock().unwrap() = None;
+        self.playing.store(false, Ordering::SeqCst);
+        self.last_known_position_ms.store(0, Ordering::SeqCst);
         librespot::core::oauth_fallback::clear_oauth_fallback_token();
+        playback_checkpoint::delete(self.cache_base_dir());
         if let Some(active) = self.active.lock().unwrap().take() {
             active.session.shutdown();
         }
     }
 
-    /// Build a fresh `Active` (session + player + event/monitor tasks).
-    async fn build_active(
+    async fn orchestrate_rebuild(
         self: Arc<Self>,
         credentials: Credentials,
         resume: Option<QueueState>,
+    ) -> Result<(), SpotifyError> {
+        let gen = {
+            let _guard = self.rebuild_mutex.lock().unwrap();
+            if self
+                .active
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|a| !a.session.is_invalid())
+                .unwrap_or(false)
+            {
+                return Ok(());
+            }
+            self.rebuild_generation.fetch_add(1, Ordering::SeqCst) + 1
+        };
+        self.build_active_impl(credentials, resume, gen).await
+    }
+
+    /// Build a fresh `Active` (session + player + event/monitor tasks).
+    async fn build_active_impl(
+        self: Arc<Self>,
+        credentials: Credentials,
+        resume: Option<QueueState>,
+        generation: u64,
     ) -> Result<(), SpotifyError> {
         let session_config = self.session_config.lock().unwrap().clone();
         let session = Session::new(session_config, Some(self.cache.clone()));
@@ -1387,6 +1479,7 @@ impl EngineShared {
             Arc::downgrade(&self),
             session.clone(),
             self.runtime.handle().clone(),
+            generation,
         );
 
         if let Some(uri) = {
@@ -1407,14 +1500,26 @@ impl EngineShared {
             player.load(uri, start_playing, pos);
         }
 
-        *self.active.lock().unwrap() = Some(Active {
-            session,
-            player,
-            mixer,
-            queue,
-            event_task,
-        });
-        *self.pending_queue.lock().unwrap() = None;
+        if self.rebuild_generation.load(Ordering::SeqCst) != generation {
+            session.shutdown();
+            return Err(SpotifyError::StaleRebuild);
+        }
+
+        {
+            let _guard = self.rebuild_mutex.lock().unwrap();
+            if self.rebuild_generation.load(Ordering::SeqCst) != generation {
+                session.shutdown();
+                return Err(SpotifyError::StaleRebuild);
+            }
+            *self.active.lock().unwrap() = Some(Active {
+                session,
+                player,
+                mixer,
+                queue,
+                event_task,
+            });
+            *self.pending_queue.lock().unwrap() = None;
+        }
         self.notify_queue_changed();
         Ok(())
     }
@@ -1490,7 +1595,9 @@ fn spawn_monitor(
     weak: std::sync::Weak<EngineShared>,
     session: Session,
     handle: tokio::runtime::Handle,
+    monitor_gen: u64,
 ) {
+    const RECONNECT_ERROR_AFTER: u32 = 8;
     let _ = std::thread::Builder::new()
         .name("spotify-monitor".into())
         .spawn(move || loop {
@@ -1503,6 +1610,30 @@ fn spawn_monitor(
                 Some(s) => s,
                 None => return,
             };
+
+            // Stale monitor: superseded by a newer rebuild generation.
+            if shared.rebuild_generation.load(Ordering::SeqCst) != monitor_gen {
+                log::debug!("monitor: stale generation {monitor_gen}, exiting");
+                return;
+            }
+
+            // Stale monitor: a newer valid session is already active.
+            {
+                let guard = shared.active.lock().unwrap();
+                if let Some(active) = guard.as_ref() {
+                    if !active.session.is_invalid() {
+                        log::debug!("monitor: newer active session valid, exiting");
+                        return;
+                    }
+                }
+            }
+
+            // Paused: defer reconnect until user resumes playback (ensure_playback_ready).
+            if !shared.playing.load(Ordering::SeqCst) {
+                log::debug!("monitor: session invalid while paused — deferring reconnect");
+                continue;
+            }
+
             notify(&shared.listener, |l| l.on_connection_lost());
 
             let resume = shared.snapshot_resume_with_position();
@@ -1511,21 +1642,42 @@ fn spawn_monitor(
             *shared.active.lock().unwrap() = None;
 
             let mut delay = 2u64;
+            let mut attempts = 0u32;
             loop {
                 if weak.upgrade().is_none() {
                     return;
                 }
                 if let Some(creds) = shared.cache.credentials() {
-                    match handle.block_on(shared.clone().build_active(creds, resume.clone())) {
+                    attempts += 1;
+                    match handle.block_on(shared.clone().orchestrate_rebuild(creds, resume.clone()))
+                    {
                         Ok(()) => {
-                            notify(&shared.listener, |l| l.on_connection_restored());
-                            let _ = shared.access_token();
-                            return; // the new Active started its own monitor
+                            if shared.has_valid_active() {
+                                notify(&shared.listener, |l| l.on_connection_restored());
+                                let _ = shared.access_token();
+                            }
+                            return;
                         }
-                        Err(e) => log::warn!("reconnect attempt failed: {e}"),
+                        Err(SpotifyError::StaleRebuild) => {
+                            log::debug!("monitor: rebuild superseded, exiting");
+                            return;
+                        }
+                        Err(e) => {
+                            log::warn!("reconnect attempt failed: {e}");
+                            if attempts >= RECONNECT_ERROR_AFTER {
+                                notify(
+                                    &shared.listener,
+                                    |l| l.on_error(format!("Playback reconnect failed: {e}")),
+                                );
+                            }
+                        }
                     }
                 } else {
                     log::warn!("reconnect: no cached credentials, giving up");
+                    notify(
+                        &shared.listener,
+                        |l| l.on_error("Playback reconnect failed: not signed in".into()),
+                    );
                     return;
                 }
                 std::thread::sleep(Duration::from_secs(delay));
@@ -1612,6 +1764,20 @@ async fn forward_events(
                     &listener,
                     |l| l.on_unavailable(uri_to_string(&track_id)),
                 );
+                let is_current = queue
+                    .lock()
+                    .unwrap()
+                    .current_uri()
+                    .as_ref()
+                    .map(|cur| cur == &track_id)
+                    .unwrap_or(false);
+                if !is_current {
+                    log::debug!(
+                        "ignoring unavailable for preload/non-current track {}",
+                        uri_to_string(&track_id)
+                    );
+                    continue;
+                }
                 // Advance past dead tracks (skip_next, not end_of_track — repeat-one must not retry unavailable URI).
                 if unavailable_guard.record() {
                     log::warn!("too many consecutive unavailable tracks; stopping playback");
@@ -1630,15 +1796,23 @@ async fn forward_events(
             }
             PlayerEvent::Stopped { track_id, .. } => {
                 log::warn!("playback stopped for {}", uri_to_string(&track_id));
-                if playing.load(Ordering::SeqCst) {
-                    if let Some(shared) = weak.upgrade() {
-                        shared
-                            .metrics_stall_events
-                            .fetch_add(1, Ordering::SeqCst);
-                        std::thread::spawn(move || {
-                            let _ = EngineShared::ensure_playback_ready(&shared);
-                        });
-                    }
+                let pos = last_known_position_ms.load(Ordering::SeqCst) as i64;
+                playing.store(false, Ordering::SeqCst);
+                notify(&listener, |l| l.on_paused(pos));
+                notify(&listener, |l| l.on_buffering(true));
+                if let Some(shared) = weak.upgrade() {
+                    shared
+                        .metrics_stall_events
+                        .fetch_add(1, Ordering::SeqCst);
+                    let listener = shared.listener.clone();
+                    std::thread::spawn(move || {
+                        if let Err(e) = EngineShared::ensure_playback_ready(&shared) {
+                            notify(
+                                &listener,
+                                |l| l.on_error(format!("Playback recovery failed: {e}")),
+                            );
+                        }
+                    });
                 }
             }
             PlayerEvent::TimeToPreloadNextTrack { .. } => {

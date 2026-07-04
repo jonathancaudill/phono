@@ -16,8 +16,9 @@ import androidx.room.TypeConverters
         AlbumDetailEntity::class,
         PlaylistDetailEntity::class,
         PlaylistTrackUriEntity::class,
+        PlaylistUriIndexEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 @TypeConverters(LibraryResourceConverter::class)
@@ -29,6 +30,7 @@ abstract class PhonoDatabase : RoomDatabase() {
     abstract fun albumDetailDao(): AlbumDetailDao
     abstract fun playlistDetailDao(): PlaylistDetailDao
     abstract fun playlistTrackUriDao(): PlaylistTrackUriDao
+    abstract fun playlistUriIndexDao(): PlaylistUriIndexDao
 
     companion object {
         @Volatile

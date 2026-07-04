@@ -10,7 +10,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Bridges [PlaybackService] engine ownership (P0b) with lazy [PlaybackController] access.
- * The service creates the native engine; the controller is wired on attach.
+ * The engine is created on first playback/login need, not at app cold start.
  */
 object PlaybackEngineHolder {
     @Volatile
@@ -21,21 +21,30 @@ object PlaybackEngineHolder {
     @Volatile
     private var engineAttached = false
 
+    @Volatile
+    private var sharedEngine: LibrespotEngine? = null
+
+    private val attachLock = Any()
+
     fun createEngine(context: Context): LibrespotEngine {
+        sharedEngine?.let { return it }
         NativeInit.ensureLoaded(context)
         val cacheDir = File(context.filesDir, "spotify-cache").apply { mkdirs() }
-        return LibrespotEngine(cacheDir.absolutePath)
+        return LibrespotEngine(cacheDir.absolutePath).also { sharedEngine = it }
     }
 
-    /** Called from [PlaybackService.onCreate] once the native engine is constructed. */
-    fun attachEngine(controller: PlaybackController, engine: LibrespotEngine) {
-        if (!engineAttached) {
+    /** Create and attach the native engine on first playback/login need. */
+    fun ensureEngineAttached(context: Context, controller: PlaybackController) {
+        if (engineAttached) return
+        synchronized(attachLock) {
+            if (engineAttached) return
+            val engine = createEngine(context.applicationContext)
             controller.attachEngine(engine)
-            engineAttached = true
+            engineLatch.countDown()
         }
-        engineLatch.countDown()
     }
 
+    /** Called from [PlaybackService] once MediaSession is wired. */
     fun markServiceReady() {
         serviceReady = true
         engineLatch.countDown()
@@ -43,11 +52,12 @@ object PlaybackEngineHolder {
 
     fun clearService() {
         serviceReady = false
+        engineLatch.countDown()
     }
 
     fun isServiceReady(): Boolean = serviceReady
 
-    fun awaitEngineReady(timeoutMs: Long = 2000): Boolean {
+    fun awaitEngineReady(timeoutMs: Long = 5000): Boolean {
         engineLatch.await(timeoutMs, TimeUnit.MILLISECONDS)
         return engineAttached
     }

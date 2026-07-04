@@ -20,9 +20,9 @@ CRATE_DIR="$REPO_ROOT/rust/spotify-core"
 JNILIBS_DIR="$REPO_ROOT/app/src/main/jniLibs"
 BINDINGS_DIR="$REPO_ROOT/app/src/main/java"
 
-# arm64-v8a is the Light Phone III; x86_64 is for the emulator.
-# Override with e.g. ANDROID_ABIS="arm64-v8a" to skip the emulator ABI.
-read -r -a ABIS <<< "${ANDROID_ABIS:-arm64-v8a x86_64}"
+# arm64-v8a is the Light Phone III. Gradle passes ANDROID_ABIS from abiFilters.
+# For emulator-only builds: ANDROID_ABIS="arm64-v8a x86_64" ./scripts/build-rust.sh
+read -r -a ABIS <<< "${ANDROID_ABIS:-arm64-v8a}"
 
 echo "==> Cross-compiling spotify-core (release) for: ${ABIS[*]}"
 NDK_ARGS=()

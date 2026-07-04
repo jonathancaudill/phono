@@ -29,10 +29,7 @@ import com.thelightphone.sdk.ui.LightText
 import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
 
-/**
- * Square artwork with grey placeholder when there's no URL or the load fails.
- * Used on Now Playing only; library/search/detail lists are text-only.
- */
+/** Square artwork with grey placeholder when there's no URL or the load fails. */
 @Composable
 fun PhonoFallbackImage(
     imageUrl: String?,

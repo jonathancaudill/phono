@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">phono</string>
+    <string name="app_name">Phono</string>
     <string name="playback_notification_channel">Playback</string>
     <string name="playback_notification_channel_desc">Shows now playing and keeps music running in the background</string>
     <string name="playback_notification_fallback">Playing music</string>

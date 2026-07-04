@@ -256,6 +256,11 @@ class LibraryRepository(
         }
     }
 
+    suspend fun updatePlaylistSnapshot(playlistId: String, snapshotId: String?) {
+        if (snapshotId == null) return
+        playlistDao.updateSnapshot(playlistId, snapshotId)
+    }
+
     suspend fun removePlaylist(playlistId: String) {
         database.withTransaction {
             playlistDao.deleteByPlaylistId(playlistId)
@@ -280,6 +285,29 @@ class LibraryRepository(
             syncDao.delete(LibraryResource.SAVED_ALBUMS)
             syncDao.delete(LibraryResource.USER_PLAYLISTS)
         }
+    }
+
+    /** Library lists + detail/URI index tables in one transaction. */
+    suspend fun clearAllUserData() {
+        database.withTransaction {
+            trackDao.clearAll()
+            albumDao.clearAll()
+            playlistDao.clearAll()
+            syncDao.delete(LibraryResource.LIKED_TRACKS)
+            syncDao.delete(LibraryResource.SAVED_ALBUMS)
+            syncDao.delete(LibraryResource.USER_PLAYLISTS)
+            database.albumDetailDao().clearAll()
+            database.playlistDetailDao().clearAll()
+            database.playlistTrackUriDao().clearAll()
+            database.playlistUriIndexDao().clearAll()
+        }
+    }
+
+    suspend fun getPlaylistSnapshot(playlistId: String): String? =
+        playlistDao.getSnapshot(playlistId)
+
+    suspend fun updatePlaylistName(playlistId: String, name: String) {
+        playlistDao.updateName(playlistId, name)
     }
 
     private fun normalizeTrackUri(uri: String): String = uri.substringBefore('?').trim()

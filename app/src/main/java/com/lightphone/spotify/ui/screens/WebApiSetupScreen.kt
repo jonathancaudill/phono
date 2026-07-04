@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,14 +25,20 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.viewinterop.AndroidView
 import com.lightphone.spotify.data.webapi.WebApiAuth
+import com.lightphone.spotify.data.webapi.WebApiSessionState
+import com.lightphone.spotify.data.webapi.parseWebApiQrPayload
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.PhonoScreenShell
 import com.lightphone.spotify.ui.phono.PhonoTextButton
+import com.lightphone.spotify.ui.rememberCameraPermissionHandlers
+import com.thelightphone.sdk.ui.LightQrCodeScanner
 import com.thelightphone.sdk.ui.LightText
 import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
+
+private const val SETUP_PAGE_URL = "https://jonathancaudill.github.io/phono/"
 
 @Composable
 fun WebApiSetupScreen(vm: AppViewModel) {
@@ -39,8 +46,45 @@ fun WebApiSetupScreen(vm: AppViewModel) {
     var clientId by remember { mutableStateOf("") }
     var clientSecret by remember { mutableStateOf("") }
     var showWebView by remember { mutableStateOf(false) }
+    var showQrScanner by remember { mutableStateOf(false) }
     var authUrl by remember { mutableStateOf<String?>(null) }
+    var qrScanMessage by remember { mutableStateOf<String?>(null) }
+    var qrScanIsError by remember { mutableStateOf(false) }
+    var pendingScan by remember { mutableStateOf<String?>(null) }
+    val (checkCameraPermission, launchCameraPermissionRequest) = rememberCameraPermissionHandlers()
     val colors = LightThemeTokens.colors
+
+    val sessionState = playback.webApiSessionState
+    val credentialsConfigured = sessionState !is WebApiSessionState.NotConfigured
+
+    LaunchedEffect(pendingScan) {
+        val raw = pendingScan ?: return@LaunchedEffect
+        pendingScan = null
+        parseWebApiQrPayload(raw)
+            .onSuccess { payload ->
+                clientId = payload.clientId
+                clientSecret = payload.clientSecret
+                qrScanMessage = "Credentials filled from QR. Tap Connect Web API when ready."
+                qrScanIsError = false
+            }
+            .onFailure { error ->
+                qrScanMessage = error.message ?: "Invalid QR code."
+                qrScanIsError = true
+            }
+        showQrScanner = false
+    }
+
+    if (showQrScanner) {
+        LightQrCodeScanner(
+            title = "Scan QR Code",
+            onScanned = { pendingScan = it },
+            onBack = { showQrScanner = false },
+            checkCameraPermission = checkCameraPermission,
+            launchCameraPermissionRequest = launchCameraPermissionRequest,
+            modifier = Modifier.fillMaxSize(),
+        )
+        return
+    }
 
     if (showWebView && authUrl != null) {
         Box(Modifier.fillMaxSize().background(colors.background)) {
@@ -99,38 +143,95 @@ fun WebApiSetupScreen(vm: AppViewModel) {
         contentGap = legacyNToGridDp(16),
         modifier = Modifier.fillMaxSize(),
     ) {
+        if (sessionState is WebApiSessionState.Expired) {
+            LightText(
+                text = "Your Web API session expired. Reconnect to browse your library — playback is unaffected.",
+                variant = LightTextVariant.Detail,
+                color = PhonoSemanticColors.Placeholder,
+            )
+            Spacer(Modifier.height(legacyNToGridDp(4)))
+            PhonoTextButton(
+                text = "Reconnect Web API",
+                onClick = {
+                    authUrl = vm.buildWebApiAuthorizeUrl()
+                    showWebView = true
+                },
+            )
+            playback.error?.let { message ->
+                LightText(text = message, variant = LightTextVariant.Detail, color = PhonoSemanticColors.Error)
+            }
+            return@PhonoScreenShell
+        }
+
         LightText(
             text = "Enter your Spotify Developer app credentials. Create one at developer.spotify.com/dashboard.",
             variant = LightTextVariant.Detail,
             color = PhonoSemanticColors.Placeholder,
         )
-        LightText(
-            text = "Redirect URI (copy exactly into dashboard):\n${WebApiAuth.REDIRECT_URI}\nPackage: com.lightphone.spotify",
-            variant = LightTextVariant.Detail,
-            color = PhonoSemanticColors.Placeholder,
-        )
-        UnderlinedField(
-            value = clientId,
-            onChange = { clientId = it },
-            placeholder = "Client ID",
-        )
-        UnderlinedField(
-            value = clientSecret,
-            onChange = { clientSecret = it },
-            placeholder = "Client Secret",
-            password = true,
-        )
-        Spacer(Modifier.height(legacyNToGridDp(4)))
-        PhonoTextButton(
-            text = "Connect Web API",
-            onClick = {
-                if (clientId.isNotBlank() && clientSecret.isNotBlank()) {
-                    vm.saveWebApiCredentials(clientId.trim(), clientSecret.trim())
-                    authUrl = vm.buildWebApiAuthorizeUrl()
-                    showWebView = true
-                }
-            },
-        )
+        if (!credentialsConfigured) {
+            LightText(
+                text = "On a computer, open $SETUP_PAGE_URL to generate a QR code.",
+                variant = LightTextVariant.Detail,
+                color = PhonoSemanticColors.Placeholder,
+            )
+            LightText(
+                text = "Redirect URI (copy exactly into dashboard):\n${WebApiAuth.REDIRECT_URI}\nPackage: com.lightphone.spotify",
+                variant = LightTextVariant.Detail,
+                color = PhonoSemanticColors.Placeholder,
+            )
+            UnderlinedField(
+                value = clientId,
+                onChange = {
+                    clientId = it
+                    qrScanMessage = null
+                    qrScanIsError = false
+                },
+                placeholder = "Client ID",
+            )
+            UnderlinedField(
+                value = clientSecret,
+                onChange = {
+                    clientSecret = it
+                    qrScanMessage = null
+                    qrScanIsError = false
+                },
+                placeholder = "Client Secret",
+                password = true,
+            )
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                PhonoTextButton(
+                    text = "SCAN QR",
+                    onClick = {
+                        qrScanMessage = null
+                        qrScanIsError = false
+                        showQrScanner = true
+                    },
+                )
+            }
+            Spacer(Modifier.height(legacyNToGridDp(4)))
+        }
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            PhonoTextButton(
+                text = "CONNECT WEB API",
+                onClick = {
+                    if (credentialsConfigured) {
+                        authUrl = vm.buildWebApiAuthorizeUrl()
+                        showWebView = true
+                    } else if (clientId.isNotBlank() && clientSecret.isNotBlank()) {
+                        vm.saveWebApiCredentials(clientId.trim(), clientSecret.trim())
+                        authUrl = vm.buildWebApiAuthorizeUrl()
+                        showWebView = true
+                    }
+                },
+            )
+        }
+        qrScanMessage?.let { message ->
+            LightText(
+                text = message,
+                variant = LightTextVariant.Detail,
+                color = if (qrScanIsError) PhonoSemanticColors.Error else PhonoSemanticColors.Placeholder,
+            )
+        }
         playback.error?.let { message ->
             LightText(text = message, variant = LightTextVariant.Detail, color = PhonoSemanticColors.Error)
         }
