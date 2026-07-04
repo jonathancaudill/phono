@@ -38,7 +38,7 @@ The app uses **dual authentication**:
    client for audio streaming. No developer dashboard setup needed for this step.
 2. **Step 2 — Web API:** Create your own app at
    [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) and enter the
-   **Client ID** and **Client Secret** in the app (Settings → Web API setup).
+   **Client ID** and **Client Secret** on the **Step 2** gate screen after playback login.
 
 ### Create your Spotify Developer app
 
@@ -57,8 +57,13 @@ The app uses **dual authentication**:
 ### Configure the app
 
 1. Complete **Step 1** (playback login) in the app
-2. On **Step 2**, paste your Client ID and Client Secret
+2. On **Step 2**, enter your Client ID and Client Secret:
+   - **Type manually**, or
+   - On a computer, open **[jonathancaudill.github.io/phono](https://jonathancaudill.github.io/phono/)** to generate a QR code, then tap **Scan QR** on the phone
 3. Tap **Connect Web API** and authorize when prompted
+
+The setup page runs entirely in your browser — credentials are never sent to a server. The QR
+code encodes your client secret in plain text; generate and scan in private.
 
 **Notes:**
 
@@ -76,6 +81,7 @@ rust/
   librespot-playback-patched/   # Buffering API, sink lifecycle (PATCHES.md)
   librespot-audio-patched/      # CDN fetch resilience (PATCHES.md)
 app/                            # Android (Kotlin Web API + Jetpack Compose)
+setup/                          # GitHub Pages: Web API credential QR generator
 docs/                           # Architecture, field tests, future research
 scripts/build-rust.sh           # Cross-compile + UniFFI Kotlin bindings
 ```

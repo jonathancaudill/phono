@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>phono — Web API Setup</title>
+  <link rel="stylesheet" href="setup.css">
+</head>
+<body>
+  <main class="page">
+    <header>
+      <h1>phono Web API setup</h1>
+      <p class="lede">
+        Generate a QR code on your computer so you can scan credentials into phono on your Light Phone —
+        no typing on the device.
+      </p>
+    </header>
+
+    <section class="card">
+      <h2>1. Spotify Developer dashboard</h2>
+      <p>
+        Create an app at
+        <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com/dashboard</a>
+        and configure it exactly as below before generating a QR code.
+      </p>
+      <dl class="copy-list">
+        <div>
+          <dt>Redirect URI</dt>
+          <dd>
+            <code id="redirect-uri">http://127.0.0.1:43821/callback</code>
+            <button type="button" class="copy-btn" data-copy="redirect-uri">Copy</button>
+          </dd>
+        </div>
+        <div>
+          <dt>Android package name</dt>
+          <dd>
+            <code id="package-name">com.lightphone.spotify</code>
+            <button type="button" class="copy-btn" data-copy="package-name">Copy</button>
+          </dd>
+        </div>
+      </dl>
+      <p class="hint">
+        Under <strong>Android package</strong>, add the package name and your app signing
+        <strong>SHA1 fingerprint</strong> (see the phono README for <code>keytool</code> instructions).
+        Select <strong>Web API</strong> when creating the app.
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>2. Enter credentials</h2>
+      <p>Paste the Client ID and Client Secret from your Spotify app settings.</p>
+      <form id="setup-form" autocomplete="off">
+        <label>
+          Client ID
+          <input type="text" id="client-id" name="client-id" spellcheck="false" autocomplete="off" required>
+        </label>
+        <label>
+          Client Secret
+          <input type="password" id="client-secret" name="client-secret" spellcheck="false" autocomplete="off" required>
+        </label>
+        <button type="submit" class="primary">Generate QR code</button>
+      </form>
+      <p id="form-error" class="error" hidden></p>
+    </section>
+
+    <section class="card" id="qr-section" hidden>
+      <h2>3. Scan on your phone</h2>
+      <p>
+        In phono, complete Step 1 (playback login), then on <strong>Step 2: Web API</strong> tap
+        <strong>Scan QR</strong> and point the camera at this code. Review the filled fields, then tap
+        <strong>Connect Web API</strong>.
+      </p>
+      <div id="qr-output" aria-label="Generated QR code"></div>
+      <p class="hint">Dismiss this page when you are done — the QR encodes your client secret in plain text.</p>
+    </section>
+
+    <section class="card security">
+      <h2>Security</h2>
+      <ul>
+        <li>Credentials are processed entirely in your browser — nothing is sent to a server.</li>
+        <li>The QR code contains your client secret in plain text. Generate and scan in private.</li>
+        <li>Scanning only fills in credentials; you still authorize phono in the OAuth WebView on the phone.</li>
+      </ul>
+    </section>
+  </main>
+  <script src="qrcodegen.js"></script>
+  <script src="setup.js"></script>
+</body>
+</html>

@@ -2,6 +2,9 @@
 
 Start here after skimming the root [README.md](../README.md).
 
+**End users:** Web API credential setup (including QR generation) lives at
+**[jonathancaudill.github.io/phono](https://jonathancaudill.github.io/phono/)** — see the root README Step 2.
+
 ## Essential reading
 
 | Doc | When to read |
