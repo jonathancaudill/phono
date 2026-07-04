@@ -198,29 +198,33 @@ fun WebApiSetupScreen(vm: AppViewModel) {
                 placeholder = "Client Secret",
                 password = true,
             )
-            PhonoTextButton(
-                text = "Scan QR",
-                onClick = {
-                    qrScanMessage = null
-                    qrScanIsError = false
-                    showQrScanner = true
-                },
-            )
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                PhonoTextButton(
+                    text = "SCAN QR",
+                    onClick = {
+                        qrScanMessage = null
+                        qrScanIsError = false
+                        showQrScanner = true
+                    },
+                )
+            }
             Spacer(Modifier.height(legacyNToGridDp(4)))
         }
-        PhonoTextButton(
-            text = "Connect Web API",
-            onClick = {
-                if (credentialsConfigured) {
-                    authUrl = vm.buildWebApiAuthorizeUrl()
-                    showWebView = true
-                } else if (clientId.isNotBlank() && clientSecret.isNotBlank()) {
-                    vm.saveWebApiCredentials(clientId.trim(), clientSecret.trim())
-                    authUrl = vm.buildWebApiAuthorizeUrl()
-                    showWebView = true
-                }
-            },
-        )
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            PhonoTextButton(
+                text = "CONNECT WEB API",
+                onClick = {
+                    if (credentialsConfigured) {
+                        authUrl = vm.buildWebApiAuthorizeUrl()
+                        showWebView = true
+                    } else if (clientId.isNotBlank() && clientSecret.isNotBlank()) {
+                        vm.saveWebApiCredentials(clientId.trim(), clientSecret.trim())
+                        authUrl = vm.buildWebApiAuthorizeUrl()
+                        showWebView = true
+                    }
+                },
+            )
+        }
         qrScanMessage?.let { message ->
             LightText(
                 text = message,
