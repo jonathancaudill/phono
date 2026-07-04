@@ -1,4 +1,4 @@
-# phono — Spotify Client for Light Phone III
+# Phono — Spotify Client for Light Phone III
 
 Thanks to **[Vandam Dinh](https://github.com/vandamd)** — especially
 [Echo](https://github.com/vandamd/echo) — for the Light Phone UI
