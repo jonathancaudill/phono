@@ -39,10 +39,7 @@ The app uses **dual authentication**:
 5. Select **Web API** under "Which API/SDKs are you planning to use?"
 6. Accept terms and click **Save**
 7. Open **Settings** and copy your **Client ID** and **Client Secret**
-8. Under **Android package**, add:
-   - **Package name:** `com.lightphone.spotify`
-   - **SHA1 fingerprint:** (from your signing key — run `keytool` on your keystore)
-9. Click **Save**
+8. Click **Save**
 
 ### Configure the app
 
