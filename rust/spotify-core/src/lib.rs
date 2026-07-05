@@ -1225,7 +1225,7 @@ impl EngineShared {
                 let ctx = session.spclient().get_context(&uri).await?;
                 let mut tracks = parse_context_tracks(&ctx, limit);
                 if tracks.iter().any(|t| t.title.is_empty()) {
-                    enrich_track_metadata(&session, "", &mut tracks).await?;
+                    enrich_track_metadata(&session, &mut tracks).await?;
                 }
                 Ok::<Vec<TrackInfo>, librespot::core::Error>(tracks)
             })
@@ -2187,10 +2187,10 @@ fn meta(md: &std::collections::HashMap<String, String>, keys: &[&str]) -> Option
 /// Fill in title/artist/album/art via batched spclient extended-metadata.
 async fn enrich_track_metadata(
     session: &Session,
-    _bearer: &str,
     tracks: &mut [TrackInfo],
 ) -> Result<(), librespot::core::Error> {
     use metadata_batch::{fetch_tracks_metadata_batch, normalize_entity_uri};
+    use std::collections::HashMap;
 
     let mut pending: Vec<(usize, SpotifyUri)> = Vec::new();
     for (i, track) in tracks.iter().enumerate() {
@@ -2208,7 +2208,13 @@ async fn enrich_track_metadata(
     }
 
     let uris: Vec<SpotifyUri> = pending.iter().map(|(_, uri)| uri.clone()).collect();
-    let fetched = fetch_tracks_metadata_batch(session, &uris).await?;
+    let fetched = match fetch_tracks_metadata_batch(session, &uris).await {
+        Ok(map) => map,
+        Err(e) => {
+            log::warn!("metadata enrich batch failed: {e}");
+            HashMap::new()
+        }
+    };
 
     for (idx, uri) in pending {
         let key = normalize_entity_uri(&uri.to_uri().unwrap_or_default());

@@ -40,9 +40,9 @@ fun SpotifyPlaylistSimple.toEntity(sortIndex: Int): PlaylistEntity =
         uri = uri.ifBlank { "spotify:playlist:$id" },
         name = name,
         owner_id = owner?.id.orEmpty(),
-        owner_name = owner?.displayName
-            ?.takeIf { it.isNotBlank() && it != owner.id }
-            ?: "",
+        owner_name = owner?.let { o ->
+            o.displayName?.takeIf { it.isNotBlank() && it != o.id }
+        }.orEmpty(),
         art_url = null,
         track_count = trackCount,
         snapshot_id = snapshotId,

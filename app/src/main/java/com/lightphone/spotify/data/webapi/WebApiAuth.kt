@@ -2,6 +2,7 @@ package com.lightphone.spotify.data.webapi
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -52,6 +53,7 @@ class WebApiAuth private constructor(
         private const val KEY_REFRESH_TOKEN = "refresh_token"
         private const val KEY_EXPIRES_AT_MS = "expires_at_ms"
         private const val REFRESH_EARLY_MS = 60_000L
+        private const val TAG = "WebApiAuth"
 
         /** Test-only factory with injectable prefs and HTTP client. */
         internal fun createForTest(
@@ -188,6 +190,17 @@ class WebApiAuth private constructor(
         refreshTokensSingleFlight() ?: throw WebApiAuthException("Token refresh failed — re-authorize Step 2")
     }
 
+    /**
+     * Force refresh after HTTP 401 even when the cached access token is not near expiry.
+     * Used by [SpotifyWebApi]'s OkHttp authenticator.
+     */
+    fun refreshBearerAfterUnauthorized(): String? {
+        synchronized(lock) {
+            prefs.edit().putLong(KEY_EXPIRES_AT_MS, 0L).apply()
+        }
+        return refreshTokensSingleFlight()
+    }
+
     fun clearTokens() = synchronized(lock) {
         clearTokensInternal()
     }
@@ -232,6 +245,7 @@ class WebApiAuth private constructor(
             future.complete(result)
             return result
         } catch (e: Exception) {
+            Log.w(TAG, "Token refresh failed", e)
             future.complete(null)
             return null
         } finally {

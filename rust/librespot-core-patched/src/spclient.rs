@@ -1040,19 +1040,7 @@ impl SpClient {
         base_revision: &[u8],
         ops: Vec<crate::protocol::playlist4_external::Op>,
     ) -> SpClientResult {
-        use crate::protocol::playlist4_external::{Delta, ListChanges};
-
-        let mut delta = Delta::new();
-        delta.base_version = Some(base_revision.to_vec());
-        delta.ops = ops;
-        delta.info = Some(Self::playlist_change_info(&self.session())).into();
-
-        let mut changes = ListChanges::new();
-        changes.base_revision = Some(base_revision.to_vec());
-        changes.deltas = vec![delta];
-        changes.want_sync_result = Some(true);
-        changes.want_resulting_revisions = Some(true);
-
+        let changes = Self::build_list_changes(&self.session(), base_revision, ops);
         let endpoint = format!(
             "/playlist/v2/playlist/{}/changes",
             playlist_id.to_base62()?
@@ -1066,23 +1054,31 @@ impl SpClient {
         base_revision: &[u8],
         ops: Vec<crate::protocol::playlist4_external::Op>,
     ) -> SpClientResult {
+        let user = self.session().username();
+        let changes = Self::build_list_changes(&self.session(), base_revision, ops);
+        let endpoint = format!("/playlist/v2/user/{user}/rootlist/changes");
+        self.request_with_protobuf(&Method::POST, &endpoint, None, &changes)
+            .await
+    }
+
+    fn build_list_changes(
+        session: &Session,
+        base_revision: &[u8],
+        ops: Vec<crate::protocol::playlist4_external::Op>,
+    ) -> crate::protocol::playlist4_external::ListChanges {
         use crate::protocol::playlist4_external::{Delta, ListChanges};
 
-        let user = self.session().username();
         let mut delta = Delta::new();
         delta.base_version = Some(base_revision.to_vec());
         delta.ops = ops;
-        delta.info = Some(Self::playlist_change_info(&self.session())).into();
+        delta.info = Some(Self::playlist_change_info(session)).into();
 
         let mut changes = ListChanges::new();
         changes.base_revision = Some(base_revision.to_vec());
         changes.deltas = vec![delta];
         changes.want_sync_result = Some(true);
         changes.want_resulting_revisions = Some(true);
-
-        let endpoint = format!("/playlist/v2/user/{user}/rootlist/changes");
-        self.request_with_protobuf(&Method::POST, &endpoint, None, &changes)
-            .await
+        changes
     }
 
     fn playlist_change_info(session: &Session) -> crate::protocol::playlist4_external::ChangeInfo {

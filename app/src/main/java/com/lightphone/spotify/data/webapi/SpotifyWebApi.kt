@@ -56,7 +56,7 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
             override fun authenticate(route: Route?, response: Response): Request? {
                 if (responseCount(response) >= 2) return null
                 val bearer = try {
-                    auth.currentBearer()
+                    auth.refreshBearerAfterUnauthorized() ?: return null
                 } catch (_: WebApiAuthException) {
                     return null
                 }

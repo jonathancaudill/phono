@@ -266,9 +266,6 @@ class SpotifyRepository(
         simple.owner?.resolvedDisplayName()?.let { display ->
             libraryRepository.updatePlaylistOwnerName(simple.id, display)
         }
-        runCatching {
-            nativeGateway().addToRootlist("spotify:playlist:${simple.id}")
-        }
         return simple
     }
 
@@ -456,14 +453,17 @@ class SpotifyRepository(
         }
         val all = mutableListOf<SpotifyPlaylistSimple>()
         var offset = 0
-        while (offset < DAILY_MIXES_SCAN_LIMIT) {
+        var total = Int.MAX_VALUE
+        val pageLimit = SpotifyWebApi.LIBRARY_PAGE_LIMIT
+        while (offset < total && offset < DAILY_MIXES_SCAN_LIMIT) {
             val page = runCatching {
-                nativePlaylistLibraryPage(offset, SpotifyWebApi.LIBRARY_PAGE_LIMIT)
+                nativePlaylistLibraryPage(offset, pageLimit)
             }.getOrElse { return emptyList() }
-            if (page.items.isEmpty()) break
+            total = page.total
             all.addAll(page.items)
-            offset += page.items.size
-            if (offset >= page.total) break
+            val advance = pageLimit.coerceAtMost(total - offset)
+            if (advance == 0) break
+            offset += advance
         }
         val items = all.filter { playlist ->
             playlist.name.contains("Daily Mix", ignoreCase = true) ||

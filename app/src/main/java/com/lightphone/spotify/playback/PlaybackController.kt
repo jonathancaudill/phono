@@ -1136,7 +1136,7 @@ class PlaybackController private constructor(
         try {
             repository.reorderPlaylistTrack(playlistId, fromIndex, toIndex, snapshotId)
         } catch (e: Throwable) {
-            throw Exception(mapWebApiError(e))
+            throw Exception(mapRepositoryError(e))
         }
     }
 

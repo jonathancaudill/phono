@@ -18,6 +18,7 @@ import com.lightphone.spotify.ffi.ArtistDetailBundle
 import com.lightphone.spotify.ffi.EntityInfo
 import com.lightphone.spotify.ffi.PlaylistDetailBundle
 import com.lightphone.spotify.ffi.PlaylistDetailNative
+import com.lightphone.spotify.ffi.SpotifyException
 import com.lightphone.spotify.data.toPlaylistSimple
 import java.time.Instant
 
@@ -86,7 +87,7 @@ object NativeMetadataAdapter {
                 id = entity.subtitle,
                 displayName = entity.subtitle,
             ),
-            tracks = SpotifyPlaylistTracksRef(total = 0),
+            tracks = SpotifyPlaylistTracksRef(total = entity.trackCount.toInt()),
         )
     }
 
@@ -118,9 +119,9 @@ object NativeMetadataAdapter {
 
 fun mapNativeError(e: Throwable): String = when (e) {
     is NativeSessionRequiredException -> e.message ?: "Playback sign-in required."
-    is com.lightphone.spotify.ffi.SpotifyException.NotLoggedIn ->
+    is SpotifyException.NotLoggedIn ->
         "Sign in to Spotify playback to load this."
-    is com.lightphone.spotify.ffi.SpotifyException ->
+    is SpotifyException ->
         e.message ?: "Spotify error — try again."
     else -> {
         val msg = e.message.orEmpty()

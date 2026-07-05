@@ -66,10 +66,14 @@ class NativeMetadataAdapterTest {
             name = "Daily Mix 1",
             subtitle = "spotify",
             artUrl = "https://i.scdn.co/image/y",
+            trackCount = 42u,
         )
         val simple = NativeMetadataAdapter.toPlaylistSimple(entity)
         assertEquals("p2", simple.id)
         assertEquals("Daily Mix 1", simple.name)
+        assertEquals("spotify", simple.owner?.id)
+        assertEquals("spotify", simple.owner?.displayName)
+        assertEquals(42, simple.trackCount)
     }
 
     @Test

@@ -24,4 +24,11 @@ class MapNativeErrorTest {
         val msg = mapNativeError(IllegalStateException("revision conflict on apply"))
         assertTrue(msg.contains("changed", ignoreCase = true))
     }
+
+    @Test
+    fun genericException_usesClassNameFallback() {
+        val msg = mapNativeError(RuntimeException(""))
+        assertTrue(msg.contains("RuntimeException"))
+        assertTrue(msg.contains("try again", ignoreCase = true))
+    }
 }

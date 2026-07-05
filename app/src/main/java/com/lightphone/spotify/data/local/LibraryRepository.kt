@@ -30,6 +30,7 @@ class LibraryRepository(
     }
 
     /** Native spclient rootlist fetcher; when set, playlist library sync uses Login5. */
+    @Volatile
     var playlistLibraryPageFetcher: (suspend (offset: Int, limit: Int) -> com.lightphone.spotify.data.webapi.LibraryPage<SpotifyPlaylistSimple>)? = null
 
     fun observeLikedTracks(): Flow<List<LikedTrackEntity>> = trackDao.observeAll()

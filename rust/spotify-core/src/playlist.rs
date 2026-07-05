@@ -196,7 +196,7 @@ impl super::EngineShared {
         let uri = playlist_uri.to_string();
         let handle = self.runtime.handle().clone();
         handle
-            .block_on(async move { rootlist_add(&session, &uri).await })
+            .block_on(async move { rootlist_add_with_retry(&session, &uri, 3).await })
             .map_err(|e: librespot::core::Error| SpotifyError::Network { msg: e.to_string() })
     }
 
@@ -205,7 +205,7 @@ impl super::EngineShared {
         let uri = playlist_uri.to_string();
         let handle = self.runtime.handle().clone();
         handle
-            .block_on(async move { rootlist_remove(&session, &uri).await })
+            .block_on(async move { rootlist_remove_with_retry(&session, &uri, 3).await })
             .map_err(|e: librespot::core::Error| SpotifyError::Network { msg: e.to_string() })
     }
 }
@@ -224,13 +224,13 @@ async fn fetch_playlist_detail(
     let mut tracks = collect_playlist_tracks(session, &id, &playlist, track_limit).await?;
     if tracks.iter().any(|t| t.track.title.is_empty()) {
         let mut infos: Vec<TrackInfo> = tracks.iter().map(|t| t.track.clone()).collect();
-        super::enrich_track_metadata(session, "", &mut infos).await?;
+        super::enrich_track_metadata(session, &mut infos).await?;
         for (row, info) in tracks.iter_mut().zip(infos) {
             row.track = info;
         }
     }
     Ok(PlaylistDetailBundle {
-        detail: playlist_to_native(&playlist, playlist_id),
+        detail: playlist_to_native(&playlist, playlist_id, &session.username()),
         tracks,
     })
 }
@@ -273,15 +273,26 @@ async fn collect_playlist_tracks(
     Ok(out)
 }
 
-fn playlist_to_native(playlist: &Playlist, playlist_id: &str) -> PlaylistDetailNative {
+fn playlist_to_native(
+    playlist: &Playlist,
+    playlist_id: &str,
+    fallback_owner: &str,
+) -> PlaylistDetailNative {
     let uri = format!("spotify:playlist:{playlist_id}");
-    let (owner_id, owner_name) = match &playlist.id {
+    let (mut owner_id, mut owner_name) = match &playlist.id {
         SpotifyUri::Playlist { user, .. } => {
             let u = user.clone().unwrap_or_default();
             (u.clone(), u)
         }
         _ => (String::new(), String::new()),
     };
+    if owner_id.is_empty()
+        && !fallback_owner.is_empty()
+        && playlist.capabilities.can_administrate_permissions
+    {
+        owner_id = fallback_owner.to_string();
+        owner_name = fallback_owner.to_string();
+    }
     let image_url = playlist
         .attributes
         .picture_sizes
@@ -302,7 +313,7 @@ fn playlist_to_native(playlist: &Playlist, playlist_id: &str) -> PlaylistDetailN
         .format_attributes
         .get("isPublished")
         .map(|v| v == "true")
-        .unwrap_or(true);
+        .unwrap_or(false);
     PlaylistDetailNative {
         id: playlist_id.to_string(),
         uri,
@@ -414,6 +425,7 @@ async fn fetch_rootlist_page(
             name,
             subtitle,
             art_url,
+            track_count,
         });
     }
 
@@ -613,6 +625,33 @@ async fn rootlist_add_with_retry(
     }
     Err(last_err.unwrap_or_else(|| {
         librespot::core::Error::unavailable("rootlist_add failed with no error detail")
+    }))
+}
+
+async fn rootlist_remove_with_retry(
+    session: &Session,
+    playlist_uri: &str,
+    max_attempts: u32,
+) -> Result<(), librespot::core::Error> {
+    let mut last_err = None;
+    for attempt in 0..max_attempts {
+        match rootlist_remove(session, playlist_uri).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last_err = Some(e);
+                if attempt + 1 < max_attempts {
+                    log::warn!(
+                        "rootlist_remove attempt {} failed for {playlist_uri}: {}",
+                        attempt + 1,
+                        last_err.as_ref().unwrap()
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        librespot::core::Error::unavailable("rootlist_remove failed with no error detail")
     }))
 }
 

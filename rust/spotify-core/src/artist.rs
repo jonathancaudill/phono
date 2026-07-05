@@ -64,16 +64,13 @@ async fn fetch_artist_detail(
     let top_tracks =
         fetch_artist_top_tracks(session, &artist, artist_id, top_track_limit).await?;
 
-    let mut album_uris: Vec<SpotifyUri> = artist
+    let album_uris: Vec<SpotifyUri> = artist
         .albums
         .current_releases()
         .chain(artist.singles.current_releases())
         .take(album_limit as usize)
         .cloned()
         .collect();
-
-    album_uris.sort_by(|a, b| a.to_uri().unwrap_or_default().cmp(&b.to_uri().unwrap_or_default()));
-    album_uris.truncate(album_limit as usize);
 
     let fetched_albums = fetch_albums_metadata_batch(session, &album_uris).await?;
     let mut albums = Vec::new();

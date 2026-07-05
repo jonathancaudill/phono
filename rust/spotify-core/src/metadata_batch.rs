@@ -16,48 +16,75 @@ pub(crate) fn normalize_entity_uri(uri: &str) -> String {
     uri.split('?').next().unwrap_or(uri).to_string()
 }
 
+async fn fetch_extension_metadata_chunk(
+    session: &Session,
+    chunk: &[SpotifyUri],
+    kind: ExtensionKind,
+) -> Result<HashMap<String, bytes::Bytes>, Error> {
+    let entity_request: Vec<EntityRequest> = chunk
+        .iter()
+        .filter_map(|uri| {
+            Some(EntityRequest {
+                entity_uri: uri.to_uri().ok()?,
+                query: vec![ExtensionQuery {
+                    extension_kind: EnumOrUnknown::new(kind),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+        })
+        .collect();
+    if entity_request.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let req = BatchedEntityRequest {
+        entity_request,
+        ..Default::default()
+    };
+    let res = session.spclient().get_extended_metadata(req).await?;
+    let mut out = HashMap::new();
+    for arr in res.extended_metadata {
+        for mut entry in arr.extension_data {
+            let entity_uri = normalize_entity_uri(&entry.entity_uri);
+            match entry.extension_data.take() {
+                None => continue,
+                Some(any) => {
+                    if any.value.is_empty() {
+                        continue;
+                    }
+                    out.insert(entity_uri, bytes::Bytes::from(any.value));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 async fn fetch_extension_metadata_batch(
     session: &Session,
     uris: &[SpotifyUri],
     kind: ExtensionKind,
 ) -> Result<HashMap<String, bytes::Bytes>, Error> {
-    let mut out = HashMap::new();
-    for chunk in uris.chunks(METADATA_BATCH_SIZE) {
-        let entity_request: Vec<EntityRequest> = chunk
-            .iter()
-            .filter_map(|uri| {
-                Some(EntityRequest {
-                    entity_uri: uri.to_uri().ok()?,
-                    query: vec![ExtensionQuery {
-                        extension_kind: EnumOrUnknown::new(kind),
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                })
-            })
-            .collect();
-        if entity_request.is_empty() {
-            continue;
-        }
+    let chunks: Vec<&[SpotifyUri]> = uris.chunks(METADATA_BATCH_SIZE).collect();
+    if chunks.is_empty() {
+        return Ok(HashMap::new());
+    }
 
-        let req = BatchedEntityRequest {
-            entity_request,
-            ..Default::default()
-        };
-        let res = session.spclient().get_extended_metadata(req).await?;
-        for arr in res.extended_metadata {
-            for mut entry in arr.extension_data {
-                let entity_uri = normalize_entity_uri(&entry.entity_uri);
-                match entry.extension_data.take() {
-                    None => continue,
-                    Some(any) => {
-                        if any.value.is_empty() {
-                            continue;
-                        }
-                        out.insert(entity_uri, bytes::Bytes::from(any.value));
-                    }
-                }
-            }
+    let session = session.clone();
+    let mut join_set = tokio::task::JoinSet::new();
+    for chunk in chunks {
+        let session = session.clone();
+        let chunk = chunk.to_vec();
+        join_set.spawn(async move { fetch_extension_metadata_chunk(&session, &chunk, kind).await });
+    }
+
+    let mut out = HashMap::new();
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(Ok(partial)) => out.extend(partial),
+            Ok(Err(e)) => log::warn!("batch metadata chunk failed: {e}"),
+            Err(e) => log::warn!("batch metadata task failed: {e}"),
         }
     }
     Ok(out)
