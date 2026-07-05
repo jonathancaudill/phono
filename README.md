@@ -1,3 +1,4 @@
+<img width="1080" height="1240" alt="1000000482" src="https://github.com/user-attachments/assets/783e74e2-c3a2-4014-a990-ffedd4189a9d" />
 # Phono — Spotify Client for Light Phone III
 
 Thanks to **[Vandam Dinh](https://github.com/vandamd)** — especially
