@@ -303,15 +303,14 @@ internal class SavedAlbumsSync(
 
 internal class UserPlaylistsSync(
     private val database: PhonoDatabase,
-    private val webApi: SpotifyWebApi,
+    private val pageFetcher: suspend (offset: Int) -> LibraryPage<SpotifyPlaylistSimple>,
 ) {
-    // sort_index follows GET /me/playlists page order (Spotify library display order;
-    // pinned playlists appear first in the app and are preserved at low sort_index values).
+    // sort_index follows saved-playlist page order (native rootlist or Web API fallback).
     private val playlistDao = database.playlistDao()
     private val syncDao = database.librarySyncDao()
 
     suspend fun refresh(): Boolean {
-        val page = webApi.savedPlaylistsPage(offset = 0)
+        val page = pageFetcher(0)
         val head = page.items.firstOrNull()
         val sync = syncDao.get(LibraryResource.USER_PLAYLISTS)
 
@@ -338,7 +337,7 @@ internal class UserPlaylistsSync(
         val offset = sync.next_offset
         if (offset >= sync.remote_total) return false
 
-        val page = webApi.savedPlaylistsPage(offset = offset)
+        val page = pageFetcher(offset)
         if (page.items.isEmpty()) return false
 
         database.withTransaction {
@@ -359,7 +358,7 @@ internal class UserPlaylistsSync(
 
             val pages = coroutineScope {
                 batch.map { offset ->
-                    async { offset to webApi.savedPlaylistsPage(offset) }
+                    async { offset to pageFetcher(offset) }
                 }.awaitAll()
             }
 

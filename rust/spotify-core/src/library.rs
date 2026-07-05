@@ -14,6 +14,7 @@ pub struct EntityInfo {
     pub name: String,
     pub subtitle: String,
     pub art_url: Option<String>,
+    pub track_count: u32,
 }
 
 impl super::EngineShared {
@@ -183,6 +184,7 @@ fn entity_from_context_track(
         name,
         subtitle,
         art_url,
+        track_count: 0,
     })
 }
 

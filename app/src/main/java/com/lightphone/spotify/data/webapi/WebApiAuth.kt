@@ -2,7 +2,7 @@ package com.lightphone.spotify.data.webapi
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Base64
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,6 +15,8 @@ import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
+import java.util.Base64
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
 /**
@@ -22,7 +24,11 @@ import java.util.concurrent.TimeUnit
  * dev-app. Credentials and tokens live in EncryptedSharedPreferences — never
  * build-time constants.
  */
-class WebApiAuth(private val context: Context) {
+class WebApiAuth private constructor(
+    private val prefs: SharedPreferences,
+    private val tokenClient: OkHttpClient,
+    private val tokenEndpoint: String,
+) {
 
     companion object {
         /** Loopback URI for WebView interception (must match Spotify dashboard exactly). */
@@ -47,18 +53,47 @@ class WebApiAuth(private val context: Context) {
         private const val KEY_REFRESH_TOKEN = "refresh_token"
         private const val KEY_EXPIRES_AT_MS = "expires_at_ms"
         private const val REFRESH_EARLY_MS = 60_000L
+        private const val TAG = "WebApiAuth"
+
+        /** Test-only factory with injectable prefs and HTTP client. */
+        internal fun createForTest(
+            prefs: SharedPreferences,
+            tokenClient: OkHttpClient,
+            tokenEndpoint: String = TOKEN_ENDPOINT,
+        ): WebApiAuth = WebApiAuth(prefs, tokenClient, tokenEndpoint)
+
+        private fun defaultTokenClient(): OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
+
+        private fun createEncryptedPrefs(context: Context): SharedPreferences {
+            val masterKey = MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            return EncryptedSharedPreferences.create(
+                context,
+                PREFS_NAME,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+            )
+        }
     }
+
+    constructor(context: Context) : this(
+        createEncryptedPrefs(context),
+        defaultTokenClient(),
+        TOKEN_ENDPOINT,
+    )
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    private val tokenClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .build()
-
-    private val prefs: SharedPreferences = createEncryptedPrefs(context)
-
     private val lock = Any()
+    private val refreshFlightLock = Any()
+
+    @Volatile
+    private var refreshInFlight: CompletableFuture<String?>? = null
 
     private val _sessionState = MutableStateFlow(computeSessionState())
     val sessionState: StateFlow<WebApiSessionState> = _sessionState.asStateFlow()
@@ -118,7 +153,7 @@ class WebApiAuth(private val context: Context) {
                 .add("redirect_uri", REDIRECT_URI)
                 .build()
             val request = Request.Builder()
-                .url(TOKEN_ENDPOINT)
+                .url(tokenEndpoint)
                 .header("Authorization", basicAuth(clientId, secret))
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .post(body)
@@ -141,18 +176,8 @@ class WebApiAuth(private val context: Context) {
      * On invalid_grant, clears tokens so the UI can re-run Step 2.
      */
     fun currentBearer(): String {
-        synchronized(lock) {
-            val access = prefs.getString(KEY_ACCESS_TOKEN, null)
-            val refresh = prefs.getString(KEY_REFRESH_TOKEN, null)
-            if (access.isNullOrBlank() || refresh.isNullOrBlank()) {
-                throw WebApiAuthException("Web API not authorized — complete Step 2 setup")
-            }
-            val expiresAt = prefs.getLong(KEY_EXPIRES_AT_MS, 0L)
-            if (System.currentTimeMillis() + REFRESH_EARLY_MS < expiresAt) {
-                return access
-            }
-        }
-        refreshTokensInternal() ?: throw WebApiAuthException(
+        readFreshAccessToken()?.let { return it }
+        refreshTokensSingleFlight() ?: throw WebApiAuthException(
             "Session expired — re-authorize your dev app in Step 2",
         )
         return synchronized(lock) {
@@ -162,7 +187,18 @@ class WebApiAuth(private val context: Context) {
     }
 
     fun refreshTokens(): Result<Unit> = runCatching {
-        refreshTokensInternal() ?: throw WebApiAuthException("Token refresh failed — re-authorize Step 2")
+        refreshTokensSingleFlight() ?: throw WebApiAuthException("Token refresh failed — re-authorize Step 2")
+    }
+
+    /**
+     * Force refresh after HTTP 401 even when the cached access token is not near expiry.
+     * Used by [SpotifyWebApi]'s OkHttp authenticator.
+     */
+    fun refreshBearerAfterUnauthorized(): String? {
+        synchronized(lock) {
+            prefs.edit().putLong(KEY_EXPIRES_AT_MS, 0L).apply()
+        }
+        return refreshTokensSingleFlight()
     }
 
     fun clearTokens() = synchronized(lock) {
@@ -183,20 +219,76 @@ class WebApiAuth(private val context: Context) {
         emitSessionState()
     }
 
-    private fun refreshTokensInternal(): String? {
+    /**
+     * Ensures exactly one refresh HTTP call is in flight; concurrent callers wait
+     * and reuse the result. HTTP runs outside [lock] so library/scrub paths stay responsive.
+     */
+    private fun refreshTokensSingleFlight(): String? {
+        val (future, isLeader) = synchronized(refreshFlightLock) {
+            refreshInFlight?.let { return@synchronized it to false }
+            CompletableFuture<String?>().also { refreshInFlight = it } to true
+        }
+
+        if (!isLeader) {
+            return try {
+                future.get()
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                null
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        try {
+            val result = performRefreshIfNeeded()
+            future.complete(result)
+            return result
+        } catch (e: Exception) {
+            Log.w(TAG, "Token refresh failed", e)
+            future.complete(null)
+            return null
+        } finally {
+            synchronized(refreshFlightLock) {
+                if (refreshInFlight === future) {
+                    refreshInFlight = null
+                }
+            }
+        }
+    }
+
+    /** Returns a still-valid access token, or null if refresh is required. */
+    private fun readFreshAccessToken(): String? = synchronized(lock) {
+        val access = prefs.getString(KEY_ACCESS_TOKEN, null)
+        val refresh = prefs.getString(KEY_REFRESH_TOKEN, null)
+        if (access.isNullOrBlank() || refresh.isNullOrBlank()) {
+            throw WebApiAuthException("Web API not authorized — complete Step 2 setup")
+        }
+        val expiresAt = prefs.getLong(KEY_EXPIRES_AT_MS, 0L)
+        if (System.currentTimeMillis() + REFRESH_EARLY_MS < expiresAt) {
+            access
+        } else {
+            null
+        }
+    }
+
+    private fun performRefreshIfNeeded(): String? {
+        readFreshAccessToken()?.let { return it }
+
         val creds = synchronized(lock) {
             val clientId = prefs.getString(KEY_CLIENT_ID, null)?.takeIf { it.isNotBlank() } ?: return null
             val secret = prefs.getString(KEY_CLIENT_SECRET, null) ?: return null
             val refresh = prefs.getString(KEY_REFRESH_TOKEN, null) ?: return null
             Triple(clientId, secret, refresh)
         }
-        val (clientId, secret, refresh) = creds
+        val (clientId, secret, refreshUsed) = creds
+
         val body = FormBody.Builder()
             .add("grant_type", "refresh_token")
-            .add("refresh_token", refresh)
+            .add("refresh_token", refreshUsed)
             .build()
         val request = Request.Builder()
-            .url(TOKEN_ENDPOINT)
+            .url(tokenEndpoint)
             .header("Authorization", basicAuth(clientId, secret))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .post(body)
@@ -205,7 +297,7 @@ class WebApiAuth(private val context: Context) {
         val responseBody = response.body?.string() ?: ""
         if (!response.isSuccessful) {
             if (responseBody.contains("invalid_grant")) {
-                synchronized(lock) { clearTokensInternal() }
+                handleInvalidGrant(refreshUsed)
             }
             return null
         }
@@ -213,6 +305,27 @@ class WebApiAuth(private val context: Context) {
         return synchronized(lock) {
             storeTokensInternal(tokens)
             prefs.getString(KEY_ACCESS_TOKEN, null)
+        }
+    }
+
+    /**
+     * Clears tokens on genuine revocation only. Skips clear when another thread
+     * already rotated the refresh token or stored a fresh access token.
+     */
+    private fun handleInvalidGrant(refreshTokenUsed: String) {
+        synchronized(lock) {
+            val access = prefs.getString(KEY_ACCESS_TOKEN, null)
+            val expiresAt = prefs.getLong(KEY_EXPIRES_AT_MS, 0L)
+            if (!access.isNullOrBlank() &&
+                System.currentTimeMillis() + REFRESH_EARLY_MS < expiresAt
+            ) {
+                return
+            }
+            val currentRefresh = prefs.getString(KEY_REFRESH_TOKEN, null)
+            if (currentRefresh != null && currentRefresh != refreshTokenUsed) {
+                return
+            }
+            clearTokensInternal()
         }
     }
 
@@ -241,25 +354,12 @@ class WebApiAuth(private val context: Context) {
 
     private fun basicAuth(clientId: String, secret: String): String {
         val credentials = "$clientId:$secret"
-        val encoded = Base64.encodeToString(credentials.toByteArray(), Base64.NO_WRAP)
+        val encoded = Base64.getEncoder().encodeToString(credentials.toByteArray())
         return "Basic $encoded"
     }
 
     private fun urlEncode(value: String): String =
         java.net.URLEncoder.encode(value, Charsets.UTF_8.name())
-
-    private fun createEncryptedPrefs(context: Context): SharedPreferences {
-        val masterKey = MasterKey.Builder(context)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        return EncryptedSharedPreferences.create(
-            context,
-            PREFS_NAME,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
-    }
 
     @Serializable
     private data class TokenResponse(

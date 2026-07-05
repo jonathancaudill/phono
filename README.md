@@ -95,9 +95,11 @@ All librespot crates are pinned to **=0.8.0**. Do not bump without re-validating
 - `PlaybackService` creates the native engine and calls `startForeground()` immediately.
 - `PlaybackController` — audio focus, network-tier streaming policy, stall UX, DelayMs for
   lock-screen position.
-- `SpotifyWebApi` + `SpotifyRepository` — metadata via dev-app OAuth
-  (`http://127.0.0.1:43821/callback`). Single combined `/search` per query; client-side
+- `SpotifyWebApi` + `SpotifyRepository` — search, liked/saved albums, album detail via dev-app
+  OAuth (`http://127.0.0.1:43821/callback`). Single combined `/search` per query; client-side
   ranking (`SearchRanking.kt`).
+- **Playlists and artists** — native spclient via `NativeMetadataGateway` (Step 1 session required
+  for browse, edit, follow/unfollow, and artist pages).
 - Library writes via Web API (`PUT`/`DELETE /me/library`).
 - Daily mixes: native librespot `context-resolve` with Web API fallback.
 
@@ -155,7 +157,8 @@ bash scripts/build-rust.sh
 
 - Call `NativeInit.initAndroidContext` before constructing the engine (`ndk_context` / identity).
 - **Do not mix redirect URIs:** Step 1 → `127.0.0.1:8898/login`; Step 2 → `127.0.0.1:43821/callback`.
-- **Do not use the Keymaster token for Web API** — metadata must use the dev-app bearer.
+- **Do not use the Keymaster token for Web API** — search/library metadata must use the dev-app bearer.
+- **Playlist/artist screens require Step 1** (playback login) — they use native spclient, not Web API.
 - **minSdk 26.** Audio focus in `PlaybackController`.
 - `PlaybackService` must `startForeground()` within seconds of `startForegroundService()`.
 

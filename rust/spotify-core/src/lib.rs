@@ -25,6 +25,10 @@ use tokio::runtime::Runtime;
 
 mod auth;
 mod library;
+mod metadata_batch;
+mod playlist;
+mod artist;
+mod user_profile;
 mod playback_checkpoint;
 mod queue;
 mod settings;
@@ -41,6 +45,8 @@ mod audio_sink_stub;
 mod android_audiotrack_sink;
 
 pub use library::EntityInfo;
+pub use artist::{AlbumSummaryNative, ArtistDetailBundle};
+pub use playlist::{PlaylistDetailBundle, PlaylistDetailNative, PlaylistTrackNative, RootlistPageNative};
 pub use queue::{QueueSnapshot, RepeatMode};
 pub use settings::{NetworkBufferPreset, NormalizationType, StreamingQuality};
 
@@ -280,6 +286,105 @@ impl LibrespotEngine {
     /// Discover Daily Mix / Made-For-You playlists via native context-resolve.
     pub fn daily_mixes(&self) -> Result<Vec<EntityInfo>, SpotifyError> {
         self.shared.daily_mixes()
+    }
+
+    /// Spotify username for the connected playback session (native playlist owner checks).
+    pub fn native_session_username(&self) -> Result<String, SpotifyError> {
+        self.shared.native_session_username()
+    }
+
+    pub fn playlist_detail_native(
+        &self,
+        playlist_id: String,
+        track_limit: u32,
+    ) -> Result<PlaylistDetailBundle, SpotifyError> {
+        self.shared.playlist_detail_native(&playlist_id, track_limit)
+    }
+
+    pub fn playlist_rootlist(&self, from: u32, length: u32) -> Result<RootlistPageNative, SpotifyError> {
+        self.shared.playlist_rootlist_native(from, length)
+    }
+
+    pub fn artist_detail_native(
+        &self,
+        artist_id: String,
+        album_limit: u32,
+        top_track_limit: u32,
+    ) -> Result<ArtistDetailBundle, SpotifyError> {
+        self.shared.artist_detail_native(&artist_id, album_limit, top_track_limit)
+    }
+
+    /// Display name for a Spotify login username via spclient user-profile-view.
+    pub fn user_display_name_native(&self, username: String) -> Result<Option<String>, SpotifyError> {
+        self.shared.user_display_name_native(&username)
+    }
+
+    pub fn create_playlist_native(
+        &self,
+        name: String,
+        is_public: bool,
+    ) -> Result<PlaylistDetailNative, SpotifyError> {
+        self.shared.create_playlist_native(&name, is_public)
+    }
+
+    pub fn update_playlist_metadata_native(
+        &self,
+        playlist_id: String,
+        revision_b64: String,
+        name: Option<String>,
+        is_public: Option<bool>,
+    ) -> Result<String, SpotifyError> {
+        self.shared.update_playlist_metadata_native(
+            &playlist_id,
+            &revision_b64,
+            name,
+            is_public,
+        )
+    }
+
+    pub fn playlist_add_tracks_native(
+        &self,
+        playlist_id: String,
+        revision_b64: String,
+        uris: Vec<String>,
+        position: Option<u32>,
+    ) -> Result<String, SpotifyError> {
+        self.shared.playlist_add_tracks_native(&playlist_id, &revision_b64, uris, position)
+    }
+
+    pub fn playlist_remove_tracks_native(
+        &self,
+        playlist_id: String,
+        revision_b64: String,
+        uris: Vec<String>,
+    ) -> Result<String, SpotifyError> {
+        self.shared
+            .playlist_remove_tracks_native(&playlist_id, &revision_b64, uris)
+    }
+
+    pub fn playlist_reorder_native(
+        &self,
+        playlist_id: String,
+        revision_b64: String,
+        range_start: u32,
+        insert_before: u32,
+        range_length: u32,
+    ) -> Result<String, SpotifyError> {
+        self.shared.playlist_reorder_native(
+            &playlist_id,
+            &revision_b64,
+            range_start,
+            insert_before,
+            range_length,
+        )
+    }
+
+    pub fn rootlist_add_native(&self, playlist_uri: String) -> Result<(), SpotifyError> {
+        self.shared.rootlist_add_native(&playlist_uri)
+    }
+
+    pub fn rootlist_remove_native(&self, playlist_uri: String) -> Result<(), SpotifyError> {
+        self.shared.rootlist_remove_native(&playlist_uri)
     }
 
     /// Replace the playback context with `uris` and start playing at `start_index`.
@@ -1120,7 +1225,7 @@ impl EngineShared {
                 let ctx = session.spclient().get_context(&uri).await?;
                 let mut tracks = parse_context_tracks(&ctx, limit);
                 if tracks.iter().any(|t| t.title.is_empty()) {
-                    enrich_track_metadata(&session, "", &mut tracks).await?;
+                    enrich_track_metadata(&session, &mut tracks).await?;
                 }
                 Ok::<Vec<TrackInfo>, librespot::core::Error>(tracks)
             })
@@ -2079,63 +2184,56 @@ fn meta(md: &std::collections::HashMap<String, String>, keys: &[&str]) -> Option
         .filter(|s| !s.is_empty())
 }
 
-/// Fill in title/artist/album/art via librespot's `extended-metadata` endpoint.
+/// Fill in title/artist/album/art via batched spclient extended-metadata.
 async fn enrich_track_metadata(
     session: &Session,
-    bearer: &str,
     tracks: &mut [TrackInfo],
 ) -> Result<(), librespot::core::Error> {
-    use librespot::metadata::{Metadata, Track};
+    use metadata_batch::{fetch_tracks_metadata_batch, normalize_entity_uri};
+    use std::collections::HashMap;
 
-    for track in tracks.iter_mut() {
+    let mut pending: Vec<(usize, SpotifyUri)> = Vec::new();
+    for (i, track) in tracks.iter().enumerate() {
         if !track.title.is_empty() {
             continue;
         }
-        let Ok(uri) = SpotifyUri::from_uri(track.uri.as_str()) else {
+        let normalized = normalize_entity_uri(&track.uri);
+        let Ok(uri) = SpotifyUri::from_uri(&normalized) else {
             continue;
         };
-        match get_track_metadata_bearer(session, bearer, &uri).await {
-            Ok(meta) => {
-                track.title = meta.name;
-                track.artists = meta
-                    .artists
-                    .iter()
-                    .map(|a| a.name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                track.album = meta.album.name;
-                track.duration_ms = meta.duration as i64;
-                track.art_url = album_cover_url(&meta.album.covers);
-            }
-            Err(e) => {
-                log::warn!("metadata enrich failed for {}: {e}", track.uri);
-                // Best-effort: librespot Track::get via login5 as last resort.
-                if let Ok(meta) = Track::get(session, &uri).await {
-                    track.title = meta.name;
-                    track.artists = meta
-                        .artists
-                        .iter()
-                        .map(|a| a.name.clone())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    track.album = meta.album.name;
-                    track.duration_ms = meta.duration as i64;
-                    track.art_url = album_cover_url(&meta.album.covers);
-                }
-            }
+        pending.push((i, uri));
+    }
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let uris: Vec<SpotifyUri> = pending.iter().map(|(_, uri)| uri.clone()).collect();
+    let fetched = match fetch_tracks_metadata_batch(session, &uris).await {
+        Ok(map) => map,
+        Err(e) => {
+            log::warn!("metadata enrich batch failed: {e}");
+            HashMap::new()
         }
+    };
+
+    for (idx, uri) in pending {
+        let key = normalize_entity_uri(&uri.to_uri().unwrap_or_default());
+        let Some(meta) = fetched.get(&key) else {
+            log::warn!("metadata enrich missing for {}", tracks[idx].uri);
+            continue;
+        };
+        tracks[idx].title = meta.name.clone();
+        tracks[idx].artists = meta
+            .artists
+            .iter()
+            .map(|a| a.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        tracks[idx].album = meta.album.name.clone();
+        tracks[idx].duration_ms = meta.duration as i64;
+        tracks[idx].art_url = album_cover_url(&meta.album.covers);
     }
     Ok(())
-}
-
-pub(crate) async fn get_track_metadata_bearer(
-    session: &Session,
-    _bearer: &str,
-    track_uri: &SpotifyUri,
-) -> Result<librespot::metadata::Track, librespot::core::Error> {
-    use librespot::metadata::{Metadata, Track};
-
-    Track::get(session, track_uri).await
 }
 
 fn album_cover_url(covers: &librespot::metadata::image::Images) -> Option<String> {

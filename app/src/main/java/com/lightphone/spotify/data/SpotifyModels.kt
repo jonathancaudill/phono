@@ -177,6 +177,12 @@ data class SpotifyPlaylistTrackItem(
 )
 
 @Serializable
+data class SpotifyPublicUser(
+    val id: String = "",
+    @SerialName("display_name") val displayName: String? = null,
+)
+
+@Serializable
 data class SpotifyCurrentUser(
     val id: String = "",
     @SerialName("display_name") val displayName: String? = null,

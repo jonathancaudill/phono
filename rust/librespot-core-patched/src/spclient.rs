@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::config::SessionConfig;
+use crate::Session;
 use crate::{
     Error, FileId, SpotifyId, SpotifyUri,
     apresolve::SocketAddress,
@@ -984,5 +985,111 @@ impl SpClient {
             &NO_METRICS_AND_SALT,
         )
         .await
+    }
+
+    pub async fn get_playlist_page(
+        &self,
+        playlist_id: &SpotifyId,
+        from: i32,
+        length: i32,
+    ) -> SpClientResult {
+        let endpoint = format!(
+            "/playlist/v2/playlist/{}?from={from}&length={length}",
+            playlist_id.to_base62()?
+        );
+        self.request(&Method::GET, &endpoint, None, None).await
+    }
+
+    pub async fn get_playlist_continuation(
+        &self,
+        playlist_id: &SpotifyId,
+        continuation_token: &str,
+    ) -> SpClientResult {
+        let endpoint = format!(
+            "/playlist/v2/playlist/{}/continuation",
+            playlist_id.to_base62()?
+        );
+        let body = serde_json::json!({ "continuation_token": continuation_token }).to_string();
+        self.request_as_json(&Method::POST, &endpoint, None, Some(&body))
+            .await
+    }
+
+    pub async fn create_playlist(&self, name: &str, is_public: bool) -> SpClientResult {
+        use crate::protocol::playlist4_external::{
+            FormatListAttribute, ListAttributes, ListUpdateRequest,
+        };
+
+        let mut attrs = ListAttributes::new();
+        attrs.name = Some(name.to_string());
+        let mut published = FormatListAttribute::new();
+        published.key = Some("isPublished".to_string());
+        published.value = Some(if is_public { "true" } else { "false" }.to_string());
+        attrs.format_attributes = vec![published].into();
+
+        let mut req = ListUpdateRequest::new();
+        req.attributes = Some(attrs).into();
+        req.info = Some(Self::playlist_change_info(&self.session())).into();
+
+        self.request_with_protobuf(&Method::POST, "/playlist/v2/playlist", None, &req)
+            .await
+    }
+
+    pub async fn apply_playlist_changes(
+        &self,
+        playlist_id: &SpotifyId,
+        base_revision: &[u8],
+        ops: Vec<crate::protocol::playlist4_external::Op>,
+    ) -> SpClientResult {
+        let changes = Self::build_list_changes(&self.session(), base_revision, ops);
+        let endpoint = format!(
+            "/playlist/v2/playlist/{}/changes",
+            playlist_id.to_base62()?
+        );
+        self.request_with_protobuf(&Method::POST, &endpoint, None, &changes)
+            .await
+    }
+
+    pub async fn apply_rootlist_changes(
+        &self,
+        base_revision: &[u8],
+        ops: Vec<crate::protocol::playlist4_external::Op>,
+    ) -> SpClientResult {
+        let user = self.session().username();
+        let changes = Self::build_list_changes(&self.session(), base_revision, ops);
+        let endpoint = format!("/playlist/v2/user/{user}/rootlist/changes");
+        self.request_with_protobuf(&Method::POST, &endpoint, None, &changes)
+            .await
+    }
+
+    fn build_list_changes(
+        session: &Session,
+        base_revision: &[u8],
+        ops: Vec<crate::protocol::playlist4_external::Op>,
+    ) -> crate::protocol::playlist4_external::ListChanges {
+        use crate::protocol::playlist4_external::{Delta, ListChanges};
+
+        let mut delta = Delta::new();
+        delta.base_version = Some(base_revision.to_vec());
+        delta.ops = ops;
+        delta.info = Some(Self::playlist_change_info(session)).into();
+
+        let mut changes = ListChanges::new();
+        changes.base_revision = Some(base_revision.to_vec());
+        changes.deltas = vec![delta];
+        changes.want_sync_result = Some(true);
+        changes.want_resulting_revisions = Some(true);
+        changes
+    }
+
+    fn playlist_change_info(session: &Session) -> crate::protocol::playlist4_external::ChangeInfo {
+        use crate::protocol::playlist4_external::source_info::Client;
+        use crate::protocol::playlist4_external::{ChangeInfo, SourceInfo};
+
+        let mut info = ChangeInfo::new();
+        info.user = Some(session.username());
+        let mut source = SourceInfo::new();
+        source.client = Some(Client::CLIENT.into());
+        info.source = Some(source).into();
+        info
     }
 }
