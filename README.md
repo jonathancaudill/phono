@@ -1,6 +1,3 @@
-### ⚠️ WARNING: THIS REPOSITORY IS RAPIDLY CHANGING AFTER THE DISCOVERY OF A FEW BUGS. 
-### ⚠️ IT IS HIGHLY ADVISABLE YOU WAIT FOR V0.0.2 AT LEAST
-
 # Phono — Spotify Client for Light Phone III
 
 <img width="480" height="580" alt="1000000482" src="https://github.com/user-attachments/assets/783e74e2-c3a2-4014-a990-ffedd4189a9d" />
@@ -54,10 +51,11 @@ The app uses **dual authentication**:
    - On a computer, open **[jonathancaudill.github.io/phono](https://jonathancaudill.github.io/phono/)** to generate a QR code, then tap **Scan QR** on the phone
 3. Tap **Connect Web API** and authorize when prompted
 
-The setup page runs entirely in your browser — credentials are never sent to a server. The QR
-code encodes your client secret in plain text; generate and scan in private.
+The setup page runs entirely in your browser; it's just a static page. The QR
+code encodes your client secret in plain text, so be careful sharing it :)
 
-**PLEASE NOTE:** Credentials may expire around 6 months. Just rotate the secret and redo steps 2-3!
+**PLEASE NOTE:** Credentials may expire around 6 months depending on 
+Spotify dev app restrictions. Just rotate the secret and redo steps 2-3!
 
 
 ## Repository layout
