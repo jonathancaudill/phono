@@ -1,3 +1,6 @@
+### ⚠️ WARNING: THIS REPOSITORY IS RAPIDLY CHANGING AFTER THE DISCOVER OF A FEW BUGS. 
+### ⚠️ IT IS HIGHLY ADVISABLE YOU WAIT FOR V0.0.2 AT LEAST
+
 # Phono — Spotify Client for Light Phone III
 
 <img width="480" height="580" alt="1000000482" src="https://github.com/user-attachments/assets/783e74e2-c3a2-4014-a990-ffedd4189a9d" />
