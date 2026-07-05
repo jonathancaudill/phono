@@ -3,15 +3,26 @@ package com.lightphone.spotify.data
 import com.lightphone.spotify.data.local.DetailCacheRepository
 import com.lightphone.spotify.data.local.LibraryRepository
 import com.lightphone.spotify.data.SpotifyPlaylistDetail
+import com.lightphone.spotify.data.SpotifyPlaylistOwner
 import com.lightphone.spotify.data.SpotifyPlaylistSimple
 import com.lightphone.spotify.data.SpotifyPlaylistTrackItem
 import com.lightphone.spotify.data.local.PlaylistEntity
+import com.lightphone.spotify.data.SpotifyTrack
+import com.lightphone.spotify.data.native.NativeMetadataAdapter
+import com.lightphone.spotify.data.native.NativeMetadataGateway
+import com.lightphone.spotify.data.native.NativeSessionRequiredException
+import com.lightphone.spotify.data.native.mapNativeError
 import com.lightphone.spotify.data.webapi.SpotifyWebApi
 import com.lightphone.spotify.data.webapi.WebApiAuthException
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ffi.TrackInfo
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /**
  * UI-facing track model for playback.
@@ -36,6 +47,18 @@ fun TrackInfo.toMetadata(): TrackMetadata = TrackMetadata(
     artUrl = artUrl,
 )
 
+fun TrackInfo.toSpotifyTrack(): SpotifyTrack = SpotifyTrack(
+    id = uri.removePrefix("spotify:track:").substringBefore('?'),
+    name = title,
+    uri = uri,
+    artists = artists.split(", ")
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .map { name -> SpotifyArtist(name = name) },
+    album = album.takeIf { it.isNotBlank() }?.let { SpotifyAlbumSimple(name = it) },
+    durationMs = durationMs,
+)
+
 data class PlaylistDetailResult(
     val detail: SpotifyPlaylistDetail,
     val tracks: List<SpotifyPlaylistTrackItem>,
@@ -50,11 +73,23 @@ class SpotifyRepository(
     private val libraryRepository: LibraryRepository,
     private val detailCache: DetailCacheRepository,
 ) {
+    /** Login5 spclient gateway (Step 1). Required for playlist/artist paths. */
+    var nativeMetadata: NativeMetadataGateway? = null
+
+    private fun nativeGateway(): NativeMetadataGateway {
+        val gateway = nativeMetadata
+        if (gateway == null || !gateway.isLoggedIn()) {
+            throw NativeSessionRequiredException()
+        }
+        return gateway
+    }
+
     private val searchCache = ConcurrentHashMap<String, EphemeralEntry<SearchResults>>()
     private val ephemeralAlbumCache = ConcurrentHashMap<String, EphemeralEntry<AlbumDetailResult>>()
     private val ephemeralPlaylistCache = ConcurrentHashMap<String, EphemeralEntry<PlaylistDetailResult>>()
     private var dailyMixesCache: Pair<Long, List<SpotifyPlaylistSimple>>? = null
     private var currentUserIdCache: String? = null
+    private val ownerDisplayNameCache = ConcurrentHashMap<String, String>()
 
     suspend fun albumDetail(albumId: String): AlbumDetailResult {
         val now = System.currentTimeMillis()
@@ -83,13 +118,12 @@ class SpotifyRepository(
     }
 
     fun artistDetail(artistId: String): ArtistDetailResult {
-        val artist = webApi.artist(artistId)
-        val albums = webApi.artistAlbums(artistId)
-        return ArtistDetailResult(
-            artist = artist,
-            topTracks = emptyList(),
-            albums = albums,
+        val bundle = nativeGateway().artistDetail(
+            artistId = artistId,
+            albumLimit = 50,
+            topTrackLimit = 10,
         )
+        return NativeMetadataAdapter.toArtistDetailResult(bundle)
     }
 
     fun search(query: String, limitPerType: Int = 8): SearchResults {
@@ -110,12 +144,15 @@ class SpotifyRepository(
         return items
     }
 
-    fun playlistTracks(playlistId: String, limit: Int = 100): List<TrackMetadata> =
-        webApi.playlistItems(playlistId, limit).map { it.toMetadata() }
+    fun playlistTracks(playlistId: String, limit: Int = 100): List<TrackMetadata> {
+        val bundle = nativeGateway().playlistDetail(playlistId, limit.coerceIn(1, 500))
+        return bundle.tracks.mapNotNull { it.track.toSpotifyTrack().toMetadata() }
+    }
 
     fun currentUserId(): String {
         currentUserIdCache?.let { return it }
-        val id = webApi.currentUser().id
+        val id = nativeMetadata?.takeIf { it.isLoggedIn() }?.sessionUsername()
+            ?: webApi.currentUser().id
         currentUserIdCache = id
         return id
     }
@@ -132,11 +169,11 @@ class SpotifyRepository(
         val authoritativeSnapshot = libraryRepository.getPlaylistSnapshot(playlistId)
         detailCache.getPinnedPlaylistDetail(playlistId, authoritativeSnapshot)?.let { (detail, tracks, _) ->
             val userId = currentUserIdSuspend()
-            val isEditable = detail.owner?.id == userId || detail.collaborative
-            val uri = detail.uri.ifBlank { "spotify:playlist:$playlistId" }
-            val isInLibrary = webApi.libraryContains(listOf(uri)).firstOrNull() ?: false
+            val resolvedDetail = detail.copy(owner = resolveOwner(detail.owner))
+            val isEditable = resolvedDetail.owner?.id == userId || resolvedDetail.collaborative
+            val isInLibrary = libraryRepository.playlistsSnapshot().any { it.playlist_id == playlistId }
             return PlaylistDetailResult(
-                detail = detail,
+                detail = resolvedDetail,
                 tracks = tracks,
                 currentUserId = userId,
                 isEditable = isEditable,
@@ -144,21 +181,26 @@ class SpotifyRepository(
             )
         }
 
+        val gw = nativeGateway()
         val userId = currentUserIdSuspend()
-        val detail = webApi.playlist(playlistId)
-        val tracks = paginatePlaylistTrackItems(playlistId, trackLimit)
-        val isEditable = detail.owner?.id == userId || detail.collaborative
-        val uri = detail.uri.ifBlank { "spotify:playlist:$playlistId" }
-        val isInLibrary = webApi.libraryContains(listOf(uri)).firstOrNull() ?: false
-        val result = PlaylistDetailResult(
-            detail = detail,
-            tracks = tracks,
-            currentUserId = userId,
-            isEditable = isEditable,
-            isInLibrary = isInLibrary,
+        val bundle = gw.playlistDetail(playlistId, trackLimit)
+        val isInLibrary = libraryRepository.playlistsSnapshot().any { it.playlist_id == playlistId }
+        val result = resolvePlaylistDetailOwners(
+            NativeMetadataAdapter.toPlaylistDetailResult(bundle, userId, isInLibrary),
         )
+        result.detail.snapshotId?.takeIf { it.isNotBlank() }?.let { revision ->
+            libraryRepository.updatePlaylistSnapshot(playlistId, revision)
+        }
+        result.detail.owner?.resolvedDisplayName()?.let { display ->
+            libraryRepository.updatePlaylistOwnerName(playlistId, display)
+        }
         if (detailCache.isUserPlaylist(playlistId)) {
-            detailCache.putPinnedPlaylistDetail(playlistId, detail, tracks, detail.snapshotId)
+            detailCache.putPinnedPlaylistDetail(
+                playlistId,
+                result.detail,
+                result.tracks,
+                result.detail.snapshotId,
+            )
         } else {
             putEphemeralPlaylist(playlistId, result, now)
         }
@@ -193,11 +235,10 @@ class SpotifyRepository(
         for (playlist in editable) {
             if (!detailCache.needsUriReindex(playlist.playlist_id, playlist.snapshot_id)) continue
             runCatching {
-                val items = paginatePlaylistTrackItems(playlist.playlist_id, limit = URI_INDEX_TRACK_LIMIT)
-                val uris = items.mapNotNull { item ->
-                    item.track?.uri?.takeIf { it.isNotBlank() }
-                }
-                detailCache.replaceTrackUris(playlist.playlist_id, uris, playlist.snapshot_id)
+                val items = nativeGateway().playlistDetail(playlist.playlist_id, URI_INDEX_TRACK_LIMIT)
+                    .tracks
+                    .mapNotNull { row -> row.track.uri.takeIf { it.isNotBlank() } }
+                detailCache.replaceTrackUris(playlist.playlist_id, items, playlist.snapshot_id)
             }.onFailure { e ->
                 android.util.Log.w(
                     "PlaylistUriIndex",
@@ -212,20 +253,34 @@ class SpotifyRepository(
         detailCache.isSavedAlbumCached(albumId)
 
     suspend fun createPlaylist(name: String, isPublic: Boolean): SpotifyPlaylistSimple {
-        val userId = currentUserIdSuspend()
-        val created = webApi.createPlaylist(userId, name.trim(), isPublic)
-        libraryRepository.prependPlaylist(created)
-        return created
+        val created = nativeGateway().createPlaylist(name.trim(), isPublic)
+        var simple = withResolvedOwner(NativeMetadataAdapter.toPlaylistSimple(created))
+        if (simple.snapshotId.isNullOrBlank()) {
+            val bundle = nativeGateway().playlistDetail(simple.id, trackLimit = 1)
+            simple = withResolvedOwner(NativeMetadataAdapter.toPlaylistSimple(bundle.detail))
+        }
+        libraryRepository.prependPlaylist(simple)
+        simple.snapshotId?.takeIf { it.isNotBlank() }?.let { revision ->
+            onPlaylistMutated(simple.id, revision)
+        }
+        simple.owner?.resolvedDisplayName()?.let { display ->
+            libraryRepository.updatePlaylistOwnerName(simple.id, display)
+        }
+        runCatching {
+            nativeGateway().addToRootlist("spotify:playlist:${simple.id}")
+        }
+        return simple
     }
 
     suspend fun renamePlaylist(playlistId: String, name: String): SpotifyPlaylistDetail {
         val trimmed = name.trim()
-        webApi.changePlaylistDetails(playlistId, name = trimmed)
-        val detail = webApi.playlist(playlistId)
+        val revision = resolvePlaylistRevision(playlistId)
+        val newRevision = nativeGateway().updatePlaylistMetadata(playlistId, revision, trimmed, null)
+        val bundle = nativeGateway().playlistDetail(playlistId, trackLimit = 1)
+        val detail = NativeMetadataAdapter.toPlaylistDetail(bundle.detail).copy(name = trimmed)
+            .let { it.copy(owner = resolveOwner(it.owner)) }
         libraryRepository.updatePlaylistName(playlistId, trimmed)
-        val snapshot = detail.snapshotId?.takeIf { it.isNotBlank() }
-            ?: error("Playlist detail missing snapshot_id after rename")
-        onPlaylistMutated(playlistId, snapshot, invalidateTracks = true)
+        onPlaylistMutated(playlistId, newRevision, invalidateTracks = true)
         return detail
     }
 
@@ -236,14 +291,12 @@ class SpotifyRepository(
         position: Int? = null,
     ): String {
         val normalized = normalizeUri(uri)
-        val resolvedSnapshot = snapshotId
-            ?: libraryRepository.getPlaylistSnapshot(playlistId)
-            ?: detailCache.indexedSnapshotId(playlistId)
-        val newSnapshot = webApi.addPlaylistItems(
+        val resolvedSnapshot = resolvePlaylistRevision(playlistId, snapshotId)
+        val newSnapshot = nativeGateway().addPlaylistTracks(
             playlistId,
+            resolvedSnapshot,
             listOf(normalized),
             position,
-            resolvedSnapshot,
         )
         onPlaylistMutated(
             playlistId = playlistId,
@@ -259,7 +312,8 @@ class SpotifyRepository(
         snapshotId: String?,
     ): String {
         val normalized = normalizeUri(uri)
-        val newSnapshot = webApi.removePlaylistItems(playlistId, listOf(normalized), snapshotId)
+        val resolvedSnapshot = resolvePlaylistRevision(playlistId, snapshotId)
+        val newSnapshot = nativeGateway().removePlaylistTracks(playlistId, resolvedSnapshot, listOf(normalized))
         onPlaylistMutated(
             playlistId = playlistId,
             newSnapshot = newSnapshot,
@@ -275,29 +329,34 @@ class SpotifyRepository(
         snapshotId: String?,
     ): String {
         if (fromIndex == toIndex) {
-            return snapshotId ?: libraryRepository.getPlaylistSnapshot(playlistId)
-                ?: error("No snapshot_id for playlist")
+            return resolvePlaylistRevision(playlistId, snapshotId)
         }
         val insertBefore = if (toIndex > fromIndex) toIndex + 1 else toIndex
-        val newSnapshot = webApi.reorderPlaylistItems(
+        val resolvedSnapshot = resolvePlaylistRevision(playlistId, snapshotId)
+        val newSnapshot = nativeGateway().reorderPlaylistTracks(
             playlistId = playlistId,
+            revisionB64 = resolvedSnapshot,
             rangeStart = fromIndex,
             insertBefore = insertBefore,
             rangeLength = 1,
-            snapshotId = snapshotId,
         )
         onPlaylistMutated(playlistId, newSnapshot, invalidateTracks = true)
         return newSnapshot
     }
 
     suspend fun followPlaylist(playlistId: String) {
-        webApi.followPlaylist(playlistId)
-        val detail = webApi.playlist(playlistId)
-        libraryRepository.prependPlaylist(detail.toPlaylistSimple())
+        val uri = "spotify:playlist:$playlistId"
+        nativeGateway().followPlaylist(uri)
+        val bundle = nativeGateway().playlistDetail(playlistId, trackLimit = 1)
+        val simple = withResolvedOwner(NativeMetadataAdapter.toPlaylistSimple(bundle.detail))
+        libraryRepository.prependPlaylist(simple)
+        simple.snapshotId?.takeIf { it.isNotBlank() }?.let { revision ->
+            onPlaylistMutated(playlistId, revision)
+        }
     }
 
     suspend fun unfollowPlaylist(playlistId: String) {
-        webApi.unfollowPlaylist(playlistId)
+        nativeGateway().unfollowPlaylist("spotify:playlist:$playlistId")
         libraryRepository.removePlaylist(playlistId)
         detailCache.clearPlaylistUriIndex(playlistId)
     }
@@ -311,22 +370,28 @@ class SpotifyRepository(
 
     suspend fun currentUserIdSuspend(): String {
         currentUserIdCache?.let { return it }
-        val id = webApi.currentUserSuspend().id
+        val id = nativeMetadata?.takeIf { it.isLoggedIn() }?.sessionUsername()
+            ?: webApi.currentUserSuspend().id
         currentUserIdCache = id
         return id
     }
 
-    private suspend fun paginatePlaylistTrackItems(playlistId: String, limit: Int): List<SpotifyPlaylistTrackItem> {
-        val results = mutableListOf<SpotifyPlaylistTrackItem>()
-        var offset = 0
-        while (results.size < limit) {
-            val page = webApi.playlistItemsPage(playlistId, offset)
-            if (page.items.isEmpty()) break
-            results.addAll(page.items)
-            offset += page.items.size
-            if (offset >= page.total) break
+    /** Native rootlist page for library sync. */
+    suspend fun nativePlaylistLibraryPage(offset: Int, limit: Int): com.lightphone.spotify.data.webapi.LibraryPage<SpotifyPlaylistSimple> {
+        val page = nativeGateway().playlistRootlist(offset, limit)
+        val simples = page.playlists.map { NativeMetadataAdapter.toPlaylistSimple(it) }
+        val ownerIds = simples.mapNotNull { it.owner?.id?.takeIf(String::isNotBlank) }
+        val displayNames = resolveOwnerDisplayNames(ownerIds)
+        val resolved = simples.map { simple ->
+            val owner = simple.owner ?: return@map simple
+            val display = displayNames[owner.id] ?: return@map simple
+            simple.copy(owner = owner.copy(displayName = display))
         }
-        return results.take(limit)
+        return com.lightphone.spotify.data.webapi.LibraryPage(
+            items = resolved,
+            total = page.total.toInt(),
+            offset = offset,
+        )
     }
 
     fun isTrackSaved(uri: String): Boolean =
@@ -384,7 +449,7 @@ class SpotifyRepository(
      * Daily Mix / Made-For-You playlists from the user's followed playlists
      * matching well-known editorial names.
      */
-    fun dailyMixes(): List<SpotifyPlaylistSimple> {
+    suspend fun dailyMixes(): List<SpotifyPlaylistSimple> {
         val now = System.currentTimeMillis()
         dailyMixesCache?.let { (at, items) ->
             if (now - at < CACHE_TTL_MS) return items
@@ -392,7 +457,9 @@ class SpotifyRepository(
         val all = mutableListOf<SpotifyPlaylistSimple>()
         var offset = 0
         while (offset < DAILY_MIXES_SCAN_LIMIT) {
-            val page = webApi.myPlaylistsPage(offset)
+            val page = runCatching {
+                nativePlaylistLibraryPage(offset, SpotifyWebApi.LIBRARY_PAGE_LIMIT)
+            }.getOrElse { return emptyList() }
             if (page.items.isEmpty()) break
             all.addAll(page.items)
             offset += page.items.size
@@ -418,6 +485,7 @@ class SpotifyRepository(
         ephemeralPlaylistCache.clear()
         dailyMixesCache = null
         currentUserIdCache = null
+        ownerDisplayNameCache.clear()
     }
 
     private suspend fun onPlaylistMutated(
@@ -490,12 +558,99 @@ class SpotifyRepository(
         private const val EPHEMERAL_PLAYLIST_CAP = 10
         private const val URI_INDEX_TRACK_LIMIT = 10_000
         private const val DAILY_MIXES_SCAN_LIMIT = 200
+        private const val OWNER_DISPLAY_NAME_PARALLELISM = 4
     }
 
     private fun normalizeUri(uri: String): String = uri.substringBefore('?').trim()
 
     private fun trackIdFromUri(uri: String): String =
         normalizeUri(uri).substringAfterLast(':')
+
+    private suspend fun resolvePlaylistRevision(playlistId: String, snapshotId: String? = null): String {
+        snapshotId?.takeIf { it.isNotBlank() }?.let { return it }
+        libraryRepository.getPlaylistSnapshot(playlistId)?.takeIf { it.isNotBlank() }?.let { return it }
+        detailCache.indexedSnapshotId(playlistId)?.takeIf { it.isNotBlank() }?.let { return it }
+        ephemeralPlaylistCache[playlistId]?.value?.detail?.snapshotId
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+        val revision = nativeGateway().playlistDetail(playlistId, trackLimit = 1).detail.revisionB64
+        if (revision.isNotBlank()) {
+            libraryRepository.updatePlaylistSnapshot(playlistId, revision)
+        }
+        return revision.ifBlank { error("No snapshot_id for playlist") }
+    }
+
+    private suspend fun resolveOwnerDisplayNames(ownerIds: Collection<String>): Map<String, String> {
+        val unique = ownerIds.filter { it.isNotBlank() }.distinct()
+        if (unique.isEmpty()) return emptyMap()
+
+        val result = mutableMapOf<String, String>()
+        val pending = mutableListOf<String>()
+        for (id in unique) {
+            ownerDisplayNameCache[id]?.let { cached ->
+                result[id] = cached
+            } ?: pending.add(id)
+        }
+        if (pending.isEmpty()) return result
+
+        val semaphore = Semaphore(OWNER_DISPLAY_NAME_PARALLELISM)
+        coroutineScope {
+            pending.map { ownerId ->
+                async {
+                    semaphore.withPermit {
+                        ownerId to lookupOwnerDisplayName(ownerId)
+                    }
+                }
+            }.awaitAll().forEach { (ownerId, display) ->
+                if (!display.isNullOrBlank() && display != ownerId) {
+                    ownerDisplayNameCache[ownerId] = display
+                    result[ownerId] = display
+                }
+            }
+        }
+        return result
+    }
+
+    private suspend fun lookupOwnerDisplayName(ownerId: String): String? {
+        runCatching {
+            nativeMetadata
+                ?.takeIf { it.isLoggedIn() }
+                ?.userDisplayName(ownerId)
+                ?.takeIf { it.isNotBlank() }
+        }.getOrNull()?.let { return it }
+        return runCatching {
+            val me = runCatching { currentUserIdSuspend() }.getOrNull()
+            if (me != null && me == ownerId) {
+                webApi.currentUserSuspend().displayName
+            } else {
+                webApi.userProfile(ownerId).displayName
+            }
+        }.getOrNull()?.takeIf { !it.isNullOrBlank() }
+    }
+
+    private suspend fun resolveOwnerDisplayName(ownerId: String): String {
+        if (ownerId.isBlank()) return ownerId
+        return resolveOwnerDisplayNames(listOf(ownerId))[ownerId] ?: ownerId
+    }
+
+    private suspend fun resolveOwner(owner: SpotifyPlaylistOwner?): SpotifyPlaylistOwner? {
+        if (owner == null || owner.id.isBlank()) return owner
+        val display = resolveOwnerDisplayName(owner.id)
+        return owner.copy(displayName = display)
+    }
+
+    private suspend fun withResolvedOwner(simple: SpotifyPlaylistSimple): SpotifyPlaylistSimple {
+        val owner = resolveOwner(simple.owner) ?: return simple
+        return simple.copy(owner = owner)
+    }
+
+    private suspend fun resolvePlaylistDetailOwners(result: PlaylistDetailResult): PlaylistDetailResult {
+        val owner = resolveOwner(result.detail.owner)
+        return result.copy(detail = result.detail.copy(owner = owner))
+    }
+
+    private fun SpotifyPlaylistOwner.resolvedDisplayName(): String? =
+        displayName?.takeIf { it.isNotBlank() && it != id }
 }
 
 data class AlbumDetailResult(
@@ -532,11 +687,33 @@ fun mapWebApiError(e: Throwable): String = when (e) {
         val msg = e.message.orEmpty()
         when {
             msg.startsWith("HTTP 429") -> "Spotify is busy — wait a moment and try again."
-            msg.startsWith("HTTP 401") || msg.startsWith("HTTP 403") ->
+            msg.startsWith("HTTP 401") ->
                 "Web API session expired — re-authorize Step 2."
+            msg.startsWith("HTTP 403") -> mapWebApi403Error(msg)
             msg.startsWith("HTTP") -> "Can't reach Spotify right now. Try again."
             else -> e.message?.takeIf { it.isNotBlank() }
                 ?: "${e::class.simpleName ?: "Error"} — try again."
         }
     }
+}
+
+/** Maps native metadata or Web API failures for UI display. */
+fun mapRepositoryError(e: Throwable): String {
+    if (e is NativeSessionRequiredException ||
+        e is com.lightphone.spotify.ffi.SpotifyException ||
+        e.message?.contains("not logged in", ignoreCase = true) == true
+    ) {
+        return mapNativeError(e)
+    }
+    return mapWebApiError(e)
+}
+
+internal fun mapWebApi403Error(message: String): String = when {
+    message.contains("/playlists/") && message.contains("/items") ->
+        "This playlist's tracks aren't available through the Web API. " +
+            "Spotify limits dev apps to playlists you own or collaborate on."
+    message.contains("/playlists/") ->
+        "This playlist isn't available through the Web API."
+    else ->
+        "Spotify denied access to this content."
 }

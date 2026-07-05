@@ -104,7 +104,7 @@ fun PlaylistsScreen(
                     ) { _, playlist ->
                         PhonoMediaListItem(
                             primaryText = playlist.name,
-                            secondaryText = playlist.owner_name,
+                            secondaryText = playlist.owner_name.ifBlank { playlist.owner_id },
                             showImage = false,
                             placeholderIcon = Icons.AutoMirrored.Filled.PlaylistPlay,
                             onClick = { onOpenPlaylist(playlist.playlist_id, playlist.name) },

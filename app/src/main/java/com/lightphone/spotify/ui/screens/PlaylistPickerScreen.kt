@@ -108,7 +108,7 @@ fun PlaylistPickerScreen(
                                 playlist.playlist_id in state.selectedPlaylistIds
                             PlaylistPickerRow(
                                 name = playlist.name,
-                                ownerName = playlist.owner_name,
+                                ownerName = playlist.owner_name.ifBlank { playlist.owner_id },
                                 selected = selected,
                                 disabled = state.adding || alreadyContains,
                                 onToggle = { vm.togglePlaylistPickerSelection(playlist.playlist_id) },

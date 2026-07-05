@@ -21,7 +21,6 @@ import com.lightphone.spotify.ui.components.CustomScrollView
 import com.lightphone.spotify.ui.components.PhonoMediaListItem
 import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
 import com.lightphone.spotify.ui.components.PhonoTrackListItem
-import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.PhonoScreenShell
 import com.thelightphone.sdk.ui.LightText
@@ -58,17 +57,6 @@ fun ArtistDetailScreen(
             when {
                 state.error != null && artist == null -> EmptyListMessage(state.error!!)
                 else -> CustomScrollView {
-                    item("meta") {
-                        val followers = artist?.followers?.total
-                        if (followers != null && followers > 0) {
-                            LightText(
-                                text = "${followers / 1000}K followers",
-                                variant = LightTextVariant.Detail,
-                                color = PhonoSemanticColors.Placeholder,
-                                modifier = Modifier.padding(bottom = legacyNToGridDp(16)),
-                            )
-                        }
-                    }
                     if (state.topTracks.isNotEmpty()) {
                         item("popular-header") {
                             LightText(
@@ -102,7 +90,10 @@ fun ArtistDetailScreen(
                             LightText(
                                 text = "Albums",
                                 variant = LightTextVariant.Copy,
-                                modifier = Modifier.padding(top = legacyNToGridDp(16), bottom = legacyNToGridDp(8)),
+                                modifier = Modifier.padding(
+                                    top = if (state.topTracks.isNotEmpty()) legacyNToGridDp(16) else legacyNToGridDp(0),
+                                    bottom = legacyNToGridDp(8),
+                                ),
                             )
                         }
                         itemsIndexed(state.albums, key = { _, a -> a.id }) { _, album ->

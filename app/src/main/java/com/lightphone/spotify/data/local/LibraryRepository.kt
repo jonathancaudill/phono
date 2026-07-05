@@ -4,6 +4,7 @@ import androidx.room.withTransaction
 import com.lightphone.spotify.data.SpotifyPlaylistSimple
 import com.lightphone.spotify.data.SpotifySavedAlbum
 import com.lightphone.spotify.data.TrackMetadata
+import com.lightphone.spotify.data.mapRepositoryError
 import com.lightphone.spotify.data.mapWebApiError
 import com.lightphone.spotify.data.webapi.SpotifyWebApi
 import kotlinx.coroutines.flow.Flow
@@ -22,7 +23,14 @@ class LibraryRepository(
 
     private val likedTracksSync = LikedTracksSync(database, webApi)
     private val savedAlbumsSync = SavedAlbumsSync(database, webApi)
-    private val userPlaylistsSync = UserPlaylistsSync(database, webApi)
+    private val userPlaylistsSync = UserPlaylistsSync(database) { offset ->
+        val limit = SpotifyWebApi.LIBRARY_PAGE_LIMIT
+        playlistLibraryPageFetcher?.invoke(offset, limit)
+            ?: webApi.savedPlaylistsPage(offset)
+    }
+
+    /** Native spclient rootlist fetcher; when set, playlist library sync uses Login5. */
+    var playlistLibraryPageFetcher: (suspend (offset: Int, limit: Int) -> com.lightphone.spotify.data.webapi.LibraryPage<SpotifyPlaylistSimple>)? = null
 
     fun observeLikedTracks(): Flow<List<LikedTrackEntity>> = trackDao.observeAll()
 
@@ -128,7 +136,7 @@ class LibraryRepository(
         try {
             return userPlaylistsSync.refresh()
         } catch (e: Throwable) {
-            throw Exception(mapWebApiError(e))
+            throw Exception(mapRepositoryError(e))
         }
     }
 
@@ -141,7 +149,7 @@ class LibraryRepository(
         try {
             return userPlaylistsSync.append()
         } catch (e: Throwable) {
-            throw Exception(mapWebApiError(e))
+            throw Exception(mapRepositoryError(e))
         }
     }
 
@@ -150,7 +158,7 @@ class LibraryRepository(
         try {
             return userPlaylistsSync.fillRemainingParallel()
         } catch (e: Throwable) {
-            throw Exception(mapWebApiError(e))
+            throw Exception(mapRepositoryError(e))
         }
     }
 
@@ -308,6 +316,11 @@ class LibraryRepository(
 
     suspend fun updatePlaylistName(playlistId: String, name: String) {
         playlistDao.updateName(playlistId, name)
+    }
+
+    suspend fun updatePlaylistOwnerName(playlistId: String, ownerName: String) {
+        if (ownerName.isBlank()) return
+        playlistDao.updateOwnerName(playlistId, ownerName)
     }
 
     private fun normalizeTrackUri(uri: String): String = uri.substringBefore('?').trim()

@@ -107,20 +107,27 @@ Minimal patch against librespot-core 0.8.0:
 
 ---
 
-## Metadata — Kotlin Web API (`SpotifyWebApi.kt`)
+## Metadata — dual path (native spclient + Kotlin Web API)
 
-All library/search/browse reads and writes go through `https://api.spotify.com/v1/...` with the
-**dev-app bearer** from `WebApiAuth.currentBearer()`.
+**Playlists and artists** use native spclient (Login5) via `NativeMetadataGateway` →
+`LibrespotEngine` UniFFI (`playlist.rs`, `artist.rs`). Step 1 playback session must be active.
+
+**Search, liked songs, saved albums, album detail, library saves** use the Kotlin Web API
+(`SpotifyWebApi.kt`) with the **dev-app bearer** from `WebApiAuth.currentBearer()`.
 
 | Feature | Implementation |
 |---------|----------------|
-| Search | Single `GET /search?type=artist,album,track,playlist&market=from_token`; client ranking in `SearchRanking.kt` |
-| Liked songs | `GET /me/tracks` (paginated) |
-| Saved albums | `GET /me/albums` (paginated, limit up to 500) |
-| Album/artist detail | `GET /albums/{id}`, `GET /artists/{id}`, artist albums |
-| Save/remove | `PUT`/`DELETE /me/library` |
-| is_saved | `GET /me/library/contains` |
-| Playlist play | `GET /playlists/{id}/items` |
+| Search | Web API: `GET /search?type=artist,album,track,playlist&market=from_token`; client ranking in `SearchRanking.kt` |
+| Liked songs | Web API: `GET /me/tracks` (paginated) |
+| Saved albums | Web API: `GET /me/albums` (paginated, limit up to 500) |
+| Album detail | Web API: `GET /albums/{id}` |
+| Save/remove track/album | Web API: `PUT`/`DELETE /me/library` |
+| is_saved | Web API: `GET /me/library/contains` |
+| Playlist browse/edit | Native spclient: `get_playlist`, continuation pagination, `ListChanges` writes |
+| Artist detail | Native spclient: `artist.rs` extended-metadata (top tracks + albums) |
+| Playlist owner display names | spclient `user-profile-view` via `user_profile.rs`; Web API `/users/{id}` fallback |
+| Daily mixes | Native context-resolve (`library.rs`); Web API fallback in repository |
+| User playlists sync | Native rootlist when Step 1 active; Web API `savedPlaylistsPage` fallback only |
 
 ### Web API request rules
 
@@ -141,14 +148,14 @@ API calls**.
 
 ---
 
-## Rust Native Path (playback + daily mixes only)
+## Rust Native Path (playback + playlists/artists + daily mixes)
 
-`library.rs` is **not** the general metadata layer anymore. It only implements Daily Mix /
-Made-For-You playlist discovery via `spotify:search:…` context-resolve, with Web API fallback
-in `SpotifyRepository.dailyMixes()`.
+`playlist.rs` and `artist.rs` implement spclient reads/writes for playlist and artist screens.
+`library.rs` implements Daily Mix / Made-For-You discovery via `spotify:search:…` context-resolve,
+with Web API fallback in `SpotifyRepository.dailyMixes()`.
 
-Do not move general search/library reads back into Rust spclient unless you have a compelling
-reason — dev-app Web API is the supported metadata path today.
+Do not move search or liked/saved-album reads back into Rust unless you have a compelling reason —
+dev-app Web API remains the supported path for those features.
 
 ---
 

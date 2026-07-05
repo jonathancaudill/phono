@@ -20,7 +20,10 @@ import com.lightphone.spotify.audio.PhonoAudioTrackSink
 import com.lightphone.spotify.data.AlbumDetailResult
 import com.lightphone.spotify.data.ArtistDetailResult
 import com.lightphone.spotify.data.SearchResultItem
+import com.lightphone.spotify.data.mapRepositoryError
 import com.lightphone.spotify.data.mapWebApiError
+import com.lightphone.spotify.data.native.NativeMetadataGateway
+import com.lightphone.spotify.data.native.mapNativeError
 import com.lightphone.spotify.data.local.DetailCacheRepository
 import com.lightphone.spotify.data.local.LibraryRepository
 import com.lightphone.spotify.data.local.LikedTrackEntity
@@ -339,6 +342,76 @@ class PlaybackController private constructor(
         if (engineReady) return
         this.engine = engine
         engine.setListener(this)
+        repository.nativeMetadata = object : NativeMetadataGateway {
+            override fun requireLoggedIn() {
+                if (!engine.isLoggedIn()) throw com.lightphone.spotify.data.native.NativeSessionRequiredException()
+            }
+
+            override fun isLoggedIn(): Boolean = engine.isLoggedIn()
+
+            override fun sessionUsername(): String = engine.nativeSessionUsername()
+
+            override fun playlistDetail(playlistId: String, trackLimit: Int) =
+                engine.playlistDetailNative(playlistId, trackLimit.toUInt())
+
+            override fun playlistRootlist(from: Int, length: Int) =
+                engine.playlistRootlist(from.toUInt(), length.toUInt())
+
+            override fun artistDetail(artistId: String, albumLimit: Int, topTrackLimit: Int) =
+                engine.artistDetailNative(artistId, albumLimit.toUInt(), topTrackLimit.toUInt())
+
+            override fun userDisplayName(username: String): String? =
+                engine.userDisplayNameNative(username)
+
+            override fun createPlaylist(name: String, isPublic: Boolean) =
+                engine.createPlaylistNative(name, isPublic)
+
+            override fun updatePlaylistMetadata(
+                playlistId: String,
+                revisionB64: String,
+                name: String?,
+                isPublic: Boolean?,
+            ) = engine.updatePlaylistMetadataNative(playlistId, revisionB64, name, isPublic)
+
+            override fun addPlaylistTracks(
+                playlistId: String,
+                revisionB64: String,
+                uris: List<String>,
+                position: Int?,
+            ) = engine.playlistAddTracksNative(playlistId, revisionB64, uris, position?.toUInt())
+
+            override fun removePlaylistTracks(
+                playlistId: String,
+                revisionB64: String,
+                uris: List<String>,
+            ) = engine.playlistRemoveTracksNative(playlistId, revisionB64, uris)
+
+            override fun reorderPlaylistTracks(
+                playlistId: String,
+                revisionB64: String,
+                rangeStart: Int,
+                insertBefore: Int,
+                rangeLength: Int,
+            ) = engine.playlistReorderNative(
+                playlistId,
+                revisionB64,
+                rangeStart.toUInt(),
+                insertBefore.toUInt(),
+                rangeLength.toUInt(),
+            )
+
+            override fun followPlaylist(playlistUri: String) =
+                engine.rootlistAddNative(playlistUri)
+
+            override fun unfollowPlaylist(playlistUri: String) =
+                engine.rootlistRemoveNative(playlistUri)
+
+            override fun addToRootlist(playlistUri: String) =
+                engine.rootlistAddNative(playlistUri)
+        }
+        libraryRepository.playlistLibraryPageFetcher = { offset, limit ->
+            repository.nativePlaylistLibraryPage(offset, limit)
+        }
         engineReady = true
         val alreadyLoggedIn = engine.isLoggedIn()
         _state.update {
@@ -1010,7 +1083,7 @@ class PlaybackController private constructor(
                 repository.playlistDetail(playlistId)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "playlistDetail failed", e)
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1019,7 +1092,7 @@ class PlaybackController private constructor(
             try {
                 repository.createPlaylist(name, isPublic)
             } catch (e: Throwable) {
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1028,7 +1101,7 @@ class PlaybackController private constructor(
             try {
                 repository.renamePlaylist(playlistId, name)
             } catch (e: Throwable) {
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1041,7 +1114,7 @@ class PlaybackController private constructor(
             try {
                 repository.addTrackToPlaylist(playlistId, uri, snapshotId)
             } catch (e: Throwable) {
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1050,7 +1123,7 @@ class PlaybackController private constructor(
             try {
                 repository.removeTrackFromPlaylist(playlistId, uri, snapshotId)
             } catch (e: Throwable) {
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1072,7 +1145,7 @@ class PlaybackController private constructor(
             try {
                 repository.editablePlaylists(userId)
             } catch (e: Throwable) {
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1087,7 +1160,7 @@ class PlaybackController private constructor(
                 repository.albumDetail(albumId)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "albumDetail failed", e)
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1097,7 +1170,7 @@ class PlaybackController private constructor(
                 repository.artistDetail(artistId)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "artistDetail failed", e)
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1107,7 +1180,7 @@ class PlaybackController private constructor(
                 repository.search(query, limitPerType)
             } catch (e: Throwable) {
                 android.util.Log.e("Search", "search failed", e)
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1117,7 +1190,7 @@ class PlaybackController private constructor(
                 repository.playlistTracks(playlistId, limit)
             } catch (e: Throwable) {
                 android.util.Log.e("Search", "playlistTracks failed", e)
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1127,7 +1200,7 @@ class PlaybackController private constructor(
                 repository.albumTracks(albumId)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "albumTracks failed", e)
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1159,7 +1232,7 @@ class PlaybackController private constructor(
                 repository.saveTrack(uri)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "saveTrack failed", e)
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1169,7 +1242,7 @@ class PlaybackController private constructor(
                 repository.removeTrack(uri)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "removeTrack failed", e)
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1179,7 +1252,7 @@ class PlaybackController private constructor(
                 repository.saveAlbum(albumId)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "saveAlbum failed", e)
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1189,7 +1262,7 @@ class PlaybackController private constructor(
                 repository.removeAlbum(albumId)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "removeAlbum failed", e)
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1199,7 +1272,7 @@ class PlaybackController private constructor(
                 repository.followPlaylist(playlistId)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "followPlaylist failed", e)
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1209,7 +1282,7 @@ class PlaybackController private constructor(
                 repository.unfollowPlaylist(playlistId)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "unfollowPlaylist failed", e)
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
@@ -1225,7 +1298,7 @@ class PlaybackController private constructor(
                 repository.dailyMixes()
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "dailyMixes failed", e)
-                throw Exception(mapWebApiError(e))
+                throw Exception(mapRepositoryError(e))
             }
         }
 
