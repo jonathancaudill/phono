@@ -1,4 +1,9 @@
-# phono — Spotify Client for Light Phone III
+### ⚠️ WARNING: THIS REPOSITORY IS RAPIDLY CHANGING AFTER THE DISCOVERY OF A FEW BUGS. 
+### ⚠️ IT IS HIGHLY ADVISABLE YOU WAIT FOR V0.0.2 AT LEAST
+
+# Phono — Spotify Client for Light Phone III
+
+<img width="480" height="580" alt="1000000482" src="https://github.com/user-attachments/assets/783e74e2-c3a2-4014-a990-ffedd4189a9d" />
 
 Thanks to **[Vandam Dinh](https://github.com/vandamd)** — especially
 [Echo](https://github.com/vandamd/echo) — for the Light Phone UI
@@ -20,7 +25,7 @@ changing code.
 vandam rocks. Basically, this has a few extra features, less album art and doesn't require the Spotify app to be installed.
 
 
-## Setup (required before first use)
+# Setup (read this please!)
 
 The app uses **dual authentication**:
 
@@ -35,15 +40,11 @@ The app uses **dual authentication**:
 1. Go to [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
 2. Click **Create App**
 3. Fill in app name and description
-4. Set **Redirect URI** to `http://127.0.0.1:43821/callback` (must match exactly — no trailing slash)
-5. Select **Web API** under "Which API/SDKs are you planning to use?" (other SDK/API
-   checkboxes — Android SDK, Web Playback SDK, Ads API — are **not** required)
+4. Set **Redirect URI** to `http://127.0.0.1:43821/callback` (must match exactly!!)
+5. Select **Web API** under "Which API/SDKs are you planning to use?"
 6. Accept terms and click **Save**
 7. Open **Settings** and copy your **Client ID** and **Client Secret**
-8. *(Optional)* Under **Android package**, you may add package name and SHA1 — phono Step 2
-   uses WebView OAuth on `127.0.0.1:43821`, not the Spotify Android SDK, so these fields are
-   not used by the app today
-9. Click **Save**
+8. Click **Save**
 
 ### Configure the app
 
@@ -56,7 +57,7 @@ The app uses **dual authentication**:
 The setup page runs entirely in your browser — credentials are never sent to a server. The QR
 code encodes your client secret in plain text; generate and scan in private.
 
-**PLEASE NOTE:** Credentials may expire around 6 months. Just re-enter them!
+**PLEASE NOTE:** Credentials may expire around 6 months. Just rotate the secret and redo steps 2-3!
 
 
 ## Repository layout
