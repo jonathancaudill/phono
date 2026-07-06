@@ -134,6 +134,9 @@ class PlaybackController private constructor(
     @Volatile
     private var signingOut = false
 
+    @Volatile
+    private var appForegroundRequested = false
+
     /** Invoked after playback session reconnects (warm or monitor). */
     @Volatile
     var onSessionRestored: (() -> Unit)? = null
@@ -425,6 +428,7 @@ class PlaybackController private constructor(
             engineReady && runCatching { requireEngine().isSessionConnected() }.getOrDefault(false)
         }
         engineReady = true
+        runCatching { requireEngine().setAppForeground(appForegroundRequested) }
         val alreadyLoggedIn = engine.isLoggedIn()
         _state.update {
             recomputeStatusMessage(
@@ -443,6 +447,7 @@ class PlaybackController private constructor(
     }
 
     fun setAppForeground(foreground: Boolean) {
+        appForegroundRequested = foreground
         if (engineReady) {
             runCatching { requireEngine().setAppForeground(foreground) }
         }
@@ -471,12 +476,16 @@ class PlaybackController private constructor(
             }
             return runCatching { requireEngine().ensurePlaybackReady() }.fold(
                 onSuccess = {
-                    syncConnectedFromEngine()
-                    onSessionRestored?.invoke()
+                    if (!signingOut) {
+                        syncConnectedFromEngine()
+                        onSessionRestored?.invoke()
+                    }
                     WarmResult.Success
                 },
                 onFailure = { e ->
-                    syncConnectedFromEngine()
+                    if (!signingOut) {
+                        syncConnectedFromEngine()
+                    }
                     WarmResult.Failed(mapSpotifyError(e))
                 },
             )

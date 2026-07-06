@@ -307,9 +307,11 @@ class SpotifyWebApi(
     }
 
     private fun authorizedRequest(path: String): Request.Builder {
-        val url = if (path.startsWith("http")) path else "$baseUrl$path"
+        require(path.startsWith("/")) {
+            "Web API path must be relative to baseUrl, got: $path"
+        }
         return Request.Builder()
-            .url(url)
+            .url("$baseUrl$path")
             .header("Authorization", "Bearer ${auth.currentBearer()}")
             .header("Accept", "application/json")
     }

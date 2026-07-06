@@ -44,6 +44,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 
 data class AlbumDetailState(
@@ -270,7 +271,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun cancelPlaylistLibraryJobs() {
         playlistsRefreshJob?.cancel()
         playlistsFillJob?.cancel()
-        playlistsRefreshJob?.cancel()
         playlistsLookaheadJob?.cancel()
     }
 
@@ -397,7 +397,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         ensureLikedTracksLoaded()
         ensureSavedAlbumsLoaded()
         viewModelScope.launch {
-            controller.warmSpclientSession()
+            withTimeoutOrNull(WARM_TIMEOUT_MS) {
+                controller.warmSpclientSession()
+            } ?: android.util.Log.w(
+                "AppViewModel",
+                "warmSpclientSession timed out after ${WARM_TIMEOUT_MS}ms; loading playlists anyway",
+            )
             ensurePlaylistsLoaded()
         }
         if (_libraryBootstrapping.value) {
@@ -1623,6 +1628,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val SEARCH_TIMEOUT_MS = 30_000L
+        private const val WARM_TIMEOUT_MS = 15_000L
         private const val LOOKAHEAD_ROWS = 150
     }
 }

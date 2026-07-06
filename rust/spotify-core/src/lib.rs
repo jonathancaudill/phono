@@ -1718,6 +1718,10 @@ impl EngineShared {
 ///
 /// Runs on its own OS thread and drives the (`!Send`) reconnect via
 /// `Handle::block_on`. Detached; self-terminates via the `Weak`.
+fn should_defer_reconnect_monitor(playing: bool, app_foreground: bool) -> bool {
+    !playing && !app_foreground
+}
+
 fn spawn_monitor(
     weak: std::sync::Weak<EngineShared>,
     session: Session,
@@ -1756,9 +1760,10 @@ fn spawn_monitor(
             }
 
             // Defer only when background AND paused (battery). Open app or playing → rebuild.
-            if !shared.playing.load(Ordering::SeqCst)
-                && !shared.app_foreground.load(Ordering::SeqCst)
-            {
+            if should_defer_reconnect_monitor(
+                shared.playing.load(Ordering::SeqCst),
+                shared.app_foreground.load(Ordering::SeqCst),
+            ) {
                 log::debug!(
                     "monitor: session invalid while paused+background — deferring reconnect"
                 );
@@ -2417,12 +2422,9 @@ mod long_running_tests {
     /// Reconnect monitor defers only when paused AND backgrounded.
     #[test]
     fn reconnect_defer_only_when_paused_and_background() {
-        fn should_defer_reconnect(playing: bool, app_foreground: bool) -> bool {
-            !playing && !app_foreground
-        }
-        assert!(should_defer_reconnect(false, false));
-        assert!(!should_defer_reconnect(false, true));
-        assert!(!should_defer_reconnect(true, false));
-        assert!(!should_defer_reconnect(true, true));
+        assert!(should_defer_reconnect_monitor(false, false));
+        assert!(!should_defer_reconnect_monitor(false, true));
+        assert!(!should_defer_reconnect_monitor(true, false));
+        assert!(!should_defer_reconnect_monitor(true, true));
     }
 }

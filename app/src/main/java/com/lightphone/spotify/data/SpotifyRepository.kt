@@ -400,7 +400,7 @@ class SpotifyRepository(
                     )
                 }
         }
-        return webApi.savedPlaylistsPage(offset)
+        return webApi.savedPlaylistsPage(offset, limit)
     }
 
     /** Native rootlist page for library sync. */
