@@ -20,6 +20,7 @@ import com.lightphone.spotify.data.SpotifyPlaylistDetail
 import com.lightphone.spotify.data.local.LikedTrackEntity
 import com.lightphone.spotify.data.local.PlaylistEntity
 import com.lightphone.spotify.data.local.SavedAlbumEntity
+import com.lightphone.spotify.data.session.SessionEvent
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ffi.NormalizationType
 import com.lightphone.spotify.ffi.StreamingQuality
@@ -203,6 +204,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var savedFillJob: Job? = null
     private var savedLookaheadJob: Job? = null
     private var playlistsFillJob: Job? = null
+    private var playlistsRefreshJob: Job? = null
     private var playlistsLookaheadJob: Job? = null
     private var likedFillRetries = 0
     private var savedFillRetries = 0
@@ -253,6 +255,47 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 .map { it.currentUri }
                 .distinctUntilChanged()
                 .collect { uri -> onCurrentTrackChanged(uri) }
+        }
+        viewModelScope.launch {
+            controller.sessionEvents.collect { event ->
+                when (event) {
+                    SessionEvent.SigningOut -> cancelPlaylistLibraryJobs()
+                    SessionEvent.SignedOut -> Unit
+                }
+            }
+        }
+        controller.onSessionRestored = { onPlaybackSessionRestored() }
+    }
+
+    private fun cancelPlaylistLibraryJobs() {
+        playlistsRefreshJob?.cancel()
+        playlistsFillJob?.cancel()
+        playlistsRefreshJob?.cancel()
+        playlistsLookaheadJob?.cancel()
+    }
+
+    private fun onPlaybackSessionRestored() {
+        clearStalePlaybackSignInErrors()
+    }
+
+    private fun clearStalePlaybackSignInErrors() {
+        fun isStale(msg: String?): Boolean {
+            if (msg == null) return false
+            return msg.contains("sign in to spotify playback", ignoreCase = true) ||
+                msg.contains("can't reach spotify playback", ignoreCase = true) ||
+                msg.contains("playback sign-in", ignoreCase = true)
+        }
+        if (isStale(_playlists.value.error)) {
+            _playlists.update { it.copy(error = null) }
+            if (playlistsStarted && playlistsRefreshJob?.isActive != true) {
+                refreshPlaylists()
+            }
+        }
+        if (isStale(_playlistDetail.value.error)) {
+            _playlistDetail.update { it.copy(error = null) }
+        }
+        if (isStale(_artistDetail.value.error)) {
+            _artistDetail.update { it.copy(error = null) }
         }
     }
 
@@ -353,7 +396,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         ensureLikedTracksLoaded()
         ensureSavedAlbumsLoaded()
-        ensurePlaylistsLoaded()
+        viewModelScope.launch {
+            controller.warmSpclientSession()
+            ensurePlaylistsLoaded()
+        }
         if (_libraryBootstrapping.value) {
             viewModelScope.launch {
                 likedTracks.first { !it.initialLoading }
@@ -637,7 +683,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         playlistsFillJob = null
         playlistsLookaheadJob?.cancel()
         playlistsLookaheadJob = null
-        viewModelScope.launch {
+        playlistsRefreshJob?.cancel()
+        playlistsRefreshJob = viewModelScope.launch {
             val hadItems = _playlists.value.items.isNotEmpty()
             if (!hadItems) {
                 _playlists.update { it.copy(initialLoading = true, error = null) }

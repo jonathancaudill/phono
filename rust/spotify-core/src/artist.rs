@@ -1,5 +1,7 @@
 //! Native artist detail via librespot extended-metadata (Login5).
 
+use std::sync::Arc;
+
 use librespot::core::{Session, SpotifyUri};
 use librespot::metadata::artist::CountryTopTracks;
 use librespot::metadata::{Album, Artist, Metadata, Track};
@@ -30,12 +32,12 @@ pub struct ArtistDetailBundle {
 
 impl super::EngineShared {
     pub fn artist_detail_native(
-        &self,
+        self: &Arc<Self>,
         artist_id: &str,
         album_limit: u32,
         top_track_limit: u32,
     ) -> Result<ArtistDetailBundle, SpotifyError> {
-        let session = self.session_or_err()?;
+        let session = Self::session_or_err(self)?;
         let handle = self.runtime.handle().clone();
         let artist_id = artist_id.to_string();
         handle

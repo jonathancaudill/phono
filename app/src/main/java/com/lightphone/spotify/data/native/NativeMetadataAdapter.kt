@@ -117,11 +117,19 @@ object NativeMetadataAdapter {
         )
 }
 
-fun mapNativeError(e: Throwable): String = when (e) {
-    is NativeSessionRequiredException -> e.message ?: "Playback sign-in required."
-    is SpotifyException.NotLoggedIn ->
+fun mapNativeError(
+    e: Throwable,
+    hasPlaybackCredsWithoutLiveSession: Boolean = false,
+): String = when {
+    hasPlaybackCredsWithoutLiveSession &&
+        (e is NativeSessionRequiredException ||
+            e is SpotifyException.NotLoggedIn ||
+            e.message?.contains("not logged in", ignoreCase = true) == true) ->
+        "Can't reach Spotify playback right now. Pull to refresh."
+    e is NativeSessionRequiredException -> e.message ?: "Playback sign-in required."
+    e is SpotifyException.NotLoggedIn ->
         "Sign in to Spotify playback to load this."
-    is SpotifyException ->
+    e is SpotifyException ->
         e.message ?: "Spotify error — try again."
     else -> {
         val msg = e.message.orEmpty()

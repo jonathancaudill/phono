@@ -76,6 +76,12 @@ class SpotifyRepository(
     /** Login5 spclient gateway (Step 1). Required for playlist/artist paths. */
     var nativeMetadata: NativeMetadataGateway? = null
 
+    /** Live librespot session check from [PlaybackController]; used for dead-session error copy. */
+    var playbackSessionConnected: (() -> Boolean)? = null
+
+    fun hasPlaybackCredsWithoutLiveSession(): Boolean =
+        nativeMetadata?.isLoggedIn() == true && playbackSessionConnected?.invoke() == false
+
     private fun nativeGateway(): NativeMetadataGateway {
         val gateway = nativeMetadata
         if (gateway == null || !gateway.isLoggedIn()) {
@@ -151,8 +157,9 @@ class SpotifyRepository(
 
     fun currentUserId(): String {
         currentUserIdCache?.let { return it }
-        val id = nativeMetadata?.takeIf { it.isLoggedIn() }?.sessionUsername()
-            ?: webApi.currentUser().id
+        val id = runCatching {
+            nativeMetadata?.takeIf { it.isLoggedIn() }?.sessionUsername()
+        }.getOrNull() ?: webApi.currentUser().id
         currentUserIdCache = id
         return id
     }
@@ -367,10 +374,33 @@ class SpotifyRepository(
 
     suspend fun currentUserIdSuspend(): String {
         currentUserIdCache?.let { return it }
-        val id = nativeMetadata?.takeIf { it.isLoggedIn() }?.sessionUsername()
-            ?: webApi.currentUserSuspend().id
+        val id = runCatching {
+            nativeMetadata?.takeIf { it.isLoggedIn() }?.sessionUsername()
+        }.getOrNull() ?: webApi.currentUserSuspend().id
         currentUserIdCache = id
         return id
+    }
+
+    /**
+     * Playlist library page: native rootlist when Step 1 is up, else Web API (Step 2).
+     */
+    suspend fun playlistLibraryPage(
+        offset: Int,
+        limit: Int,
+    ): com.lightphone.spotify.data.webapi.LibraryPage<SpotifyPlaylistSimple> {
+        val native = nativeMetadata
+        if (native != null && native.isLoggedIn()) {
+            runCatching { nativePlaylistLibraryPage(offset, limit) }
+                .onSuccess { return it }
+                .onFailure { e ->
+                    android.util.Log.w(
+                        "SpotifyRepository",
+                        "native playlist page failed at offset=$offset, using Web API",
+                        e,
+                    )
+                }
+        }
+        return webApi.savedPlaylistsPage(offset)
     }
 
     /** Native rootlist page for library sync. */
@@ -698,12 +728,15 @@ fun mapWebApiError(e: Throwable): String = when (e) {
 }
 
 /** Maps native metadata or Web API failures for UI display. */
-fun mapRepositoryError(e: Throwable): String {
+fun mapRepositoryError(
+    e: Throwable,
+    hasPlaybackCredsWithoutLiveSession: Boolean = false,
+): String {
     if (e is NativeSessionRequiredException ||
         e is com.lightphone.spotify.ffi.SpotifyException ||
         e.message?.contains("not logged in", ignoreCase = true) == true
     ) {
-        return mapNativeError(e)
+        return mapNativeError(e, hasPlaybackCredsWithoutLiveSession)
     }
     return mapWebApiError(e)
 }
