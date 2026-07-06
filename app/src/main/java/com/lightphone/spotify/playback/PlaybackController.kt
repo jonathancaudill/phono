@@ -129,6 +129,18 @@ class PlaybackController private constructor(
     /** Serializes engine transport calls so play/pause/skip cannot race EndOfTrack. */
     private val transportMutex = Mutex()
 
+    private val warmMutex = Mutex()
+
+    @Volatile
+    private var signingOut = false
+
+    @Volatile
+    private var appForegroundRequested = false
+
+    /** Invoked after playback session reconnects (warm or monitor). */
+    @Volatile
+    var onSessionRestored: (() -> Unit)? = null
+
     private val webApi = SpotifyWebApi(webApiAuth)
     private val database = PhonoDatabase.get(appContext)
     val libraryRepository = LibraryRepository(database, webApi)
@@ -410,20 +422,82 @@ class PlaybackController private constructor(
                 engine.rootlistAddNative(playlistUri)
         }
         libraryRepository.playlistLibraryPageFetcher = { offset, limit ->
-            repository.nativePlaylistLibraryPage(offset, limit)
+            repository.playlistLibraryPage(offset, limit)
+        }
+        repository.playbackSessionConnected = {
+            engineReady && runCatching { requireEngine().isSessionConnected() }.getOrDefault(false)
         }
         engineReady = true
+        runCatching { requireEngine().setAppForeground(appForegroundRequested) }
         val alreadyLoggedIn = engine.isLoggedIn()
         _state.update {
             recomputeStatusMessage(
                 it.copy(
                     loggedIn = alreadyLoggedIn,
                     authInitialized = true,
+                    connected = engine.isSessionConnected(),
                 ),
             )
         }
         applyPendingSettings()
         startStallWatchdog()
+        if (alreadyLoggedIn) {
+            warmSpclientSessionAsync()
+        }
+    }
+
+    fun setAppForeground(foreground: Boolean) {
+        appForegroundRequested = foreground
+        if (engineReady) {
+            runCatching { requireEngine().setAppForeground(foreground) }
+        }
+    }
+
+    /** Fire-and-forget warm for lifecycle / attach paths. */
+    fun warmSpclientSessionAsync() {
+        scope.launch {
+            warmSpclientSession()
+        }
+    }
+
+    /**
+     * Ensure Step 1 librespot session is live. Idempotent; safe to call on every app open.
+     * Does not throw — callers inspect [WarmResult].
+     */
+    suspend fun warmSpclientSession(): WarmResult {
+        if (signingOut) return WarmResult.NotSignedIn
+        return warmMutex.withLock {
+            if (signingOut) return WarmResult.NotSignedIn
+            if (!ensureEngineReady()) {
+                return WarmResult.Failed("Playback service not ready")
+            }
+            if (!requireEngine().isLoggedIn()) {
+                return WarmResult.NotSignedIn
+            }
+            return runCatching { requireEngine().ensurePlaybackReady() }.fold(
+                onSuccess = {
+                    if (!signingOut) {
+                        syncConnectedFromEngine()
+                        onSessionRestored?.invoke()
+                    }
+                    WarmResult.Success
+                },
+                onFailure = { e ->
+                    if (!signingOut) {
+                        syncConnectedFromEngine()
+                    }
+                    WarmResult.Failed(mapSpotifyError(e))
+                },
+            )
+        }
+    }
+
+    private fun syncConnectedFromEngine() {
+        if (!engineReady) return
+        val connected = runCatching { requireEngine().isSessionConnected() }.getOrDefault(false)
+        _state.update {
+            recomputeStatusMessage(it.copy(connected = connected, reconnecting = false))
+        }
     }
 
     private fun hasCachedPlaybackCredentials(): Boolean =
@@ -608,25 +682,30 @@ class PlaybackController private constructor(
 
     fun logout(onSignedOut: (() -> Unit)? = null) {
         scope.launch {
-            sessionCoordinator.signOut(
-                onCancelInFlight = {
-                    playJob?.cancel()
-                    playlistUriIndexJob?.cancel()
-                },
-            )
-            abandonFocus()
-            _state.value = recomputeStatusMessage(
-                PlaybackUiState(
-                    loggedIn = false,
-                    authInitialized = true,
-                    webApiReady = false,
-                    webApiSessionState =
-                        com.lightphone.spotify.data.webapi.WebApiSessionState.NotConfigured,
-                    networkOnline = isNetworkOnline(),
-                ),
-            )
-            onStateChanged?.invoke()
-            onSignedOut?.invoke()
+            signingOut = true
+            try {
+                sessionCoordinator.signOut(
+                    onCancelInFlight = {
+                        playJob?.cancel()
+                        playlistUriIndexJob?.cancel()
+                    },
+                )
+                abandonFocus()
+                _state.value = recomputeStatusMessage(
+                    PlaybackUiState(
+                        loggedIn = false,
+                        authInitialized = true,
+                        webApiReady = false,
+                        webApiSessionState =
+                            com.lightphone.spotify.data.webapi.WebApiSessionState.NotConfigured,
+                        networkOnline = isNetworkOnline(),
+                    ),
+                )
+                onStateChanged?.invoke()
+                onSignedOut?.invoke()
+            } finally {
+                signingOut = false
+            }
         }
     }
 
@@ -1083,7 +1162,7 @@ class PlaybackController private constructor(
                 repository.playlistDetail(playlistId)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "playlistDetail failed", e)
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1092,7 +1171,7 @@ class PlaybackController private constructor(
             try {
                 repository.createPlaylist(name, isPublic)
             } catch (e: Throwable) {
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1101,7 +1180,7 @@ class PlaybackController private constructor(
             try {
                 repository.renamePlaylist(playlistId, name)
             } catch (e: Throwable) {
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1114,7 +1193,7 @@ class PlaybackController private constructor(
             try {
                 repository.addTrackToPlaylist(playlistId, uri, snapshotId)
             } catch (e: Throwable) {
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1123,7 +1202,7 @@ class PlaybackController private constructor(
             try {
                 repository.removeTrackFromPlaylist(playlistId, uri, snapshotId)
             } catch (e: Throwable) {
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1136,7 +1215,7 @@ class PlaybackController private constructor(
         try {
             repository.reorderPlaylistTrack(playlistId, fromIndex, toIndex, snapshotId)
         } catch (e: Throwable) {
-            throw Exception(mapRepositoryError(e))
+            throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
         }
     }
 
@@ -1145,7 +1224,7 @@ class PlaybackController private constructor(
             try {
                 repository.editablePlaylists(userId)
             } catch (e: Throwable) {
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1160,7 +1239,7 @@ class PlaybackController private constructor(
                 repository.albumDetail(albumId)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "albumDetail failed", e)
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1170,7 +1249,7 @@ class PlaybackController private constructor(
                 repository.artistDetail(artistId)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "artistDetail failed", e)
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1180,7 +1259,7 @@ class PlaybackController private constructor(
                 repository.search(query, limitPerType)
             } catch (e: Throwable) {
                 android.util.Log.e("Search", "search failed", e)
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1190,7 +1269,7 @@ class PlaybackController private constructor(
                 repository.playlistTracks(playlistId, limit)
             } catch (e: Throwable) {
                 android.util.Log.e("Search", "playlistTracks failed", e)
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1200,7 +1279,7 @@ class PlaybackController private constructor(
                 repository.albumTracks(albumId)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "albumTracks failed", e)
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1232,7 +1311,7 @@ class PlaybackController private constructor(
                 repository.saveTrack(uri)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "saveTrack failed", e)
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1242,7 +1321,7 @@ class PlaybackController private constructor(
                 repository.removeTrack(uri)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "removeTrack failed", e)
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1252,7 +1331,7 @@ class PlaybackController private constructor(
                 repository.saveAlbum(albumId)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "saveAlbum failed", e)
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1262,7 +1341,7 @@ class PlaybackController private constructor(
                 repository.removeAlbum(albumId)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "removeAlbum failed", e)
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1272,7 +1351,7 @@ class PlaybackController private constructor(
                 repository.followPlaylist(playlistId)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "followPlaylist failed", e)
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1282,7 +1361,7 @@ class PlaybackController private constructor(
                 repository.unfollowPlaylist(playlistId)
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "unfollowPlaylist failed", e)
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1298,7 +1377,7 @@ class PlaybackController private constructor(
                 repository.dailyMixes()
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "dailyMixes failed", e)
-                throw Exception(mapRepositoryError(e))
+                throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
         }
 
@@ -1452,8 +1531,9 @@ class PlaybackController private constructor(
     }
 
     override fun onConnectionRestored() {
-        _state.update { recomputeStatusMessage(it.copy(connected = true, reconnecting = false)) }
+        syncConnectedFromEngine()
         refreshQueue()
+        onSessionRestored?.invoke()
         onStateChanged?.invoke()
     }
 

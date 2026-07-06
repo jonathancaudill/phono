@@ -31,7 +31,10 @@ import java.util.concurrent.TimeUnit
  * Spotify Web API client for api.spotify.com. Uses the user's dev-app OAuth
  * tokens from [WebApiAuth]. Honors Retry-After on 429.
  */
-class SpotifyWebApi(private val auth: WebApiAuth) {
+class SpotifyWebApi(
+    private val auth: WebApiAuth,
+    private val baseUrl: String = BASE_URL,
+) {
 
     companion object {
         private const val BASE_URL = "https://api.spotify.com/v1"
@@ -304,9 +307,11 @@ class SpotifyWebApi(private val auth: WebApiAuth) {
     }
 
     private fun authorizedRequest(path: String): Request.Builder {
-        val url = if (path.startsWith("http")) path else "$BASE_URL$path"
+        require(path.startsWith("/")) {
+            "Web API path must be relative to baseUrl, got: $path"
+        }
         return Request.Builder()
-            .url(url)
+            .url("$baseUrl$path")
             .header("Authorization", "Bearer ${auth.currentBearer()}")
             .header("Accept", "application/json")
     }

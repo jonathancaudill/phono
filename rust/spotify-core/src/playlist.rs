@@ -1,5 +1,7 @@
 //! Native playlist reads and writes via librespot spclient (Login5).
 
+use std::sync::Arc;
+
 use base64::Engine as _;
 use librespot::core::{Session, SpotifyId, SpotifyUri};
 use librespot::metadata::{Metadata, Playlist};
@@ -61,17 +63,17 @@ pub struct RootlistPageNative {
 }
 
 impl super::EngineShared {
-    pub fn native_session_username(&self) -> Result<String, SpotifyError> {
-        let session = self.session_or_err()?;
+    pub fn native_session_username(self: &Arc<Self>) -> Result<String, SpotifyError> {
+        let session = Self::session_or_err(self)?;
         Ok(session.username())
     }
 
     pub fn playlist_detail_native(
-        &self,
+        self: &Arc<Self>,
         playlist_id: &str,
         track_limit: u32,
     ) -> Result<PlaylistDetailBundle, SpotifyError> {
-        let session = self.session_or_err()?;
+        let session = Self::session_or_err(self)?;
         let handle = self.runtime.handle().clone();
         let playlist_id = playlist_id.to_string();
         let limit = track_limit.clamp(1, MAX_TRACKS);
@@ -83,11 +85,11 @@ impl super::EngineShared {
     }
 
     pub fn playlist_rootlist_native(
-        &self,
+        self: &Arc<Self>,
         from: u32,
         length: u32,
     ) -> Result<RootlistPageNative, SpotifyError> {
-        let session = self.session_or_err()?;
+        let session = Self::session_or_err(self)?;
         let handle = self.runtime.handle().clone();
         handle
             .block_on(async move {
@@ -97,11 +99,11 @@ impl super::EngineShared {
     }
 
     pub fn create_playlist_native(
-        &self,
+        self: &Arc<Self>,
         name: &str,
         is_public: bool,
     ) -> Result<PlaylistDetailNative, SpotifyError> {
-        let session = self.session_or_err()?;
+        let session = Self::session_or_err(self)?;
         let handle = self.runtime.handle().clone();
         let name = name.to_string();
         handle
@@ -112,13 +114,13 @@ impl super::EngineShared {
     }
 
     pub fn update_playlist_metadata_native(
-        &self,
+        self: &Arc<Self>,
         playlist_id: &str,
         revision_b64: &str,
         name: Option<String>,
         is_public: Option<bool>,
     ) -> Result<String, SpotifyError> {
-        let session = self.session_or_err()?;
+        let session = Self::session_or_err(self)?;
         let revision = revision_from_b64(revision_b64)?;
         let playlist_id = playlist_id.to_string();
         let handle = self.runtime.handle().clone();
@@ -130,13 +132,13 @@ impl super::EngineShared {
     }
 
     pub fn playlist_add_tracks_native(
-        &self,
+        self: &Arc<Self>,
         playlist_id: &str,
         revision_b64: &str,
         uris: Vec<String>,
         position: Option<u32>,
     ) -> Result<String, SpotifyError> {
-        let session = self.session_or_err()?;
+        let session = Self::session_or_err(self)?;
         let revision = revision_from_b64(revision_b64)?;
         let playlist_id = playlist_id.to_string();
         let handle = self.runtime.handle().clone();
@@ -148,12 +150,12 @@ impl super::EngineShared {
     }
 
     pub fn playlist_remove_tracks_native(
-        &self,
+        self: &Arc<Self>,
         playlist_id: &str,
         revision_b64: &str,
         uris: Vec<String>,
     ) -> Result<String, SpotifyError> {
-        let session = self.session_or_err()?;
+        let session = Self::session_or_err(self)?;
         let revision = revision_from_b64(revision_b64)?;
         let playlist_id = playlist_id.to_string();
         let handle = self.runtime.handle().clone();
@@ -165,14 +167,14 @@ impl super::EngineShared {
     }
 
     pub fn playlist_reorder_native(
-        &self,
+        self: &Arc<Self>,
         playlist_id: &str,
         revision_b64: &str,
         range_start: u32,
         insert_before: u32,
         range_length: u32,
     ) -> Result<String, SpotifyError> {
-        let session = self.session_or_err()?;
+        let session = Self::session_or_err(self)?;
         let revision = revision_from_b64(revision_b64)?;
         let playlist_id = playlist_id.to_string();
         let handle = self.runtime.handle().clone();
@@ -191,8 +193,8 @@ impl super::EngineShared {
             .map_err(|e: librespot::core::Error| SpotifyError::Network { msg: e.to_string() })
     }
 
-    pub fn rootlist_add_native(&self, playlist_uri: &str) -> Result<(), SpotifyError> {
-        let session = self.session_or_err()?;
+    pub fn rootlist_add_native(self: &Arc<Self>, playlist_uri: &str) -> Result<(), SpotifyError> {
+        let session = Self::session_or_err(self)?;
         let uri = playlist_uri.to_string();
         let handle = self.runtime.handle().clone();
         handle
@@ -200,8 +202,8 @@ impl super::EngineShared {
             .map_err(|e: librespot::core::Error| SpotifyError::Network { msg: e.to_string() })
     }
 
-    pub fn rootlist_remove_native(&self, playlist_uri: &str) -> Result<(), SpotifyError> {
-        let session = self.session_or_err()?;
+    pub fn rootlist_remove_native(self: &Arc<Self>, playlist_uri: &str) -> Result<(), SpotifyError> {
+        let session = Self::session_or_err(self)?;
         let uri = playlist_uri.to_string();
         let handle = self.runtime.handle().clone();
         handle

@@ -1,6 +1,7 @@
 //! Daily Mix discovery via librespot spclient context-resolve (hybrid path).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use librespot::core::{Session, SpotifyUri};
 
@@ -18,8 +19,8 @@ pub struct EntityInfo {
 }
 
 impl super::EngineShared {
-    pub fn daily_mixes(&self) -> Result<Vec<EntityInfo>, SpotifyError> {
-        let session = self.session_or_err()?;
+    pub fn daily_mixes(self: &Arc<Self>) -> Result<Vec<EntityInfo>, SpotifyError> {
+        let session = Self::session_or_err(self)?;
         let handle = self.runtime.handle().clone();
         let session = session.clone();
         handle

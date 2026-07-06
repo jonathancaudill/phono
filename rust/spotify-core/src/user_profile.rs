@@ -1,5 +1,7 @@
 //! Resolve Spotify login usernames to display names via spclient user-profile-view.
 
+use std::sync::Arc;
+
 use librespot::core::Session;
 use serde_json::Value;
 
@@ -46,8 +48,11 @@ fn extract_display_name(value: &Value, username: &str) -> Option<String> {
 }
 
 impl super::EngineShared {
-    pub fn user_display_name_native(&self, username: &str) -> Result<Option<String>, SpotifyError> {
-        let session = self.session_or_err()?;
+    pub fn user_display_name_native(
+        self: &Arc<Self>,
+        username: &str,
+    ) -> Result<Option<String>, SpotifyError> {
+        let session = Self::session_or_err(self)?;
         let handle = self.runtime.handle().clone();
         let username = username.to_string();
         Ok(handle.block_on(async move { fetch_user_display_name(&session, &username).await }))

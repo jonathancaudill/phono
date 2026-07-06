@@ -211,6 +211,9 @@ struct EngineShared {
     metrics_sink_recreate: AtomicU32,
     metrics_audiotrack_write_errors: AtomicU32,
     last_checkpoint_save: Mutex<Option<Instant>>,
+    /// App visible on screen (`ProcessLifecycleOwner` ON_START). With `playing`,
+    /// gates whether the reconnect monitor rebuilds a dead paused session.
+    app_foreground: AtomicBool,
 }
 
 /// Debug counters for playback stability field testing (logcat / settings).
@@ -279,7 +282,7 @@ impl LibrespotEngine {
 
     /// Resolve a context/playlist URI to tracks via spclient context-resolve.
     pub fn context_tracks(&self, context_uri: String, limit: u32) -> Result<Vec<TrackInfo>, SpotifyError> {
-        let session = self.shared.session_or_err()?;
+        let session = EngineShared::session_or_err(&self.shared)?;
         self.shared.context_tracks(&session, &context_uri, limit)
     }
 
@@ -566,12 +569,17 @@ impl LibrespotEngine {
     /// Proactively invalidate the session after a network change so reconnect
     /// starts on the new transport instead of waiting for keepalive timeout.
     pub fn force_reconnect_check(&self) {
-        self.shared.force_reconnect_check();
+        EngineShared::force_reconnect_check(&self.shared);
     }
 
     /// True when a live session exists and has not been invalidated.
     pub fn is_session_connected(&self) -> bool {
         self.shared.is_session_connected()
+    }
+
+    /// Called from Kotlin when the app becomes visible or backgrounds.
+    pub fn set_app_foreground(&self, foreground: bool) {
+        self.shared.set_app_foreground(foreground);
     }
 
     /// Recreate the native audio output sink (e.g. after Bluetooth route change).
@@ -705,7 +713,13 @@ impl EngineShared {
             metrics_sink_recreate: AtomicU32::new(0),
             metrics_audiotrack_write_errors: AtomicU32::new(0),
             last_checkpoint_save: Mutex::new(None),
+            app_foreground: AtomicBool::new(false),
         }))
+    }
+
+    fn set_app_foreground(&self, foreground: bool) {
+        self.app_foreground
+            .store(foreground, Ordering::SeqCst);
     }
 
     fn cache_base_dir(&self) -> &Path {
@@ -1026,14 +1040,7 @@ impl EngineShared {
     }
 
     fn ensure_playback_ready(shared: &Arc<Self>) -> Result<(), SpotifyError> {
-        if shared
-            .active
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|a| !a.session.is_invalid())
-            .unwrap_or(false)
-        {
+        if shared.has_valid_active() {
             return Ok(());
         }
         let creds = shared
@@ -1047,7 +1054,15 @@ impl EngineShared {
             .clone()
             .or_else(|| shared.snapshot_resume_with_position());
         let handle = shared.runtime.handle().clone();
-        handle.block_on(shared.clone().orchestrate_rebuild(creds, resume))?;
+        match handle.block_on(shared.clone().orchestrate_rebuild(creds, resume)) {
+            Ok(()) => {}
+            Err(SpotifyError::StaleRebuild) => {
+                if !shared.has_valid_active() {
+                    return Err(SpotifyError::StaleRebuild);
+                }
+            }
+            Err(e) => return Err(e),
+        }
         shared.notify_connection_restored_if_ready();
         Ok(())
     }
@@ -1163,19 +1178,23 @@ impl EngineShared {
         }
     }
 
-    pub(crate) fn session_or_err(&self) -> Result<Session, SpotifyError> {
+    pub(crate) fn session_or_err(self: &Arc<Self>) -> Result<Session, SpotifyError> {
+        if !self.has_valid_active() {
+            Self::ensure_playback_ready(self)?;
+        }
         self.active
             .lock()
             .unwrap()
             .as_ref()
+            .filter(|a| !a.session.is_invalid())
             .map(|a| a.session.clone())
             .ok_or(SpotifyError::NotLoggedIn)
     }
 
     /// Diagnostic: log whether Login5 and client-token mint succeed after connect.
     #[cfg(debug_assertions)]
-    fn probe_login5_token(&self) {
-        let Ok(session) = self.session_or_err() else {
+    fn probe_login5_token(self: &Arc<Self>) {
+        let Ok(session) = Self::session_or_err(self) else {
             return;
         };
         let client_id = session.client_id();
@@ -1670,7 +1689,7 @@ impl EngineShared {
         });
     }
 
-    fn force_reconnect_check(&self) {
+    fn force_reconnect_check(self: &Arc<Self>) {
         let now = Instant::now();
         {
             let mut last = self.last_force_reconnect.lock().unwrap();
@@ -1681,13 +1700,16 @@ impl EngineShared {
             }
             *last = Some(now);
         }
-        if let Some(active) = self.active.lock().unwrap().as_ref() {
-            if active.session.is_invalid() {
-                return;
+        if self.has_valid_active() {
+            if let Some(active) = self.active.lock().unwrap().as_ref() {
+                self.metrics_transport_reconnect
+                    .fetch_add(1, Ordering::Relaxed);
+                active.session.shutdown();
             }
-            self.metrics_transport_reconnect
-                .fetch_add(1, Ordering::Relaxed);
-            active.session.shutdown();
+            return;
+        }
+        if self.app_foreground.load(Ordering::SeqCst) || self.playing.load(Ordering::SeqCst) {
+            let _ = Self::ensure_playback_ready(self);
         }
     }
 }
@@ -1696,6 +1718,10 @@ impl EngineShared {
 ///
 /// Runs on its own OS thread and drives the (`!Send`) reconnect via
 /// `Handle::block_on`. Detached; self-terminates via the `Weak`.
+fn should_defer_reconnect_monitor(playing: bool, app_foreground: bool) -> bool {
+    !playing && !app_foreground
+}
+
 fn spawn_monitor(
     weak: std::sync::Weak<EngineShared>,
     session: Session,
@@ -1733,13 +1759,21 @@ fn spawn_monitor(
                 }
             }
 
-            // Paused: defer reconnect until user resumes playback (ensure_playback_ready).
-            if !shared.playing.load(Ordering::SeqCst) {
-                log::debug!("monitor: session invalid while paused — deferring reconnect");
+            // Defer only when background AND paused (battery). Open app or playing → rebuild.
+            if should_defer_reconnect_monitor(
+                shared.playing.load(Ordering::SeqCst),
+                shared.app_foreground.load(Ordering::SeqCst),
+            ) {
+                log::debug!(
+                    "monitor: session invalid while paused+background — deferring reconnect"
+                );
                 continue;
             }
 
-            notify(&shared.listener, |l| l.on_connection_lost());
+            let was_playing = shared.playing.load(Ordering::SeqCst);
+            if was_playing {
+                notify(&shared.listener, |l| l.on_connection_lost());
+            }
 
             let resume = shared.snapshot_resume_with_position();
             *shared.pending_queue.lock().unwrap() = resume.clone();
@@ -1758,7 +1792,9 @@ fn spawn_monitor(
                     {
                         Ok(()) => {
                             if shared.has_valid_active() {
-                                notify(&shared.listener, |l| l.on_connection_restored());
+                                if was_playing {
+                                    notify(&shared.listener, |l| l.on_connection_restored());
+                                }
                                 let _ = shared.access_token();
                             }
                             return;
@@ -2381,5 +2417,14 @@ mod long_running_tests {
         // This record falls in a new window, so it resets instead of tripping.
         assert!(!guard.record());
         assert_eq!(guard.count, 1);
+    }
+
+    /// Reconnect monitor defers only when paused AND backgrounded.
+    #[test]
+    fn reconnect_defer_only_when_paused_and_background() {
+        assert!(should_defer_reconnect_monitor(false, false));
+        assert!(!should_defer_reconnect_monitor(false, true));
+        assert!(!should_defer_reconnect_monitor(true, false));
+        assert!(!should_defer_reconnect_monitor(true, true));
     }
 }

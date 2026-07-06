@@ -20,6 +20,26 @@ class MapNativeErrorTest {
     }
 
     @Test
+    fun deadSessionWithCreds_mapsReconnectMessage_notSignIn() {
+        val msg = mapNativeError(
+            SpotifyException.NotLoggedIn(),
+            hasPlaybackCredsWithoutLiveSession = true,
+        )
+        assertTrue(msg.contains("can't reach spotify playback", ignoreCase = true))
+        assertTrue(msg.contains("pull to refresh", ignoreCase = true))
+        assertTrue(!msg.contains("sign in", ignoreCase = true))
+    }
+
+    @Test
+    fun deadSessionNativeRequired_mapsReconnectMessage() {
+        val msg = mapNativeError(
+            NativeSessionRequiredException(),
+            hasPlaybackCredsWithoutLiveSession = true,
+        )
+        assertTrue(msg.contains("can't reach spotify playback", ignoreCase = true))
+    }
+
+    @Test
     fun revisionConflict_mentionsPlaylistChanged() {
         val msg = mapNativeError(IllegalStateException("revision conflict on apply"))
         assertTrue(msg.contains("changed", ignoreCase = true))
