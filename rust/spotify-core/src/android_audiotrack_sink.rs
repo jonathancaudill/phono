@@ -54,12 +54,16 @@ impl Sink for AndroidAudioTrackSink {
             audio_sink_jni::resume_output().map_err(SinkError::StateChange)?;
             return Ok(());
         }
+        // Claim ownership BEFORE (re)creating the physical track so any old drain
+        // thread from a superseded player observes the newer epoch and stops
+        // writing before we touch the AudioTrack.
+        let epoch = audio_sink_jni::claim_sink_epoch();
         audio_sink_jni::start(SAMPLE_RATE, NUM_CHANNELS).map_err(|e| {
             SinkError::ConnectionRefused(format!("AudioTrack start failed: {e}"))
         })?;
 
         let (producer, consumer) = split_pcm_ring();
-        let control = Arc::new(DrainControl::new());
+        let control = Arc::new(DrainControl::new(epoch));
         audio_sink_jni::set_drain_control(control.clone());
         let drain = AudioDrainThread::spawn(consumer, control.clone());
         self.state = Some(SinkState {
@@ -81,6 +85,7 @@ impl Sink for AndroidAudioTrackSink {
         if !self.started {
             return Ok(());
         }
+        let epoch = self.state.as_ref().map(|s| s.control.epoch);
         if let Some(mut state) = self.state.take() {
             state.control.request_shutdown();
             state.drain.stop();
@@ -88,7 +93,9 @@ impl Sink for AndroidAudioTrackSink {
         if let Err(e) = audio_sink_jni::stop() {
             log::error!("AudioTrack stop failed (continuing): {e}");
         }
-        audio_sink_jni::clear_drain_control();
+        if let Some(epoch) = epoch {
+            audio_sink_jni::clear_drain_control(epoch);
+        }
         self.started = false;
         Ok(())
     }

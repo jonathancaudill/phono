@@ -107,6 +107,10 @@ enum PlayerCommand {
         track_id: SpotifyUri,
         play: bool,
         position_ms: u32,
+        /// Discontinuous (user-initiated skip/play): flush any stale PCM already
+        /// queued in the sink so the previous track's tail cannot overlap the new
+        /// one. Left false for gapless auto-advance and fresh-session resume.
+        flush: bool,
     },
     Preload {
         track_id: SpotifyUri,
@@ -554,6 +558,19 @@ impl Player {
             track_id,
             play: start_playing,
             position_ms,
+            flush: false,
+        });
+    }
+
+    /// Discontinuous load for user-initiated skip/play. Flushes stale PCM so the
+    /// previous track's buffered tail cannot bleed into the new track (the
+    /// "two sections at once" garble under slow loads with gapless enabled).
+    pub fn load_discontinuous(&self, track_id: SpotifyUri, start_playing: bool, position_ms: u32) {
+        self.command(PlayerCommand::Load {
+            track_id,
+            play: start_playing,
+            position_ms,
+            flush: true,
         });
     }
 
@@ -1980,11 +1997,22 @@ impl PlayerInternal {
         play_request_id_option: Option<u64>,
         play: bool,
         position_ms: u32,
+        flush: bool,
     ) -> PlayerResult {
         let play_request_id =
             play_request_id_option.unwrap_or(self.play_request_id_generator.get());
 
         self.send_event(PlayerEvent::PlayRequestIdChanged { play_request_id });
+
+        // Discontinuous (user-initiated) load: drop any PCM already buffered in
+        // the sink so the outgoing track's tail cannot overlap the incoming one.
+        // This is the correctness fix for the "two sections at once" garble that
+        // gapless mode otherwise allows when a skip lands during a slow load.
+        if flush && self.sink_status == SinkStatus::Running {
+            if let Err(e) = self.sink.flush() {
+                error!("sink flush on discontinuous load failed: {e}");
+            }
+        }
 
         if !self.config.gapless {
             self.ensure_sink_stopped(play);
@@ -2253,6 +2281,7 @@ impl PlayerInternal {
                 Some(play_request_id),
                 start_playback,
                 position_ms,
+                false,
             );
         }
 
@@ -2313,7 +2342,8 @@ impl PlayerInternal {
                 track_id,
                 play,
                 position_ms,
-            } => self.handle_command_load(track_id, None, play, position_ms)?,
+                flush,
+            } => self.handle_command_load(track_id, None, play, position_ms, flush)?,
 
             PlayerCommand::Preload { track_id } => self.handle_command_preload(track_id),
 

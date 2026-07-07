@@ -12,6 +12,7 @@ Start here after skimming the root [README.md](../README.md).
 | [../AGENTS.md](../AGENTS.md) | **Before any code change.** Auth identity, hard rules, diagnostic map. |
 | [audio-sink.md](audio-sink.md) | Playback output (Phase C AudioTrack), threading, recovery layers. |
 | [audio-sink-baseline-metrics.md](audio-sink-baseline-metrics.md) | Field-test checklist + BT/routing acceptance matrix. |
+| [playback-stability-field-tests.md](playback-stability-field-tests.md) | Bad-network reconnect stability + precaching test matrix and new debug counters. |
 
 ## Patched librespot (all pinned to **0.8.0**)
 

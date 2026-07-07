@@ -36,6 +36,7 @@ class StreamingPolicy(
 
     fun onCapabilitiesChanged(caps: NetworkCapabilities) {
         val raw = classify(caps)
+        var upgraded = false
         when {
             raw.ordinal > stableTier.ordinal -> {
                 tierDownCount = 0
@@ -43,6 +44,7 @@ class StreamingPolicy(
                 if (tierUpCount >= TIER_UP_SAMPLES) {
                     stableTier = raw
                     tierUpCount = 0
+                    upgraded = true
                 }
             }
             raw.ordinal < stableTier.ordinal -> {
@@ -57,6 +59,12 @@ class StreamingPolicy(
                 tierUpCount = 0
                 tierDownCount = 0
             }
+        }
+        // A committed tier upgrade means the connection just got healthier — warm
+        // the session proactively so the next skip resolves against a live session
+        // instead of paying for a cold rebuild.
+        if (upgraded && stableTier != NetworkTier.OFFLINE) {
+            controller.warmSpclientSessionAsync()
         }
         if (raw != NetworkTier.OFFLINE && controller.state.value.isPlaying) {
             maybeBufferOpportunistically()
@@ -83,7 +91,11 @@ class StreamingPolicy(
 
     fun prefetchDepth(): Int = when (stableTier) {
         NetworkTier.GOOD_UNMETERED -> 3
-        NetworkTier.GOOD_METERED, NetworkTier.FAIR -> 1
+        NetworkTier.GOOD_METERED -> 2
+        // Even on a weak connection, prefetch the single next track (predictive
+        // skip target) — but only AFTER the current track is banked (see
+        // maybeBufferOpportunistically ordering).
+        NetworkTier.FAIR, NetworkTier.POOR -> 1
         else -> 0
     }
 
@@ -91,6 +103,8 @@ class StreamingPolicy(
         if (isBatteryConstrained()) return
         if (stableTier == NetworkTier.OFFLINE) return
         scope.launch {
+            // Bank the current track to its end FIRST so a mid-track disconnect
+            // never stalls playback, THEN prefetch the predictive next target(s).
             bankCurrentTrack()
             val ahead = prefetchDepth()
             if (ahead > 0) {

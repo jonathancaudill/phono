@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "android")]
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use jni::objects::{GlobalRef, JByteBuffer, JClass, JValue};
@@ -19,6 +19,13 @@ const BYTES_PER_SECOND: u64 = 176_400; // stereo S16 @ 44.1 kHz
 static SINK_JNI: OnceLock<SinkJni> = OnceLock::new();
 static WRITE_ERROR_COUNT: AtomicU32 = AtomicU32::new(0);
 static DRAIN_CONTROL: Mutex<Option<std::sync::Arc<DrainControl>>> = Mutex::new(None);
+/// Monotonic ownership token for the physical AudioTrack. Every sink `start()`
+/// claims a fresh epoch; any drain thread / write whose epoch is not current is
+/// stale and must become a no-op. This is the backstop that guarantees only one
+/// producer can ever feed the singleton AudioTrack even if two Rust `Player`s
+/// briefly overlap during a reconnect/rebuild race.
+static SINK_EPOCH: AtomicU64 = AtomicU64::new(0);
+static EPOCH_REJECTED_WRITES: AtomicU32 = AtomicU32::new(0);
 
 struct SinkJni {
     class: GlobalRef,
@@ -36,12 +43,37 @@ fn sink_jni() -> Result<&'static SinkJni, String> {
     SINK_JNI.get().ok_or_else(|| "Audio sink JNI not registered".into())
 }
 
+/// Claim a fresh ownership epoch for a new sink/AudioTrack. Called by
+/// `AndroidAudioTrackSink::start()` BEFORE the physical track is (re)created so
+/// any still-running old drain thread observes a newer epoch and stops writing.
+pub fn claim_sink_epoch() -> u64 {
+    SINK_EPOCH.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+pub fn current_sink_epoch() -> u64 {
+    SINK_EPOCH.load(Ordering::SeqCst)
+}
+
+pub fn note_epoch_rejected_write() {
+    EPOCH_REJECTED_WRITES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn epoch_rejected_write_count() -> u32 {
+    EPOCH_REJECTED_WRITES.load(Ordering::Relaxed)
+}
+
 pub fn set_drain_control(control: std::sync::Arc<DrainControl>) {
     *DRAIN_CONTROL.lock().unwrap() = Some(control);
 }
 
-pub fn clear_drain_control() {
-    *DRAIN_CONTROL.lock().unwrap() = None;
+/// Clear the drain control only if it still belongs to `epoch`. Prevents an old
+/// sink's `stop()` from tearing down the drain control that a newer sink just
+/// installed.
+pub fn clear_drain_control(epoch: u64) {
+    let mut slot = DRAIN_CONTROL.lock().unwrap();
+    if slot.as_ref().map(|c| c.epoch == epoch).unwrap_or(false) {
+        *slot = None;
+    }
 }
 
 fn drain_control() -> Option<std::sync::Arc<DrainControl>> {

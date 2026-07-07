@@ -203,6 +203,14 @@ struct EngineShared {
     pending_queue: Mutex<Option<QueueState>>,
     rebuild_mutex: Mutex<()>,
     rebuild_generation: AtomicU64,
+    /// Single-flight guard: only one `orchestrate_rebuild` may build at a time.
+    /// Concurrent callers await the in-flight rebuild instead of each spawning
+    /// their own session+player (which previously let two players feed the sink).
+    rebuild_inflight: tokio::sync::Mutex<()>,
+    /// Monotonic counter bumped by every user-initiated transport command. Stale
+    /// auto-resume / recovery loads compare against it so the newest user intent
+    /// always wins over background reconnect restoration.
+    command_epoch: AtomicU64,
     last_force_reconnect: Mutex<Option<Instant>>,
     prefetch_generation: AtomicU32,
     metrics_transport_reconnect: AtomicU32,
@@ -210,6 +218,13 @@ struct EngineShared {
     metrics_stall_events: AtomicU32,
     metrics_sink_recreate: AtomicU32,
     metrics_audiotrack_write_errors: AtomicU32,
+    metrics_rebuild_coalesced: AtomicU32,
+    metrics_prefetch_cancelled: AtomicU32,
+    stale_load_suppressed: AtomicU32,
+    /// Debounce for `PlayerEvent::Stopped` recovery so a storm of stop events on
+    /// a flaky connection cannot spawn a pile of recovery threads that all pile
+    /// onto the single-flight rebuild guard.
+    recovery_inflight: AtomicBool,
     last_checkpoint_save: Mutex<Option<Instant>>,
     /// App visible on screen (`ProcessLifecycleOwner` ON_START). With `playing`,
     /// gates whether the reconnect monitor rebuilds a dead paused session.
@@ -230,6 +245,16 @@ pub struct PlaybackDebugMetrics {
     pub pending_output_ms: u32,
     pub producer_block_ms: u32,
     pub drain_partial_writes: u32,
+    /// Rebuild requests that coalesced onto an in-flight single-flight rebuild
+    /// (no redundant session/player built). High under bad cell = races avoided.
+    pub rebuild_coalesced: u32,
+    /// PCM writes rejected because a newer sink epoch owns the AudioTrack. Should
+    /// stay at/near zero; nonzero proves the ownership guard caught an overlap.
+    pub sink_epoch_rejected_writes: u32,
+    /// Stale auto-resume loads suppressed because a newer user command arrived.
+    pub stale_load_suppressed: u32,
+    /// Prefetch loops cancelled because the queue moved on.
+    pub prefetch_cancelled: u32,
 }
 
 /// The UniFFI object handed to Kotlin.
@@ -705,6 +730,8 @@ impl EngineShared {
             pending_queue: Mutex::new(None),
             rebuild_mutex: Mutex::new(()),
             rebuild_generation: AtomicU64::new(0),
+            rebuild_inflight: tokio::sync::Mutex::new(()),
+            command_epoch: AtomicU64::new(0),
             last_force_reconnect: Mutex::new(None),
             prefetch_generation: AtomicU32::new(0),
             metrics_transport_reconnect: AtomicU32::new(0),
@@ -712,6 +739,10 @@ impl EngineShared {
             metrics_stall_events: AtomicU32::new(0),
             metrics_sink_recreate: AtomicU32::new(0),
             metrics_audiotrack_write_errors: AtomicU32::new(0),
+            metrics_rebuild_coalesced: AtomicU32::new(0),
+            metrics_prefetch_cancelled: AtomicU32::new(0),
+            stale_load_suppressed: AtomicU32::new(0),
+            recovery_inflight: AtomicBool::new(false),
             last_checkpoint_save: Mutex::new(None),
             app_foreground: AtomicBool::new(false),
         }))
@@ -744,7 +775,7 @@ impl EngineShared {
 
     fn playback_debug_metrics(&self) -> PlaybackDebugMetrics {
         #[cfg(all(target_os = "android", feature = "audiotrack-sink"))]
-        let (routing, write_errs, ring_ms, pending_ms, prod_block, partial, backend) = (
+        let (routing, write_errs, ring_ms, pending_ms, prod_block, partial, backend, epoch_rejected) = (
             audio_sink_jni::routing_event_count(),
             audio_sink_jni::write_error_count(),
             audio_sink_jni::ring_occupancy_ms(),
@@ -752,10 +783,11 @@ impl EngineShared {
             audio_sink_jni::producer_block_ms(),
             audio_sink_jni::drain_partial_writes(),
             "audiotrack".to_string(),
+            audio_sink_jni::epoch_rejected_write_count(),
         );
         #[cfg(not(all(target_os = "android", feature = "audiotrack-sink")))]
-        let (routing, write_errs, ring_ms, pending_ms, prod_block, partial, backend) =
-            (0, 0, 0, 0, 0, 0, "rodio".to_string());
+        let (routing, write_errs, ring_ms, pending_ms, prod_block, partial, backend, epoch_rejected) =
+            (0, 0, 0, 0, 0, 0, "rodio".to_string(), 0);
 
         PlaybackDebugMetrics {
             transport_reconnect: self.metrics_transport_reconnect.load(Ordering::Relaxed),
@@ -772,6 +804,10 @@ impl EngineShared {
             pending_output_ms: pending_ms,
             producer_block_ms: prod_block,
             drain_partial_writes: partial,
+            rebuild_coalesced: self.metrics_rebuild_coalesced.load(Ordering::Relaxed),
+            sink_epoch_rejected_writes: epoch_rejected,
+            stale_load_suppressed: self.stale_load_suppressed.load(Ordering::Relaxed),
+            prefetch_cancelled: self.metrics_prefetch_cancelled.load(Ordering::Relaxed),
         }
     }
 
@@ -1292,7 +1328,10 @@ impl EngineShared {
         };
 
         self.playing.store(true, Ordering::SeqCst);
-        player.load(uri, true, 0);
+        // User-initiated: bump the command epoch so any in-flight rebuild's stale
+        // auto-resume is suppressed, and flush the sink so no prior audio bleeds in.
+        self.command_epoch.fetch_add(1, Ordering::SeqCst);
+        player.load_discontinuous(uri, true, 0);
         self.notify_queue_changed();
         Ok(())
     }
@@ -1387,12 +1426,14 @@ impl EngineShared {
     }
 
     fn transport_pause(&self) {
+        self.command_epoch.fetch_add(1, Ordering::SeqCst);
         self.playing.store(false, Ordering::SeqCst);
         self.with_active(|a| a.player.pause());
         self.maybe_save_checkpoint();
     }
 
     fn transport_resume(&self) {
+        self.command_epoch.fetch_add(1, Ordering::SeqCst);
         self.playing.store(true, Ordering::SeqCst);
         self.with_active(|a| a.player.play());
     }
@@ -1406,6 +1447,7 @@ impl EngineShared {
     }
 
     fn transport_seek(&self, position_ms: u32) {
+        self.command_epoch.fetch_add(1, Ordering::SeqCst);
         self.with_active(|a| {
             a.player.seek(position_ms);
             a.queue.lock().unwrap().set_position_ms(position_ms);
@@ -1430,7 +1472,14 @@ impl EngineShared {
             next.map(|uri| (active.player.clone(), uri))
         };
         if let Some((player, uri)) = resolved {
-            player.load(uri, true, 0);
+            if user_initiated {
+                // Newest user intent wins over background reconnect resume, and
+                // the sink is flushed so the outgoing track cannot overlap.
+                self.command_epoch.fetch_add(1, Ordering::SeqCst);
+                player.load_discontinuous(uri, true, 0);
+            } else {
+                player.load(uri, true, 0);
+            }
             self.notify_queue_changed();
             self.refresh_next_preload();
         }
@@ -1502,21 +1551,37 @@ impl EngineShared {
         credentials: Credentials,
         resume: Option<QueueState>,
     ) -> Result<(), SpotifyError> {
+        // Single-flight: hold the async guard across the ENTIRE build so at most
+        // one session+player is ever being constructed. Every reconnect trigger
+        // (monitor, ensure_playback_ready, force_reconnect, staged rebuild,
+        // Stopped recovery) funnels through here, so two players can no longer be
+        // built concurrently and fight for the singleton AudioTrack.
+        let _inflight = self.rebuild_inflight.lock().await;
+
+        // Another rebuild may have completed while we waited for the guard. If the
+        // session is already healthy, coalesce: don't build a redundant one.
+        if self.has_valid_active() {
+            self.metrics_rebuild_coalesced.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
+        }
+
+        // Ensure the previous Active is fully torn down (player thread + load
+        // threads joined, drain stopped) BEFORE we construct the new player, so
+        // the old sink can never overlap the new one. Take the value out first so
+        // the `active` lock is released before the (blocking) Drop runs.
+        let previous = self.active.lock().unwrap().take();
+        if let Some(active) = previous {
+            active.session.shutdown();
+            drop(active);
+        }
+
         let gen = {
             let _guard = self.rebuild_mutex.lock().unwrap();
-            if self
-                .active
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|a| !a.session.is_invalid())
-                .unwrap_or(false)
-            {
-                return Ok(());
-            }
             self.rebuild_generation.fetch_add(1, Ordering::SeqCst) + 1
         };
-        self.build_active_impl(credentials, resume, gen).await
+        // Clone the Arc so `build_active_impl` (which consumes `self: Arc<Self>`)
+        // does not move out of `self` while the single-flight guard is still held.
+        Arc::clone(&self).build_active_impl(credentials, resume, gen).await
     }
 
     /// Build a fresh `Active` (session + player + event/monitor tasks).
@@ -1606,29 +1671,26 @@ impl EngineShared {
             generation,
         );
 
-        if let Some(uri) = {
+        // Resolve the auto-resume target but DO NOT load yet. A superseded
+        // rebuild must never start audio into the shared sink, so we defer the
+        // load until this generation has won and its Active is installed.
+        let resume_load = {
             let q = queue.lock().unwrap();
-            q.current_uri()
-        } {
-            let pos = {
-                let q = queue.lock().unwrap();
-                q.position_ms()
-                    .max(self.last_known_position_ms.load(Ordering::SeqCst))
-            };
-            // Only auto-start if the user actually had playback running. An
-            // idle-timeout reconnect of a paused queue must restore it paused.
-            let start_playing = self.playing.load(Ordering::SeqCst);
-            log::info!(
-                "build_active: uri={uri} pos={pos} start_playing={start_playing} reason=session_rebuild"
-            );
-            player.load(uri, start_playing, pos);
-        }
+            q.current_uri().map(|uri| {
+                let pos = q
+                    .position_ms()
+                    .max(self.last_known_position_ms.load(Ordering::SeqCst));
+                (uri, pos)
+            })
+        };
+        let resume_command_epoch = self.command_epoch.load(Ordering::SeqCst);
 
         if self.rebuild_generation.load(Ordering::SeqCst) != generation {
             session.shutdown();
             return Err(SpotifyError::StaleRebuild);
         }
 
+        let player_for_load = player.clone();
         {
             let _guard = self.rebuild_mutex.lock().unwrap();
             if self.rebuild_generation.load(Ordering::SeqCst) != generation {
@@ -1644,6 +1706,27 @@ impl EngineShared {
             });
             *self.pending_queue.lock().unwrap() = None;
         }
+
+        // Only now that this rebuild has won and is installed do we restore
+        // playback. Skip if the user issued a fresh transport command while we
+        // were building — their intent supersedes this stale auto-resume.
+        if let Some((uri, pos)) = resume_load {
+            if resume_load_still_valid(resume_command_epoch, self.command_epoch.load(Ordering::SeqCst)) {
+                // Only auto-start if the user actually had playback running. An
+                // idle-timeout reconnect of a paused queue must restore it paused.
+                let start_playing = self.playing.load(Ordering::SeqCst);
+                log::info!(
+                    "build_active: uri={uri} pos={pos} start_playing={start_playing} reason=session_rebuild"
+                );
+                player_for_load.load(uri, start_playing, pos);
+            } else {
+                log::info!(
+                    "build_active: skipping auto-resume, superseded by user command epoch"
+                );
+                self.stale_load_suppressed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
         self.notify_queue_changed();
         Ok(())
     }
@@ -1656,7 +1739,7 @@ impl EngineShared {
             .and_then(|a| a.queue.lock().unwrap().snapshot_resume())
     }
 
-    fn prefetch_upcoming(&self, ahead: u32) {
+    fn prefetch_upcoming(self: &Arc<Self>, ahead: u32) {
         let ahead = ahead.min(3);
         if ahead == 0 {
             return;
@@ -1681,11 +1764,28 @@ impl EngineShared {
                 self.prefetch_generation.fetch_add(1, Ordering::SeqCst) + 1,
             )
         };
+        let weak = Arc::downgrade(self);
         self.runtime.spawn(async move {
             for uri in upcoming {
+                // Cancel if a newer prefetch request superseded this one (queue
+                // change / skip). Avoids fighting for scarce bandwidth on bad
+                // networks with tracks the user has already moved past.
+                match weak.upgrade() {
+                    Some(shared)
+                        if prefetch_still_current(
+                            generation,
+                            shared.prefetch_generation.load(Ordering::SeqCst),
+                        ) => {}
+                    Some(shared) => {
+                        shared
+                            .metrics_prefetch_cancelled
+                            .fetch_add(1, Ordering::Relaxed);
+                        break;
+                    }
+                    None => break,
+                }
                 prefetch_track(&session, uri, bitrate).await;
             }
-            let _ = generation;
         });
     }
 
@@ -1720,6 +1820,20 @@ impl EngineShared {
 /// `Handle::block_on`. Detached; self-terminates via the `Weak`.
 fn should_defer_reconnect_monitor(playing: bool, app_foreground: bool) -> bool {
     !playing && !app_foreground
+}
+
+/// Whether a rebuild's deferred auto-resume load is still valid. It is only valid
+/// if no newer user transport command bumped the command epoch while the rebuild
+/// was in flight — otherwise the user's fresh intent must win over restoration.
+fn resume_load_still_valid(captured_epoch: u64, current_epoch: u64) -> bool {
+    captured_epoch == current_epoch
+}
+
+/// Whether an in-flight prefetch loop is still current. A newer prefetch request
+/// (queue change / skip) bumps the generation, invalidating stale loops so they
+/// stop competing for bandwidth with tracks the user has already moved past.
+fn prefetch_still_current(captured_generation: u32, current_generation: u32) -> bool {
+    captured_generation == current_generation
 }
 
 fn spawn_monitor(
@@ -1945,15 +2059,26 @@ async fn forward_events(
                     shared
                         .metrics_stall_events
                         .fetch_add(1, Ordering::SeqCst);
-                    let listener = shared.listener.clone();
-                    std::thread::spawn(move || {
-                        if let Err(e) = EngineShared::ensure_playback_ready(&shared) {
-                            notify(
-                                &listener,
-                                |l| l.on_error(format!("Playback recovery failed: {e}")),
-                            );
-                        }
-                    });
+                    // Debounce: only one recovery thread at a time. Others coalesce
+                    // via the single-flight rebuild guard anyway; this just avoids
+                    // spawning a thread per stop event during a connection storm.
+                    if shared
+                        .recovery_inflight
+                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                    {
+                        let listener = shared.listener.clone();
+                        std::thread::spawn(move || {
+                            let result = EngineShared::ensure_playback_ready(&shared);
+                            shared.recovery_inflight.store(false, Ordering::SeqCst);
+                            if let Err(e) = result {
+                                notify(
+                                    &listener,
+                                    |l| l.on_error(format!("Playback recovery failed: {e}")),
+                                );
+                            }
+                        });
+                    }
                 }
             }
             PlayerEvent::TimeToPreloadNextTrack { .. } => {
@@ -2426,5 +2551,24 @@ mod long_running_tests {
         assert!(!should_defer_reconnect_monitor(false, true));
         assert!(!should_defer_reconnect_monitor(true, false));
         assert!(!should_defer_reconnect_monitor(true, true));
+    }
+
+    /// A rebuild that captured the command epoch before building may only restore
+    /// playback if no user transport command arrived in the meantime.
+    #[test]
+    fn resume_load_valid_only_when_epoch_unchanged() {
+        assert!(resume_load_still_valid(7, 7));
+        // A user skip/play/pause bumped the epoch during the rebuild: suppress.
+        assert!(!resume_load_still_valid(7, 8));
+        assert!(!resume_load_still_valid(0, 3));
+    }
+
+    /// A prefetch loop keeps running only while its generation is still the latest;
+    /// a newer prefetch request (queue change) supersedes it.
+    #[test]
+    fn prefetch_current_only_when_generation_unchanged() {
+        assert!(prefetch_still_current(4, 4));
+        assert!(!prefetch_still_current(4, 5));
+        assert!(!prefetch_still_current(1, 9));
     }
 }
