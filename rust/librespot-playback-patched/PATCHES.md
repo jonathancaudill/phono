@@ -24,6 +24,18 @@ On Android Path C, recreates the ring + drain + Kotlin `AudioTrack` via the sink
 - `Sink::pause()` default calls `stop()`; Android audiotrack sink overrides to `AudioTrack.pause()`
 - `ensure_sink_stopped(temporarily: true)` calls `sink.pause()` instead of `stop()`
 
+## Discontinuous (user-initiated) load flush
+
+- `PlayerCommand::Load` gains a `flush: bool` field
+- `Player::load_discontinuous()` — public API; sends `flush = true`
+- `Player::load()` unchanged (sends `flush = false`, used for gapless auto-advance
+  and fresh-session resume)
+- `handle_command_load` flushes the sink when `flush = true` and the sink is
+  running, so a user skip/play during a slow load cannot let the outgoing track's
+  buffered PCM tail overlap the incoming track ("two sections at once" garble that
+  gapless mode otherwise allowed). `spotify-core` wires user `play_uris`/`skip`
+  to `load_discontinuous`; EndOfTrack auto-advance keeps the gapless path.
+
 ## Android AudioTrack sink (implemented in spotify-core)
 
 Not in this crate — see `spotify-core` with `audiotrack-sink` feature:

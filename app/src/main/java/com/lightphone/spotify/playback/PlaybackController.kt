@@ -177,7 +177,10 @@ class PlaybackController private constructor(
     private var focusRequest: AudioFocusRequest? = null
     private var hasAudioFocus = false
     private var playWhenFocusReturns = false
-    private var playJob: Job? = null
+    /** The latest user-initiated transport coroutine (play/next/previous/seek).
+     *  A new command cancels the previous one so rapid taps coalesce to the most
+     *  recent intent instead of each firing a native load / rebuild. */
+    private var transportJob: Job? = null
     private var stallWatchdogJob: Job? = null
     @Volatile
     private var lastPositionMs: Long = 0
@@ -534,6 +537,25 @@ class PlaybackController private constructor(
             transportMutex.withLock { block() }
         }
 
+    /**
+     * Launch a user-initiated transport command that supersedes any prior pending
+     * one. Cancels the previous [transportJob] so rapid skips collapse to the last
+     * intent. While reconnecting, waits out a short coalesce window first so a
+     * flurry of taps on a bad connection triggers at most one native rebuild/load
+     * for the final target instead of one per tap.
+     */
+    private fun launchTransportExclusive(block: suspend () -> Unit): Job {
+        transportJob?.cancel()
+        val job = scope.launch {
+            if (_state.value.reconnecting) {
+                delay(TRANSPORT_COALESCE_MS)
+            }
+            transportMutex.withLock { block() }
+        }
+        transportJob = job
+        return job
+    }
+
     private fun requireEngine(): LibrespotEngine {
         check(engineReady) { "Playback engine not ready — call ensureServiceStarted() first" }
         return engine
@@ -583,7 +605,13 @@ class PlaybackController private constructor(
         reconnectDebounceJob?.cancel()
         reconnectDebounceJob = scope.launch {
             delay(RECONNECT_DEBOUNCE_MS)
-            runCatching { requireEngine().forceReconnectCheck() }
+            // Serialize with user transport so a network-handoff session shutdown
+            // cannot land in the middle of a play/skip at the FFI boundary.
+            transportMutex.withLock {
+                if (engineReady) {
+                    runCatching { requireEngine().forceReconnectCheck() }
+                }
+            }
         }
     }
 
@@ -686,7 +714,7 @@ class PlaybackController private constructor(
             try {
                 sessionCoordinator.signOut(
                     onCancelInFlight = {
-                        playJob?.cancel()
+                        transportJob?.cancel()
                         playlistUriIndexJob?.cancel()
                     },
                 )
@@ -779,8 +807,8 @@ class PlaybackController private constructor(
             onStateChanged?.invoke()
         }
         val uris = tracks.map { normalizeUri(it.uri) }
-        playJob?.cancel()
-        playJob = launchTransport {
+        transportJob?.cancel()
+        transportJob = launchTransport {
             if (!ensureAudioFocus()) {
                 android.util.Log.w("Playback", "audio focus denied")
                 _state.update { it.copy(isPlaying = false, error = "Audio focus denied") }
@@ -837,19 +865,19 @@ class PlaybackController private constructor(
         }
     }
 
-    fun next() = launchTransport {
+    fun next() = launchTransportExclusive {
         if (ensureEngineReady()) {
             requireEngine().next()
             syncPlaybackModes()
         }
     }
-    fun previous() = launchTransport {
+    fun previous() = launchTransportExclusive {
         if (ensureEngineReady()) {
             requireEngine().previous()
             syncPlaybackModes()
         }
     }
-    fun seek(positionMs: Long) = launchTransport {
+    fun seek(positionMs: Long) = launchTransportExclusive {
         if (ensureEngineReady()) {
             requireEngine().seek(positionMs.toUInt())
         }
@@ -1652,6 +1680,10 @@ class PlaybackController private constructor(
         private const val RECONNECT_DEBOUNCE_MS = 6000L
         private const val AUDIO_ROUTE_DEBOUNCE_MS = 400L
         private const val TRANSPORT_CONFIRM_SAMPLES = 2
+
+        /** Coalesce window for rapid transport taps while reconnecting so a burst
+         *  of skips triggers a single native load/rebuild for the final target. */
+        private const val TRANSPORT_COALESCE_MS = 300L
 
         @Volatile
         private var instance: PlaybackController? = null

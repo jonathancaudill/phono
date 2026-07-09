@@ -11,6 +11,10 @@ use crate::audio_sink_jni;
 use crate::pcm_ring::{DRAIN_CHUNK_BYTES, PcmConsumer};
 
 pub struct DrainControl {
+    /// Ownership token for the singleton AudioTrack. A drain whose epoch is no
+    /// longer the current one (see `audio_sink_jni::current_sink_epoch`) has been
+    /// superseded by a newer sink and must stop writing immediately.
+    pub epoch: u64,
     pub drain_pause: Arc<AtomicBool>,
     pub shutdown: Arc<AtomicBool>,
     pub ring_occupancy_bytes: Arc<AtomicU64>,
@@ -19,8 +23,9 @@ pub struct DrainControl {
 }
 
 impl DrainControl {
-    pub fn new() -> Self {
+    pub fn new(epoch: u64) -> Self {
         Self {
+            epoch,
             drain_pause: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
             ring_occupancy_bytes: Arc::new(AtomicU64::new(0)),
@@ -84,6 +89,12 @@ fn drain_loop(mut consumer: PcmConsumer, control: Arc<DrainControl>) {
     let mut pending: Vec<u8> = Vec::with_capacity(DRAIN_CHUNK_BYTES);
 
     while !control.shutdown.load(Ordering::Acquire) {
+        // Ownership check: if a newer sink has claimed the AudioTrack, this drain
+        // is stale. Exit so it can never interleave PCM with the current owner.
+        if audio_sink_jni::current_sink_epoch() != control.epoch {
+            audio_sink_jni::note_epoch_rejected_write();
+            return;
+        }
         if control.drain_pause.load(Ordering::Acquire) {
             // Flush/recreate barrier: discard ring data without writing to AudioTrack.
             let n = consumer.pop_slice(&mut chunk);
