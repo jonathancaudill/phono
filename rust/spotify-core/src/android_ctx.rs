@@ -45,6 +45,17 @@ pub extern "system" fn Java_com_lightphone_spotify_NativeInit_initAndroidContext
     _class: JClass,
     context: JObject,
 ) {
+    // Set this unconditionally, before the early-return below, and independent
+    // of ANDROID_CONTEXT's state. `set_os_version_override` is itself backed by
+    // a OnceLock (first write wins), so repeat calls are cheap no-ops. Without
+    // this, a call that set ANDROID_CONTEXT but crashed/returned before reaching
+    // the override call further down (e.g. a panic in `read_android_sdk_int`,
+    // or this JNI export getting invoked from more than one place) would leave
+    // the override unset FOREVER — the early return below would skip this
+    // function's body on every subsequent call, silently leaving the
+    // client-token identity surface out of sync with Keymaster/desktop.
+    librespot::core::config::set_os_version_override("0");
+
     if ANDROID_CONTEXT.get().is_some() {
         return;
     }
@@ -91,7 +102,9 @@ pub extern "system" fn Java_com_lightphone_spotify_NativeInit_initAndroidContext
     // SDK version (>= 21) or client-token/login5 will reject it. In that case, set
     // the real SDK int here and drop the "linux" platform override. Do not inherit
     // "0" blindly into non-Keymaster identity work.
-    librespot::core::config::set_os_version_override("0");
+    //
+    // (The actual `set_os_version_override("0")` call happens unconditionally at
+    // the top of this function — see the comment there for why.)
     log::info!("OS version override set to desktop \"0\" for Keymaster/Linux identity");
 
     log::info!("Android context initialized (JavaVM stashed)");

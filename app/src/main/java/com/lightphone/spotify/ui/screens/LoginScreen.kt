@@ -1,5 +1,6 @@
 package com.lightphone.spotify.ui.screens
 
+import android.net.Uri
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -27,6 +28,19 @@ import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
 
 private const val REDIRECT_PREFIX = "http://127.0.0.1:8898/login"
+
+/**
+ * Exact scheme+host+port+path match against [redirect] — NOT `toString().startsWith(...)`,
+ * which would also accept `$redirect-evil-suffix` since that string literally starts with
+ * the expected prefix.
+ */
+private fun matchesRedirectUri(url: Uri, redirect: String): Boolean {
+    val expected = Uri.parse(redirect)
+    return url.scheme == expected.scheme &&
+        url.host == expected.host &&
+        url.port == expected.port &&
+        url.path == expected.path
+}
 
 @Composable
 fun LoginScreen(vm: AppViewModel) {
@@ -71,10 +85,11 @@ fun LoginScreen(vm: AppViewModel) {
                                     view: WebView?,
                                     request: WebResourceRequest?,
                                 ): Boolean {
-                                    val url = request?.url?.toString() ?: return false
-                                    if (url.startsWith(REDIRECT_PREFIX)) {
-                                        val code = request.url.getQueryParameter("code")
-                                        if (code != null) vm.completeLogin(code)
+                                    val uri = request?.url ?: return false
+                                    if (matchesRedirectUri(uri, REDIRECT_PREFIX)) {
+                                        val code = uri.getQueryParameter("code")
+                                        val state = uri.getQueryParameter("state")
+                                        if (code != null) vm.completeLogin(code, state)
                                         return true
                                     }
                                     return false

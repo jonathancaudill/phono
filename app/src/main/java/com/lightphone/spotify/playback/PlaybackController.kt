@@ -129,7 +129,15 @@ class PlaybackController private constructor(
     /** Serializes engine transport calls so play/pause/skip cannot race EndOfTrack. */
     private val transportMutex = Mutex()
 
-    private val warmMutex = Mutex()
+    /**
+     * Serializes everything that mutates login/session state at the native engine
+     * level: sign-out, OAuth code exchange, cached-credential login, and the
+     * spclient warm-up. Without this, a fast logout-then-login (or a background
+     * warm firing mid-logout) can run `loginWithOauthCode` concurrently with
+     * `rustLogout()`'s credential wipe + `session.shutdown()`, tearing credentials
+     * or leaving a half-built session.
+     */
+    private val sessionLifecycleMutex = Mutex()
 
     @Volatile
     private var signingOut = false
@@ -469,7 +477,7 @@ class PlaybackController private constructor(
      */
     suspend fun warmSpclientSession(): WarmResult {
         if (signingOut) return WarmResult.NotSignedIn
-        return warmMutex.withLock {
+        return sessionLifecycleMutex.withLock {
             if (signingOut) return WarmResult.NotSignedIn
             if (!ensureEngineReady()) {
                 return WarmResult.Failed("Playback service not ready")
@@ -660,14 +668,16 @@ class PlaybackController private constructor(
         return requireEngine().beginLogin()
     }
 
-    fun completeLogin(code: String, onResult: (Result<Unit>) -> Unit) {
+    fun completeLogin(code: String, state: String?, onResult: (Result<Unit>) -> Unit) {
         ensureEngineReady()
         if (!engineReady) {
             onResult(Result.failure(IllegalStateException("Playback engine not ready")))
             return
         }
         scope.launch {
-            val result = runCatching { requireEngine().loginWithOauthCode(code) }
+            val result = sessionLifecycleMutex.withLock {
+                runCatching { requireEngine().loginWithOauthCode(code, state) }
+            }
             result.onFailure { e ->
                 val sessionExpired = e is SpotifyException.Auth
                 _state.update {
@@ -700,7 +710,9 @@ class PlaybackController private constructor(
             return
         }
         scope.launch {
-            val ok = runCatching { requireEngine().loginWithCachedCredentials() }.getOrDefault(false)
+            val ok = sessionLifecycleMutex.withLock {
+                runCatching { requireEngine().loginWithCachedCredentials() }.getOrDefault(false)
+            }
             _state.update {
                 it.copy(loggedIn = requireEngine().isLoggedIn(), authInitialized = true)
             }
@@ -712,12 +724,24 @@ class PlaybackController private constructor(
         scope.launch {
             signingOut = true
             try {
-                sessionCoordinator.signOut(
-                    onCancelInFlight = {
-                        transportJob?.cancel()
-                        playlistUriIndexJob?.cancel()
-                    },
-                )
+                sessionLifecycleMutex.withLock {
+                    sessionCoordinator.signOut(
+                        onCancelInFlight = {
+                            // Cancel every job that can still reach into the native engine,
+                            // then join the ones that make FFI calls so none of them can be
+                            // mid-call when rustLogout()'s credential wipe + session
+                            // shutdown runs right after this callback returns.
+                            reconnectDebounceJob?.cancel()
+                            audioRouteDebounceJob?.cancel()
+                            networkLostGraceJob?.cancel()
+                            playlistUriIndexJob?.cancel()
+                            transportJob?.cancel()
+                            transportJob?.join()
+                            reconnectDebounceJob?.join()
+                            audioRouteDebounceJob?.join()
+                        },
+                    )
+                }
                 abandonFocus()
                 _state.value = recomputeStatusMessage(
                     PlaybackUiState(
@@ -747,9 +771,9 @@ class PlaybackController private constructor(
 
     fun buildWebApiAuthorizeUrl(): String = webApiAuth.buildAuthorizeUrl()
 
-    fun completeWebApiAuth(code: String, onResult: (Result<Unit>) -> Unit) {
+    fun completeWebApiAuth(code: String, state: String?, onResult: (Result<Unit>) -> Unit) {
         scope.launch {
-            val result = webApiAuth.exchangeCode(code)
+            val result = webApiAuth.exchangeCode(code, state)
             result.onSuccess {
                 _state.update {
                     recomputeStatusMessage(

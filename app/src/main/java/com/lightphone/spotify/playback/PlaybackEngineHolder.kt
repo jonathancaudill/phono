@@ -26,11 +26,22 @@ object PlaybackEngineHolder {
 
     private val attachLock = Any()
 
+    /**
+     * Get-or-create the shared native engine. Synchronized (double-checked
+     * locking) so this is safe even if called directly instead of only through
+     * [ensureEngineAttached] — without the lock, two concurrent callers can both
+     * observe `sharedEngine == null` and each construct their own
+     * [LibrespotEngine], silently orphaning one and leaking its native
+     * resources/cache-dir file locks.
+     */
     fun createEngine(context: Context): LibrespotEngine {
         sharedEngine?.let { return it }
-        NativeInit.ensureLoaded(context)
-        val cacheDir = File(context.filesDir, "spotify-cache").apply { mkdirs() }
-        return LibrespotEngine(cacheDir.absolutePath).also { sharedEngine = it }
+        synchronized(attachLock) {
+            sharedEngine?.let { return it }
+            NativeInit.ensureLoaded(context)
+            val cacheDir = File(context.filesDir, "spotify-cache").apply { mkdirs() }
+            return LibrespotEngine(cacheDir.absolutePath).also { sharedEngine = it }
+        }
     }
 
     /** Create and attach the native engine on first playback/login need. */

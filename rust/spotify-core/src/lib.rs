@@ -189,6 +189,13 @@ struct EngineShared {
     settings: settings::SettingsStore,
     listener: SharedListener,
     pkce_verifier: Mutex<Option<String>>,
+    /// CSRF `state` handed out with the current authorize URL (see `begin_login`),
+    /// checked against what the WebView's redirect reports before we ever call
+    /// `exchange_code`. Without this, a malicious page that can navigate our
+    /// WebView to `REDIRECT_URI?code=...` (e.g. an open redirect on some other
+    /// site loaded via a compromised/incorrect authorize flow) could smuggle in
+    /// an authorization code that isn't ours.
+    oauth_login_state: Mutex<Option<String>>,
     active: Mutex<Option<Active>>,
     oauth: Mutex<Option<OAuthState>>,
     refresh_mutex: Mutex<()>,
@@ -285,9 +292,14 @@ impl LibrespotEngine {
         self.shared.begin_login()
     }
 
-    /// Complete OAuth using the `?code=` captured by the WebView.
-    pub fn login_with_oauth_code(&self, code: String) -> Result<(), SpotifyError> {
-        self.shared.login_with_oauth_code(code)
+    /// Complete OAuth using the `?code=` and `?state=` captured by the WebView.
+    /// `state` must match the value handed out by `begin_login`'s authorize URL.
+    pub fn login_with_oauth_code(
+        &self,
+        code: String,
+        state: Option<String>,
+    ) -> Result<(), SpotifyError> {
+        self.shared.login_with_oauth_code(code, state)
     }
 
     /// Attempt to connect using previously cached credentials. Returns `false`
@@ -681,8 +693,16 @@ impl EngineShared {
         )
         .map_err(|e| SpotifyError::Internal { msg: e.to_string() })?;
 
+        // Foreign OS threads call `handle.block_on(...)` concurrently against this
+        // runtime: UniFFI calls from Kotlin, the `spotify-monitor` reconnect loop,
+        // and `Stopped`-state recovery threads (see call sites throughout this
+        // file). With only 2 workers, two such calls in flight at once — each
+        // needing the scheduler to drive nested awaits (HTTP, dealer, mercury) —
+        // can starve each other and make reconnect/login hang. 4 workers gives
+        // enough headroom on real devices (all are quad-core+) without wasting
+        // resources on such a lightweight runtime.
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+            .worker_threads(4)
             .enable_all()
             .thread_name("spotify-rt")
             .on_thread_start(|| {
@@ -722,6 +742,7 @@ impl EngineShared {
             settings,
             listener: Arc::new(Mutex::new(None)),
             pkce_verifier: Mutex::new(None),
+            oauth_login_state: Mutex::new(None),
             active: Mutex::new(None),
             oauth: Mutex::new(None),
             refresh_mutex: Mutex::new(()),
@@ -883,10 +904,16 @@ impl EngineShared {
         let state = random_hex(16);
         let url = auth::build_auth_url(&pkce.challenge, &state);
         *self.pkce_verifier.lock().unwrap() = Some(pkce.verifier);
+        *self.oauth_login_state.lock().unwrap() = Some(state);
         url
     }
 
-    fn login_with_oauth_code(self: &Arc<Self>, code: String) -> Result<(), SpotifyError> {
+    fn login_with_oauth_code(
+        self: &Arc<Self>,
+        code: String,
+        state: Option<String>,
+    ) -> Result<(), SpotifyError> {
+        let expected_state = self.oauth_login_state.lock().unwrap().take();
         let verifier = self
             .pkce_verifier
             .lock()
@@ -895,6 +922,14 @@ impl EngineShared {
             .ok_or(SpotifyError::Auth {
                 msg: "no pending login (call begin_login first)".into(),
             })?;
+        match (expected_state, state) {
+            (Some(expected), Some(got)) if expected == got => {}
+            _ => {
+                return Err(SpotifyError::Auth {
+                    msg: "OAuth state mismatch — possible CSRF, aborting login".into(),
+                });
+            }
+        }
 
         let handle = self.runtime.handle().clone();
         let tokens = handle.block_on(auth::exchange_code(&code, &verifier))?;
@@ -1536,6 +1571,7 @@ impl EngineShared {
         let _ = std::fs::remove_file(self.oauth_cache_path());
         *self.pending_queue.lock().unwrap() = None;
         *self.pkce_verifier.lock().unwrap() = None;
+        *self.oauth_login_state.lock().unwrap() = None;
         *self.oauth.lock().unwrap() = None;
         self.playing.store(false, Ordering::SeqCst);
         self.last_known_position_ms.store(0, Ordering::SeqCst);
@@ -1806,8 +1842,13 @@ impl EngineShared {
                     .fetch_add(1, Ordering::Relaxed);
                 active.session.shutdown();
             }
-            return;
         }
+        // `shutdown()` marks the session invalid synchronously, but previously we
+        // stopped here and relied on `spawn_monitor`'s 5-second poll to notice and
+        // rebuild — playback looked dead for up to 5s after every network handoff.
+        // Fall through and rebuild immediately instead; `ensure_playback_ready` is
+        // a no-op if a valid session already exists (e.g. nothing was shut down
+        // above because `has_valid_active()` was already false).
         if self.app_foreground.load(Ordering::SeqCst) || self.playing.load(Ordering::SeqCst) {
             let _ = Self::ensure_playback_ready(self);
         }

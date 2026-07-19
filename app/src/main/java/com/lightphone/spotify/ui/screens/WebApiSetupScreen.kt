@@ -1,5 +1,6 @@
 package com.lightphone.spotify.ui.screens
 
+import android.net.Uri
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -37,6 +38,19 @@ import com.thelightphone.sdk.ui.LightText
 import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
 
+/**
+ * Exact scheme+host+port+path match against [redirect] — NOT `toString().startsWith(...)`,
+ * which would also accept `$redirect-evil-suffix` since that string literally starts with
+ * the expected prefix.
+ */
+private fun matchesRedirectUri(url: Uri, redirect: String): Boolean {
+    val expected = Uri.parse(redirect)
+    return url.scheme == expected.scheme &&
+        url.host == expected.host &&
+        url.port == expected.port &&
+        url.path == expected.path
+}
+
 @Composable
 fun WebApiSetupScreen(vm: AppViewModel) {
     val playback by vm.playback.collectAsState()
@@ -60,7 +74,11 @@ fun WebApiSetupScreen(vm: AppViewModel) {
             .onSuccess { payload ->
                 clientId = payload.clientId
                 clientSecret = payload.clientSecret
-                qrScanMessage = "Credentials filled from QR. Tap Connect Web API when ready."
+                // A QR code only proves it was scannable, not that it's really the
+                // user's own dev app — show the Client ID prominently so the user has
+                // a chance to notice a substituted one before authorizing against it.
+                qrScanMessage = "Scanned Client ID: ${payload.clientId}\n" +
+                    "Confirm this is your app, then tap Connect Web API."
                 qrScanIsError = false
             }
             .onFailure { error ->
@@ -93,11 +111,12 @@ fun WebApiSetupScreen(vm: AppViewModel) {
                                 view: WebView?,
                                 request: WebResourceRequest?,
                             ): Boolean {
-                                val url = request?.url?.toString() ?: return false
-                                if (url.startsWith(WebApiAuth.REDIRECT_URI)) {
-                                    val code = request.url.getQueryParameter("code")
+                                val uri = request?.url ?: return false
+                                if (matchesRedirectUri(uri, WebApiAuth.REDIRECT_URI)) {
+                                    val code = uri.getQueryParameter("code")
+                                    val state = uri.getQueryParameter("state")
                                     if (code != null) {
-                                        vm.completeWebApiAuth(code) { result ->
+                                        vm.completeWebApiAuth(code, state) { result ->
                                             if (result.isSuccess) showWebView = false
                                         }
                                     }

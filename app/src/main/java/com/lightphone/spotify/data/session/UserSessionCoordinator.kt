@@ -38,7 +38,7 @@ class UserSessionCoordinator(
 
     suspend fun signOut(
         options: SignOutOptions = SignOutOptions(),
-        onCancelInFlight: () -> Unit = {},
+        onCancelInFlight: suspend () -> Unit = {},
     ) {
         logoutMutex.withLock {
             _events.emit(SessionEvent.SigningOut)

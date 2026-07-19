@@ -138,33 +138,45 @@ impl QueueState {
     }
 
     /// Serializable queue snapshot for TTL-bounded disk checkpoint.
+    ///
+    /// `context_index`, `play_index`, and `QueueEntry::Context(idx)` are all
+    /// positional indices into `context_uris`/`play_order`. Silently dropping
+    /// entries that fail `to_uri()` (as a `filter_map` would) shifts everything
+    /// after the drop out from under those indices, so a restored checkpoint
+    /// could resume the wrong track. If any URI fails to serialize, bail out of
+    /// the whole checkpoint instead — same as the empty-queue case above — so we
+    /// never persist indices that don't line up with the data.
     pub(crate) fn to_checkpoint_wire(&self) -> Option<QueueCheckpointWire> {
         if self.context_uris.is_empty() {
             return None;
         }
+        let context_uris: Vec<String> = self
+            .context_uris
+            .iter()
+            .map(|u| u.to_uri())
+            .collect::<Result<_, _>>()
+            .ok()?;
+        let manual_queue: Vec<String> = self
+            .manual_queue
+            .iter()
+            .map(|u| u.to_uri())
+            .collect::<Result<_, _>>()
+            .ok()?;
+        let play_order: Vec<QueueEntryWire> = self
+            .play_order
+            .iter()
+            .map(|entry| match entry {
+                QueueEntry::Manual(uri) => uri.to_uri().map(|uri| QueueEntryWire::Manual { uri }),
+                QueueEntry::Context(idx) => Ok(QueueEntryWire::Context { index: *idx }),
+            })
+            .collect::<Result<_, _>>()
+            .ok()?;
         Some(QueueCheckpointWire {
-            context_uris: self
-                .context_uris
-                .iter()
-                .filter_map(|u| u.to_uri().ok())
-                .collect(),
+            context_uris,
             context_label: self.context_label.clone(),
             context_index: self.context_index,
-            manual_queue: self
-                .manual_queue
-                .iter()
-                .filter_map(|u| u.to_uri().ok())
-                .collect(),
-            play_order: self
-                .play_order
-                .iter()
-                .filter_map(|entry| match entry {
-                    QueueEntry::Manual(uri) => Some(QueueEntryWire::Manual {
-                        uri: uri.to_uri().ok()?,
-                    }),
-                    QueueEntry::Context(idx) => Some(QueueEntryWire::Context { index: *idx }),
-                })
-                .collect(),
+            manual_queue,
+            play_order,
             play_index: self.play_index,
             position_ms: self.position_ms,
             shuffle: self.shuffle,

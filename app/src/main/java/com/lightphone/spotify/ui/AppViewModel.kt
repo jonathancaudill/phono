@@ -201,11 +201,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var savedAlbumsStarted = false
     private var playlistsStarted = false
     private var likedFillJob: Job? = null
+    private var likedRefreshJob: Job? = null
+    private var likedFillRetryJob: Job? = null
     private var likedLookaheadJob: Job? = null
     private var savedFillJob: Job? = null
+    private var savedRefreshJob: Job? = null
+    private var savedFillRetryJob: Job? = null
     private var savedLookaheadJob: Job? = null
     private var playlistsFillJob: Job? = null
     private var playlistsRefreshJob: Job? = null
+    private var playlistsFillRetryJob: Job? = null
     private var playlistsLookaheadJob: Job? = null
     private var likedFillRetries = 0
     private var savedFillRetries = 0
@@ -271,6 +276,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun cancelPlaylistLibraryJobs() {
         playlistsRefreshJob?.cancel()
         playlistsFillJob?.cancel()
+        playlistsFillRetryJob?.cancel()
         playlistsLookaheadJob?.cancel()
     }
 
@@ -306,8 +312,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         playlistsStarted = false
         onLoggedInCalled = false
         likedFillJob?.cancel()
+        likedRefreshJob?.cancel()
+        likedFillRetryJob?.cancel()
         savedFillJob?.cancel()
+        savedRefreshJob?.cancel()
+        savedFillRetryJob?.cancel()
         playlistsFillJob?.cancel()
+        playlistsRefreshJob?.cancel()
+        playlistsFillRetryJob?.cancel()
         likedLookaheadJob?.cancel()
         savedLookaheadJob?.cancel()
         playlistsLookaheadJob?.cancel()
@@ -321,7 +333,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         pendingSavedRefresh = false
         pendingPlaylistsRefresh = false
         loadedPlaylistId = null
-        playlistPickerLoadGen = 0
+        // Increment (never reset to 0) so a stale pre-reset load's captured
+        // generation can never collide with the next load's generation.
+        playlistPickerLoadGen++
         _libraryBootstrapping.value = false
         _likedTracks.value = LibraryListUiState()
         _savedAlbums.value = LibraryListUiState()
@@ -367,8 +381,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun beginLogin(): String = controller.beginLogin()
 
-    fun completeLogin(code: String) {
-        controller.completeLogin(code) { result ->
+    fun completeLogin(code: String, state: String? = null) {
+        controller.completeLogin(code, state) { result ->
             if (result.isSuccess) onLoggedIn()
         }
     }
@@ -379,8 +393,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun buildWebApiAuthorizeUrl(): String = controller.buildWebApiAuthorizeUrl()
 
-    fun completeWebApiAuth(code: String, onResult: (Result<Unit>) -> Unit) {
-        controller.completeWebApiAuth(code, onResult)
+    fun completeWebApiAuth(code: String, state: String?, onResult: (Result<Unit>) -> Unit) {
+        controller.completeWebApiAuth(code, state, onResult)
     }
 
     fun onLoggedIn() {
@@ -435,9 +449,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         likedFillJob?.cancel()
         likedFillJob = null
+        likedFillRetryJob?.cancel()
+        likedFillRetryJob = null
         likedLookaheadJob?.cancel()
         likedLookaheadJob = null
-        viewModelScope.launch {
+        likedRefreshJob?.cancel()
+        likedRefreshJob = viewModelScope.launch {
+            val gen = sessionGeneration
             val hadItems = _likedTracks.value.items.isNotEmpty()
             _likedTracks.update {
                 it.copy(
@@ -448,8 +466,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             runCatching { controller.refreshLikedTracks() }
                 .onFailure { e ->
-                    _likedTracks.update { it.copy(error = e.message ?: "Could not load liked songs") }
+                    if (gen == sessionGeneration) {
+                        _likedTracks.update { it.copy(error = e.message ?: "Could not load liked songs") }
+                    }
                 }
+            if (gen != sessionGeneration) return@launch
             _likedTracks.update { it.copy(refreshing = false, initialLoading = false) }
             if (controller.likedTracksNeedsFill()) {
                 startLikedTracksFill()
@@ -479,30 +500,34 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (likedFillJob?.isActive == true) return
         if (!controller.isUnmeteredNetwork()) return
         likedFillJob = viewModelScope.launch {
+            val gen = sessionGeneration
             _likedTracks.update { it.copy(appending = true) }
             try {
                 runCatching { controller.fillRemainingLikedTracks() }
                     .onSuccess {
-                        if (!controller.likedTracksNeedsFill()) {
+                        if (gen == sessionGeneration && !controller.likedTracksNeedsFill()) {
                             likedFillRetries = 0
                         }
                     }
                     .onFailure { e ->
                         android.util.Log.e("Library", "fill liked tracks failed", e)
+                        if (gen != sessionGeneration) return@onFailure
                         _likedTracks.update {
                             it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
                         }
                         if (likedFillRetries < 3 && controller.likedTracksNeedsFill()) {
                             likedFillRetries++
-                            viewModelScope.launch {
+                            likedFillRetryJob = viewModelScope.launch {
                                 delay(2000L * likedFillRetries)
-                                startLikedTracksFill()
+                                if (gen == sessionGeneration) startLikedTracksFill()
                             }
                         }
                     }
             } finally {
-                _likedTracks.update { it.copy(appending = false) }
-                runPendingLibraryRefresh()
+                if (gen == sessionGeneration) {
+                    _likedTracks.update { it.copy(appending = false) }
+                    runPendingLibraryRefresh()
+                }
             }
         }
     }
@@ -553,9 +578,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         savedFillJob?.cancel()
         savedFillJob = null
+        savedFillRetryJob?.cancel()
+        savedFillRetryJob = null
         savedLookaheadJob?.cancel()
         savedLookaheadJob = null
-        viewModelScope.launch {
+        savedRefreshJob?.cancel()
+        savedRefreshJob = viewModelScope.launch {
+            val gen = sessionGeneration
             val hadItems = _savedAlbums.value.items.isNotEmpty()
             if (!hadItems) {
                 _savedAlbums.update { it.copy(initialLoading = true, error = null) }
@@ -564,8 +593,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             runCatching { controller.refreshSavedAlbums() }
                 .onFailure { e ->
-                    _savedAlbums.update { it.copy(error = e.message ?: "Could not load albums") }
+                    if (gen == sessionGeneration) {
+                        _savedAlbums.update { it.copy(error = e.message ?: "Could not load albums") }
+                    }
                 }
+            if (gen != sessionGeneration) return@launch
             _savedAlbums.update { it.copy(refreshing = false, initialLoading = false) }
             if (controller.savedAlbumsNeedsFill()) {
                 startSavedAlbumsFill()
@@ -615,30 +647,34 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (savedFillJob?.isActive == true) return
         if (!controller.isUnmeteredNetwork()) return
         savedFillJob = viewModelScope.launch {
+            val gen = sessionGeneration
             _savedAlbums.update { it.copy(appending = true) }
             try {
                 runCatching { controller.fillRemainingSavedAlbums() }
                     .onSuccess {
-                        if (!controller.savedAlbumsNeedsFill()) {
+                        if (gen == sessionGeneration && !controller.savedAlbumsNeedsFill()) {
                             savedFillRetries = 0
                         }
                     }
                     .onFailure { e ->
                         android.util.Log.e("Library", "fill saved albums failed", e)
+                        if (gen != sessionGeneration) return@onFailure
                         _savedAlbums.update {
                             it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
                         }
                         if (savedFillRetries < 3 && controller.savedAlbumsNeedsFill()) {
                             savedFillRetries++
-                            viewModelScope.launch {
+                            savedFillRetryJob = viewModelScope.launch {
                                 delay(2000L * savedFillRetries)
-                                startSavedAlbumsFill()
+                                if (gen == sessionGeneration) startSavedAlbumsFill()
                             }
                         }
                     }
             } finally {
-                _savedAlbums.update { it.copy(appending = false) }
-                runPendingLibraryRefresh()
+                if (gen == sessionGeneration) {
+                    _savedAlbums.update { it.copy(appending = false) }
+                    runPendingLibraryRefresh()
+                }
             }
         }
     }
@@ -686,10 +722,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         playlistsFillJob?.cancel()
         playlistsFillJob = null
+        playlistsFillRetryJob?.cancel()
+        playlistsFillRetryJob = null
         playlistsLookaheadJob?.cancel()
         playlistsLookaheadJob = null
         playlistsRefreshJob?.cancel()
         playlistsRefreshJob = viewModelScope.launch {
+            val gen = sessionGeneration
             val hadItems = _playlists.value.items.isNotEmpty()
             if (!hadItems) {
                 _playlists.update { it.copy(initialLoading = true, error = null) }
@@ -698,8 +737,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             runCatching { controller.refreshPlaylists() }
                 .onFailure { e ->
-                    _playlists.update { it.copy(error = e.message ?: "Could not load playlists") }
+                    if (gen == sessionGeneration) {
+                        _playlists.update { it.copy(error = e.message ?: "Could not load playlists") }
+                    }
                 }
+            if (gen != sessionGeneration) return@launch
             _playlists.update { it.copy(refreshing = false, initialLoading = false) }
             if (controller.playlistsNeedsFill()) {
                 startPlaylistsFill()
@@ -739,30 +781,34 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (playlistsFillJob?.isActive == true) return
         if (!controller.isUnmeteredNetwork()) return
         playlistsFillJob = viewModelScope.launch {
+            val gen = sessionGeneration
             _playlists.update { it.copy(appending = true) }
             try {
                 runCatching { controller.fillRemainingPlaylists() }
                     .onSuccess {
-                        if (!controller.playlistsNeedsFill()) {
+                        if (gen == sessionGeneration && !controller.playlistsNeedsFill()) {
                             playlistsFillRetries = 0
                         }
                     }
                     .onFailure { e ->
                         android.util.Log.e("Library", "fill playlists failed", e)
+                        if (gen != sessionGeneration) return@onFailure
                         _playlists.update {
                             it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
                         }
                         if (playlistsFillRetries < 3 && controller.playlistsNeedsFill()) {
                             playlistsFillRetries++
-                            viewModelScope.launch {
+                            playlistsFillRetryJob = viewModelScope.launch {
                                 delay(2000L * playlistsFillRetries)
-                                startPlaylistsFill()
+                                if (gen == sessionGeneration) startPlaylistsFill()
                             }
                         }
                     }
             } finally {
-                _playlists.update { it.copy(appending = false) }
-                runPendingLibraryRefresh()
+                if (gen == sessionGeneration) {
+                    _playlists.update { it.copy(appending = false) }
+                    runPendingLibraryRefresh()
+                }
             }
         }
     }
@@ -793,6 +839,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             runCatching { controller.playlistDetail(playlistId) }
                 .onSuccess { result ->
+                    // Bail if the user has since navigated to a different playlist (or
+                    // signed out) while this request was in flight — otherwise a slow
+                    // response for playlist A can land on top of playlist B's screen.
+                    if (_playlistDetail.value.requestedId != playlistId) return@onSuccess
                     _playlistDetail.value = PlaylistDetailState(
                         requestedId = playlistId,
                         detail = result.detail,
@@ -811,6 +861,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
                 .onFailure { e ->
+                    if (_playlistDetail.value.requestedId != playlistId) return@onFailure
                     _playlistDetail.value = PlaylistDetailState(
                         requestedId = playlistId,
                         error = e.message ?: "Could not load playlist",
@@ -1213,16 +1264,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleAlbumSave(albumId: String) {
         viewModelScope.launch {
             val current = _albumDetail.value
-            if (current.saving) return@launch
-            _albumDetail.value = current.copy(saving = true)
+            if (current.requestedId != albumId || current.saving) return@launch
+            _albumDetail.update { if (it.requestedId == albumId) it.copy(saving = true) else it }
             val result = runCatching {
                 if (current.isSaved) controller.removeAlbum(albumId) else controller.saveAlbum(albumId)
             }
-            _albumDetail.value = current.copy(
-                saving = false,
-                isSaved = if (result.isSuccess) !current.isSaved else current.isSaved,
-                error = result.exceptionOrNull()?.message,
-            )
+            // Re-read the latest state before writing: the user may have navigated to a
+            // different album while the save/remove call was in flight.
+            _albumDetail.update { latest ->
+                if (latest.requestedId != albumId) return@update latest
+                latest.copy(
+                    saving = false,
+                    isSaved = if (result.isSuccess) !current.isSaved else latest.isSaved,
+                    error = result.exceptionOrNull()?.message,
+                )
+            }
         }
     }
 
@@ -1418,6 +1474,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (current.savePending || current.isTrackSaved) return@launch
             _playingExtras.value = current.copy(savePending = true, saveError = null)
             val result = runCatching { controller.saveTrack(uri) }
+            // The user may have skipped to a different track while the save request
+            // was in flight — onCurrentTrackChanged already reset _playingExtras for
+            // it, so applying this result now would show the save state on the wrong
+            // track.
+            if (playback.value.currentUri != uri) return@launch
             _playingExtras.value = PlayingExtrasState(
                 isTrackSaved = result.isSuccess,
                 savePending = false,
@@ -1439,6 +1500,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val result = runCatching {
                 if (wasSaved) controller.removeTrack(uri) else controller.saveTrack(uri)
             }
+            if (playback.value.currentUri != uri) return@launch
             _playingExtras.value = PlayingExtrasState(
                 isTrackSaved = if (result.isSuccess) !wasSaved else wasSaved,
                 savePending = false,
