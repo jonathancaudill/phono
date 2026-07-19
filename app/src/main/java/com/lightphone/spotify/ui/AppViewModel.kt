@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
@@ -100,6 +101,8 @@ data class PlayingExtrasState(
 
 data class SettingsUiState(
     val streamingQuality: StreamingQuality = StreamingQuality.NORMAL,
+    val tidalAudioQuality: com.lightphone.spotify.data.tidal.TidalAudioQuality =
+        com.lightphone.spotify.data.tidal.TidalAudioQuality.DEFAULT,
     val gaplessEnabled: Boolean = true,
     val normalizationEnabled: Boolean = false,
     val normalizationType: NormalizationType = NormalizationType.AUTO,
@@ -179,10 +182,106 @@ data class ContextMenuUiState(
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val controller: PlaybackController = (app as App).controller
+    private val controller: PlaybackController = (app as App).ensureController()
     private val themePreferences = ThemePreferences(app)
 
+    /** Active backend (Spotify vs TIDAL) — drives login/setup screen selection. */
+    val backendChoice = controller.backendChoice
+
     val playback: StateFlow<PlaybackUiState> = controller.state
+
+    /** Offline downloads (TIDAL only). Empty on the Spotify backend. */
+    val downloads: StateFlow<List<com.lightphone.spotify.data.local.DownloadedTrackEntity>> =
+        if (backendChoice == com.lightphone.spotify.data.backend.BackendChoice.TIDAL) {
+            com.lightphone.spotify.data.local.PhonoDatabase.get(app)
+                .downloadedTrackDao()
+                .observeAll()
+                .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptyList())
+        } else {
+            MutableStateFlow<List<com.lightphone.spotify.data.local.DownloadedTrackEntity>>(emptyList())
+        }
+
+    val downloadsSupported: Boolean =
+        backendChoice == com.lightphone.spotify.data.backend.BackendChoice.TIDAL
+
+    /** Pin a track for offline playback (TIDAL clear-FLAC). */
+    @androidx.media3.common.util.UnstableApi
+    fun downloadTrack(track: TrackMetadata) {
+        if (!downloadsSupported) return
+        val quality = controller.getTidalAudioQuality().apiValue
+        com.lightphone.spotify.playback.tidal.TidalDownloadCenter.download(
+            getApplication(),
+            track,
+            quality = quality,
+        )
+    }
+
+    @androidx.media3.common.util.UnstableApi
+    fun removeDownload(track: TrackMetadata) {
+        if (!downloadsSupported) return
+        // Prefer the quality the file was pinned at (may differ from current setting).
+        val quality = downloads.value.firstOrNull { it.uri == track.uri }?.quality
+            ?: controller.getTidalAudioQuality().apiValue
+        com.lightphone.spotify.playback.tidal.TidalDownloadCenter.remove(
+            getApplication(),
+            track,
+            quality = quality,
+        )
+    }
+
+    /** Download every track in the current album detail (TIDAL only). */
+    @androidx.media3.common.util.UnstableApi
+    fun downloadCurrentAlbum() {
+        if (!downloadsSupported) return
+        val tracks = _albumDetail.value.album?.tracks?.items.orEmpty()
+        tracks.forEach { downloadTrack(it.toMetadata()) }
+    }
+
+    @androidx.media3.common.util.UnstableApi
+    fun removeCurrentAlbumDownloads() {
+        if (!downloadsSupported) return
+        val tracks = _albumDetail.value.album?.tracks?.items.orEmpty()
+        tracks.forEach { removeDownload(it.toMetadata()) }
+    }
+
+    /** Download every track in the current playlist detail (TIDAL only). */
+    @androidx.media3.common.util.UnstableApi
+    fun downloadCurrentPlaylist() {
+        if (!downloadsSupported) return
+        val tracks = _playlistDetail.value.tracks.map { it.track }
+        tracks.forEach { downloadTrack(it.toMetadata()) }
+    }
+
+    @androidx.media3.common.util.UnstableApi
+    fun removeCurrentPlaylistDownloads() {
+        if (!downloadsSupported) return
+        val tracks = _playlistDetail.value.tracks.map { it.track }
+        tracks.forEach { removeDownload(it.toMetadata()) }
+    }
+
+    /** Aggregate download state for a set of track URIs (album/playlist header button). */
+    fun collectionDownloadLabel(trackUris: List<String>): String {
+        if (!downloadsSupported || trackUris.isEmpty()) return "Download"
+        val byUri = downloads.value.associateBy { it.uri }
+        var completed = 0
+        var inProgress = 0
+        for (uri in trackUris) {
+            when (byUri[uri]?.state) {
+                androidx.media3.exoplayer.offline.Download.STATE_COMPLETED -> completed++
+                androidx.media3.exoplayer.offline.Download.STATE_DOWNLOADING,
+                androidx.media3.exoplayer.offline.Download.STATE_QUEUED,
+                androidx.media3.exoplayer.offline.Download.STATE_RESTARTING,
+                -> inProgress++
+                else -> Unit
+            }
+        }
+        return when {
+            completed == trackUris.size -> "Remove download"
+            inProgress > 0 || (completed > 0 && completed < trackUris.size) ->
+                "Downloading… ($completed/${trackUris.size})"
+            else -> "Download"
+        }
+    }
 
     private val _likedTracks = MutableStateFlow(LibraryListUiState<LikedTrackEntity>())
     val likedTracks: StateFlow<LibraryListUiState<LikedTrackEntity>> = _likedTracks.asStateFlow()
@@ -375,6 +474,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _settings.value = snap.toUiState(
                 showAdvanced = current.showAdvanced,
                 darkTheme = current.darkTheme,
+                tidalAudioQuality = if (downloadsSupported) {
+                    controller.getTidalAudioQuality()
+                } else {
+                    current.tidalAudioQuality
+                },
             )
         }
     }
@@ -466,6 +570,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             runCatching { controller.refreshLikedTracks() }
                 .onFailure { e ->
+                    if (e is CancellationException) throw e
                     if (gen == sessionGeneration) {
                         _likedTracks.update { it.copy(error = e.message ?: "Could not load liked songs") }
                     }
@@ -593,6 +698,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             runCatching { controller.refreshSavedAlbums() }
                 .onFailure { e ->
+                    if (e is CancellationException) throw e
                     if (gen == sessionGeneration) {
                         _savedAlbums.update { it.copy(error = e.message ?: "Could not load albums") }
                     }
@@ -737,6 +843,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             runCatching { controller.refreshPlaylists() }
                 .onFailure { e ->
+                    if (e is CancellationException) throw e
                     if (gen == sessionGeneration) {
                         _playlists.update { it.copy(error = e.message ?: "Could not load playlists") }
                     }
@@ -1529,14 +1636,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun moveContextItemDown(index: Int) = controller.moveContextItemDown(index)
     fun clearManualQueue() = controller.clearManualQueue()
     fun refreshQueue() = controller.refreshQueue()
-    fun logout() {
+    /**
+     * Sign out, clear the backend binding, and invoke [onReadyForPicker] on the
+     * main thread so the host can recreate into [com.lightphone.spotify.ui.screens.BackendPickerScreen].
+     */
+    fun logout(onReadyForPicker: (() -> Unit)? = null) {
         resetSessionUiState()
-        controller.logout()
+        controller.logout {
+            com.lightphone.spotify.data.backend.BackendPreferences(getApplication()).clear()
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                (getApplication() as App).clearController()
+                onReadyForPicker?.invoke()
+            }
+        }
     }
 
     fun setStreamingQuality(quality: StreamingQuality) {
         _settings.value = _settings.value.copy(streamingQuality = quality)
         controller.setStreamingQuality(quality)
+    }
+
+    fun setTidalAudioQuality(quality: com.lightphone.spotify.data.tidal.TidalAudioQuality) {
+        _settings.value = _settings.value.copy(tidalAudioQuality = quality)
+        controller.setTidalAudioQuality(quality)
     }
 
     fun setGaplessEnabled(enabled: Boolean) {
@@ -1698,8 +1820,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 private fun SettingsSnapshot.toUiState(
     showAdvanced: Boolean,
     darkTheme: Boolean,
+    tidalAudioQuality: com.lightphone.spotify.data.tidal.TidalAudioQuality =
+        com.lightphone.spotify.data.tidal.TidalAudioQuality.DEFAULT,
 ) = SettingsUiState(
     streamingQuality = streamingQuality,
+    tidalAudioQuality = tidalAudioQuality,
     gaplessEnabled = gaplessEnabled,
     normalizationEnabled = normalizationEnabled,
     normalizationType = normalizationType,

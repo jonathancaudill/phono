@@ -10,10 +10,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.lightphone.spotify.data.backend.BackendChoice
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.light.LightPhonoTheme
 import com.lightphone.spotify.ui.screens.EmptyListMessage
 import com.lightphone.spotify.ui.screens.LoginScreen
+import com.lightphone.spotify.ui.screens.TidalLoginScreen
 import com.lightphone.spotify.ui.screens.WebApiSetupScreen
 import com.thelightphone.sdk.ui.LightThemeTokens
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -52,8 +54,10 @@ fun SpotifyApp(vm: AppViewModel = viewModel()) {
             ) {
                 EmptyListMessage("Loading…")
             }
-            !auth.loggedIn -> LoginScreen(vm)
-            !auth.webApiReady -> WebApiSetupScreen(vm)
+            !auth.loggedIn ->
+                if (vm.backendChoice == BackendChoice.TIDAL) TidalLoginScreen(vm) else LoginScreen(vm)
+            // Spotify Step 2 only — TIDAL never uses the dev-app Web API.
+            vm.backendChoice == BackendChoice.SPOTIFY && !auth.webApiReady -> WebApiSetupScreen(vm)
             else -> {
                 LaunchedEffect(Unit) { vm.onLoggedIn() }
                 if (libraryBootstrapping) {

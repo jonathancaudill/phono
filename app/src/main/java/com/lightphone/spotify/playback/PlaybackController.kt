@@ -33,16 +33,23 @@ import com.lightphone.spotify.data.SpotifyPlaylistDetail
 import com.lightphone.spotify.data.SpotifyPlaylistSimple
 import com.lightphone.spotify.data.local.PlaylistEntity
 import com.lightphone.spotify.data.local.SavedAlbumEntity
+import com.lightphone.spotify.data.MusicRepository
 import com.lightphone.spotify.data.SpotifyRepository
 import com.lightphone.spotify.data.SearchResults
 import coil.Coil
 import com.lightphone.spotify.data.TrackMetadata
 import com.lightphone.spotify.data.toMetadata
-import com.lightphone.spotify.ffi.LibrespotEngine
+import com.lightphone.spotify.data.backend.BackendChoice
+import com.lightphone.spotify.data.tidal.TidalApiClient
+import com.lightphone.spotify.data.tidal.TidalAuth
+import com.lightphone.spotify.data.tidal.TidalRepository
+import com.lightphone.spotify.data.tidal.TidalSessionState
+import com.lightphone.spotify.playback.backend.PlaybackBackend
+import com.lightphone.spotify.playback.backend.PlaybackEventListener
+import com.lightphone.spotify.playback.tidal.TidalPlaybackBackend
 import com.lightphone.spotify.data.webapi.SpotifyWebApi
 import com.lightphone.spotify.data.webapi.WebApiAuth
 import com.lightphone.spotify.ffi.NormalizationType
-import com.lightphone.spotify.ffi.PlayerEventListener
 import com.lightphone.spotify.ffi.RepeatMode
 import com.lightphone.spotify.ffi.SpotifyException
 import com.lightphone.spotify.ffi.StreamingQuality
@@ -51,6 +58,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -114,13 +123,19 @@ data class PlaybackUiState(
  */
 class PlaybackController private constructor(
     private val appContext: Context,
+    val backendChoice: BackendChoice,
     private val webApiAuth: WebApiAuth,
-) : PlayerEventListener {
+) : PlaybackEventListener {
 
-    /** Set by [PlaybackService] via [attachEngine]. */
+    /** Set by [PlaybackService] via [attachBackend]. */
     @Volatile
     private var engineReady = false
-    private lateinit var engine: LibrespotEngine
+    private lateinit var backend: PlaybackBackend
+
+    /** TIDAL auth (single-auth backend). Null on the Spotify build path. */
+    private val tidalAuth: TidalAuth? =
+        if (backendChoice == BackendChoice.TIDAL) TidalAuth(appContext) else null
+    private val tidalApi: TidalApiClient? = tidalAuth?.let { TidalApiClient(it) }
 
     private val streamingPolicy = StreamingPolicy(this)
 
@@ -151,12 +166,28 @@ class PlaybackController private constructor(
 
     private val webApi = SpotifyWebApi(webApiAuth)
     private val database = PhonoDatabase.get(appContext)
-    val libraryRepository = LibraryRepository(database, webApi)
+    val libraryRepository = when (backendChoice) {
+        BackendChoice.SPOTIFY -> LibraryRepository(
+            database,
+            likedTracksPageFetcher = { offset -> webApi.savedTracksPage(offset) },
+            savedAlbumsPageFetcher = { offset -> webApi.savedAlbumsPage(offset) },
+            playlistsPageFetcher = { offset, _ -> webApi.savedPlaylistsPage(offset) },
+        )
+        BackendChoice.TIDAL -> LibraryRepository(
+            database,
+            likedTracksPageFetcher = { offset -> tidalApi!!.savedTracksPage(offset) },
+            savedAlbumsPageFetcher = { offset -> tidalApi!!.savedAlbumsPage(offset) },
+            playlistsPageFetcher = { offset, limit -> tidalApi!!.playlistsPage(offset, limit) },
+        )
+    }
     private val detailCache = DetailCacheRepository(
         database,
         Json { ignoreUnknownKeys = true },
     )
-    private val repository = SpotifyRepository(webApi, libraryRepository, detailCache)
+    private val repository: MusicRepository = when (backendChoice) {
+        BackendChoice.SPOTIFY -> SpotifyRepository(webApi, libraryRepository, detailCache)
+        BackendChoice.TIDAL -> TidalRepository(tidalApi!!, tidalAuth!!, libraryRepository)
+    }
 
     /** uri -> metadata, populated when a list is played so the now-playing bar
      *  and MediaSession have title/artist/art without any extra network call. */
@@ -164,14 +195,15 @@ class PlaybackController private constructor(
 
     private val sessionCoordinator = com.lightphone.spotify.data.session.UserSessionCoordinator(
         libraryRepository = libraryRepository,
-        spotifyRepository = repository,
-        webApiAuth = webApiAuth,
+        musicRepository = repository,
+        webApiAuth = if (backendChoice == BackendChoice.SPOTIFY) webApiAuth else null,
         clearTrackMetadata = { trackMetadata.clear() },
         clearImageMemoryCache = { Coil.imageLoader(appContext).memoryCache?.clear() },
         rustLogout = {
             if (engineReady) {
-                runCatching { requireEngine().logout() }
+                runCatching { requireBackend().logout() }
             }
+            tidalAuth?.clearAll()
             clearPlaybackCredentialFiles()
         },
     )
@@ -269,7 +301,7 @@ class PlaybackController private constructor(
                     streamingPolicy.onCapabilitiesChanged(caps)
                 }
                 val current = _state.value
-                val sessionDead = engineReady && !requireEngine().isSessionConnected()
+                val sessionDead = engineReady && !requireBackend().isSessionConnected()
                 if (!current.connected || current.reconnecting || sessionDead) {
                     debouncedForceReconnect()
                 }
@@ -325,29 +357,61 @@ class PlaybackController private constructor(
             IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
             Context.RECEIVER_NOT_EXPORTED,
         )
-        scope.launch {
-            webApiAuth.sessionState.collect { state ->
+        when (backendChoice) {
+            BackendChoice.SPOTIFY -> {
+                scope.launch {
+                    webApiAuth.sessionState.collect { state ->
+                        _state.update {
+                            recomputeStatusMessage(
+                                it.copy(
+                                    webApiReady = state is com.lightphone.spotify.data.webapi.WebApiSessionState.Authorized,
+                                    webApiSessionState = state,
+                                ),
+                            )
+                        }
+                    }
+                }
                 _state.update {
                     recomputeStatusMessage(
                         it.copy(
-                            webApiReady = state is com.lightphone.spotify.data.webapi.WebApiSessionState.Authorized,
-                            webApiSessionState = state,
+                            webApiReady = webApiAuth.sessionState.value is
+                                com.lightphone.spotify.data.webapi.WebApiSessionState.Authorized,
+                            webApiSessionState = webApiAuth.sessionState.value,
+                            networkOnline = isNetworkOnline(),
+                            loggedIn = hasCachedPlaybackCredentials(),
+                            authInitialized = true,
                         ),
                     )
                 }
             }
-        }
-        _state.update {
-            recomputeStatusMessage(
-                it.copy(
-                    webApiReady = webApiAuth.sessionState.value is
-                        com.lightphone.spotify.data.webapi.WebApiSessionState.Authorized,
-                    webApiSessionState = webApiAuth.sessionState.value,
-                    networkOnline = isNetworkOnline(),
-                    loggedIn = hasCachedPlaybackCredentials(),
-                    authInitialized = true,
-                ),
-            )
+            BackendChoice.TIDAL -> {
+                // Single-auth backend: there is no Step-2 dev-app screen, so webApiReady
+                // is always true; login state comes from TidalAuth.
+                tidalAuth?.let { auth ->
+                    scope.launch {
+                        auth.sessionState.collect { state ->
+                            _state.update {
+                                // Keep webApiReady pinned so logout/login never
+                                // surfaces the Spotify Web API credentials screen.
+                                it.copy(
+                                    loggedIn = state is TidalSessionState.Authenticated,
+                                    webApiReady = true,
+                                )
+                            }
+                        }
+                    }
+                }
+                _state.update {
+                    recomputeStatusMessage(
+                        it.copy(
+                            webApiReady = true,
+                            networkOnline = isNetworkOnline(),
+                            loggedIn = hasCachedPlaybackCredentials(),
+                            authInitialized = true,
+                        ),
+                    )
+                }
+            }
         }
         connectivityManager.registerDefaultNetworkCallback(networkCallback)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -360,93 +424,30 @@ class PlaybackController private constructor(
         }
     }
 
-    /** Wire native engine after lazy creation (login or first playback). */
-    fun attachEngine(engine: LibrespotEngine) {
+    /** Wire the playback backend after lazy creation (login or first playback). */
+    fun attachBackend(backend: PlaybackBackend) {
         if (engineReady) return
-        this.engine = engine
-        engine.setListener(this)
-        repository.nativeMetadata = object : NativeMetadataGateway {
-            override fun requireLoggedIn() {
-                if (!engine.isLoggedIn()) throw com.lightphone.spotify.data.native.NativeSessionRequiredException()
+        this.backend = backend
+        backend.setListener(this)
+        // Spotify-only: bridge Login5 spclient metadata + live-session probe.
+        (repository as? SpotifyRepository)?.let { spRepo ->
+            backend.nativeMetadataGateway?.let { spRepo.nativeMetadata = it }
+            spRepo.playbackSessionConnected = {
+                engineReady && runCatching { requireBackend().isSessionConnected() }.getOrDefault(false)
             }
-
-            override fun isLoggedIn(): Boolean = engine.isLoggedIn()
-
-            override fun sessionUsername(): String = engine.nativeSessionUsername()
-
-            override fun playlistDetail(playlistId: String, trackLimit: Int) =
-                engine.playlistDetailNative(playlistId, trackLimit.toUInt())
-
-            override fun playlistRootlist(from: Int, length: Int) =
-                engine.playlistRootlist(from.toUInt(), length.toUInt())
-
-            override fun artistDetail(artistId: String, albumLimit: Int, topTrackLimit: Int) =
-                engine.artistDetailNative(artistId, albumLimit.toUInt(), topTrackLimit.toUInt())
-
-            override fun userDisplayName(username: String): String? =
-                engine.userDisplayNameNative(username)
-
-            override fun createPlaylist(name: String, isPublic: Boolean) =
-                engine.createPlaylistNative(name, isPublic)
-
-            override fun updatePlaylistMetadata(
-                playlistId: String,
-                revisionB64: String,
-                name: String?,
-                isPublic: Boolean?,
-            ) = engine.updatePlaylistMetadataNative(playlistId, revisionB64, name, isPublic)
-
-            override fun addPlaylistTracks(
-                playlistId: String,
-                revisionB64: String,
-                uris: List<String>,
-                position: Int?,
-            ) = engine.playlistAddTracksNative(playlistId, revisionB64, uris, position?.toUInt())
-
-            override fun removePlaylistTracks(
-                playlistId: String,
-                revisionB64: String,
-                uris: List<String>,
-            ) = engine.playlistRemoveTracksNative(playlistId, revisionB64, uris)
-
-            override fun reorderPlaylistTracks(
-                playlistId: String,
-                revisionB64: String,
-                rangeStart: Int,
-                insertBefore: Int,
-                rangeLength: Int,
-            ) = engine.playlistReorderNative(
-                playlistId,
-                revisionB64,
-                rangeStart.toUInt(),
-                insertBefore.toUInt(),
-                rangeLength.toUInt(),
-            )
-
-            override fun followPlaylist(playlistUri: String) =
-                engine.rootlistAddNative(playlistUri)
-
-            override fun unfollowPlaylist(playlistUri: String) =
-                engine.rootlistRemoveNative(playlistUri)
-
-            override fun addToRootlist(playlistUri: String) =
-                engine.rootlistAddNative(playlistUri)
         }
         libraryRepository.playlistLibraryPageFetcher = { offset, limit ->
             repository.playlistLibraryPage(offset, limit)
         }
-        repository.playbackSessionConnected = {
-            engineReady && runCatching { requireEngine().isSessionConnected() }.getOrDefault(false)
-        }
         engineReady = true
-        runCatching { requireEngine().setAppForeground(appForegroundRequested) }
-        val alreadyLoggedIn = engine.isLoggedIn()
+        runCatching { requireBackend().setAppForeground(appForegroundRequested) }
+        val alreadyLoggedIn = backend.isLoggedIn()
         _state.update {
             recomputeStatusMessage(
                 it.copy(
                     loggedIn = alreadyLoggedIn,
                     authInitialized = true,
-                    connected = engine.isSessionConnected(),
+                    connected = backend.isSessionConnected(),
                 ),
             )
         }
@@ -460,7 +461,7 @@ class PlaybackController private constructor(
     fun setAppForeground(foreground: Boolean) {
         appForegroundRequested = foreground
         if (engineReady) {
-            runCatching { requireEngine().setAppForeground(foreground) }
+            runCatching { requireBackend().setAppForeground(foreground) }
         }
     }
 
@@ -482,10 +483,10 @@ class PlaybackController private constructor(
             if (!ensureEngineReady()) {
                 return WarmResult.Failed("Playback service not ready")
             }
-            if (!requireEngine().isLoggedIn()) {
+            if (!requireBackend().isLoggedIn()) {
                 return WarmResult.NotSignedIn
             }
-            return runCatching { requireEngine().ensurePlaybackReady() }.fold(
+            return runCatching { requireBackend().ensurePlaybackReady() }.fold(
                 onSuccess = {
                     if (!signingOut) {
                         syncConnectedFromEngine()
@@ -505,14 +506,17 @@ class PlaybackController private constructor(
 
     private fun syncConnectedFromEngine() {
         if (!engineReady) return
-        val connected = runCatching { requireEngine().isSessionConnected() }.getOrDefault(false)
+        val connected = runCatching { requireBackend().isSessionConnected() }.getOrDefault(false)
         _state.update {
             recomputeStatusMessage(it.copy(connected = connected, reconnecting = false))
         }
     }
 
-    private fun hasCachedPlaybackCredentials(): Boolean =
-        File(appContext.filesDir, "spotify-cache/creds/credentials.json").exists()
+    private fun hasCachedPlaybackCredentials(): Boolean = when (backendChoice) {
+        BackendChoice.SPOTIFY ->
+            File(appContext.filesDir, "spotify-cache/creds/credentials.json").exists()
+        BackendChoice.TIDAL -> tidalAuth?.isAuthorized() == true
+    }
 
     /** Belt-and-suspenders: ensure disk creds are gone even if the engine was never attached. */
     private fun clearPlaybackCredentialFiles() {
@@ -532,7 +536,7 @@ class PlaybackController private constructor(
 
     private fun applyPendingSettings() {
         if (!engineReady) return
-        val eng = requireEngine()
+        val eng = requireBackend()
         pendingSettings.streamingQuality?.let { eng.setStreamingQuality(it) }
         pendingSettings.gaplessEnabled?.let { eng.setGaplessEnabled(it) }
         pendingSettings.normalizationEnabled?.let { eng.setNormalizationEnabled(it) }
@@ -564,9 +568,9 @@ class PlaybackController private constructor(
         return job
     }
 
-    private fun requireEngine(): LibrespotEngine {
+    private fun requireBackend(): PlaybackBackend {
         check(engineReady) { "Playback engine not ready — call ensureServiceStarted() first" }
-        return engine
+        return backend
     }
 
     /** Exposed for [StreamingPolicy]. */
@@ -574,12 +578,12 @@ class PlaybackController private constructor(
 
     fun bufferCurrentToEnd() {
         if (!engineReady) return
-        runCatching { requireEngine().bufferCurrentToEnd() }
+        runCatching { requireBackend().bufferCurrentToEnd() }
     }
 
     fun prefetchUpcoming(ahead: Int) {
         if (!engineReady || ahead <= 0) return
-        runCatching { requireEngine().prefetchUpcoming(ahead.toUInt()) }
+        runCatching { requireBackend().prefetchUpcoming(ahead.toUInt()) }
     }
 
     private fun handleAudioRouteChange() {
@@ -594,7 +598,7 @@ class PlaybackController private constructor(
                     PhonoAudioTrackSink.getDeadObjectCount()
                 }.getOrDefault(0)
                 if (deadObjects > 0) {
-                    runCatching { requireEngine().recreateAudioSink() }
+                    runCatching { requireBackend().recreateAudioSink() }
                 }
             }
             return
@@ -604,7 +608,7 @@ class PlaybackController private constructor(
             delay(AUDIO_ROUTE_DEBOUNCE_MS)
             val wasPlaying = _state.value.isPlaying
             if (wasPlaying) pauseTransport(userInitiated = false)
-            runCatching { requireEngine().recreateAudioSink() }
+            runCatching { requireBackend().recreateAudioSink() }
             if (wasPlaying && hasAudioFocus) resumeTransport()
         }
     }
@@ -617,7 +621,7 @@ class PlaybackController private constructor(
             // cannot land in the middle of a play/skip at the FFI boundary.
             transportMutex.withLock {
                 if (engineReady) {
-                    runCatching { requireEngine().forceReconnectCheck() }
+                    runCatching { requireBackend().forceReconnectCheck() }
                 }
             }
         }
@@ -665,7 +669,7 @@ class PlaybackController private constructor(
 
     fun beginLogin(): String {
         ensureEngineReady()
-        return requireEngine().beginLogin()
+        return requireBackend().beginLogin()
     }
 
     fun completeLogin(code: String, state: String?, onResult: (Result<Unit>) -> Unit) {
@@ -676,14 +680,14 @@ class PlaybackController private constructor(
         }
         scope.launch {
             val result = sessionLifecycleMutex.withLock {
-                runCatching { requireEngine().loginWithOauthCode(code, state) }
+                runCatching { requireBackend().loginWithOauthCode(code, state) }
             }
             result.onFailure { e ->
                 val sessionExpired = e is SpotifyException.Auth
                 _state.update {
                     recomputeStatusMessage(
                         it.copy(
-                            loggedIn = requireEngine().isLoggedIn(),
+                            loggedIn = requireBackend().isLoggedIn(),
                             sessionExpired = sessionExpired,
                             error = mapSpotifyError(e),
                         ),
@@ -711,10 +715,10 @@ class PlaybackController private constructor(
         }
         scope.launch {
             val ok = sessionLifecycleMutex.withLock {
-                runCatching { requireEngine().loginWithCachedCredentials() }.getOrDefault(false)
+                runCatching { requireBackend().loginWithCachedCredentials() }.getOrDefault(false)
             }
             _state.update {
-                it.copy(loggedIn = requireEngine().isLoggedIn(), authInitialized = true)
+                it.copy(loggedIn = requireBackend().isLoggedIn(), authInitialized = true)
             }
             onResult(ok)
         }
@@ -747,7 +751,8 @@ class PlaybackController private constructor(
                     PlaybackUiState(
                         loggedIn = false,
                         authInitialized = true,
-                        webApiReady = false,
+                        // TIDAL has no Step-2 Web API; Spotify resets to NotConfigured.
+                        webApiReady = backendChoice == BackendChoice.TIDAL,
                         webApiSessionState =
                             com.lightphone.spotify.data.webapi.WebApiSessionState.NotConfigured,
                         networkOnline = isNetworkOnline(),
@@ -843,7 +848,7 @@ class PlaybackController private constructor(
                 onStateChanged?.invoke()
             } else {
                 resetPlaybackPulse()
-                runCatching { requireEngine().playUris(uris, startIndex.toUInt(), contextLabel) }
+                runCatching { requireBackend().playUris(uris, startIndex.toUInt(), contextLabel) }
                     .onSuccess {
                         android.util.Log.i(
                             "Playback",
@@ -868,7 +873,7 @@ class PlaybackController private constructor(
     private fun resumeTransport() {
         launchTransport {
             if (ensureEngineReady() && ensureAudioFocus()) {
-                requireEngine().resume()
+                requireBackend().resume()
                 _state.update { it.copy(isLoading = true) }
                 onStateChanged?.invoke()
             }
@@ -879,7 +884,7 @@ class PlaybackController private constructor(
     private fun pauseTransport(userInitiated: Boolean) {
         launchTransport {
             if (engineReady) {
-                requireEngine().pause()
+                requireBackend().pause()
                 _state.update { it.copy(isPlaying = false) }
                 onStateChanged?.invoke()
                 if (userInitiated) {
@@ -891,36 +896,36 @@ class PlaybackController private constructor(
 
     fun next() = launchTransportExclusive {
         if (ensureEngineReady()) {
-            requireEngine().next()
+            requireBackend().next()
             syncPlaybackModes()
         }
     }
     fun previous() = launchTransportExclusive {
         if (ensureEngineReady()) {
-            requireEngine().previous()
+            requireBackend().previous()
             syncPlaybackModes()
         }
     }
     fun seek(positionMs: Long) = launchTransportExclusive {
         if (ensureEngineReady()) {
-            requireEngine().seek(positionMs.toUInt())
+            requireBackend().seek(positionMs.toUInt())
         }
     }
     fun toggleShuffle() = scope.launch {
         if (!ensureEngineReady()) return@launch
-        val enabled = requireEngine().toggleShuffle()
+        val enabled = requireBackend().toggleShuffle()
         _state.update { it.copy(shuffleEnabled = enabled) }
         onStateChanged?.invoke()
     }
     fun toggleRepeat() = scope.launch {
         if (!ensureEngineReady()) return@launch
-        val mode = requireEngine().toggleRepeat()
+        val mode = requireBackend().toggleRepeat()
         _state.update { it.copy(repeatMode = mode) }
         onStateChanged?.invoke()
     }
     fun refreshQueue() {
         if (!engineReady) return
-        val snapshot = requireEngine().getQueue()
+        val snapshot = requireBackend().getQueue()
         val queue = QueueViewState(
             nowPlaying = snapshot.nowPlayingUri?.let { uriToQueueItem(normalizeUri(it)) },
             nextInQueue = snapshot.nextInQueue.map { uriToQueueItem(normalizeUri(it)) },
@@ -976,13 +981,13 @@ class PlaybackController private constructor(
             play(listOf(track), 0, track.album.ifBlank { track.title })
             return
         }
-        val snapshot = requireEngine().getQueue()
+        val snapshot = requireBackend().getQueue()
         if (_state.value.currentUri == null && snapshot.nowPlayingUri == null) {
             play(listOf(track), 0, track.album.ifBlank { track.title })
             return
         }
         scope.launch {
-            runCatching { requireEngine().addToQueue(normalizeUri(track.uri)) }
+            runCatching { requireBackend().addToQueue(normalizeUri(track.uri)) }
                 .onSuccess { refreshQueue() }
                 .onFailure { e ->
                     android.util.Log.w("Playback", "addToQueue failed", e)
@@ -993,34 +998,34 @@ class PlaybackController private constructor(
 
     fun clearManualQueue() = scope.launch {
         if (!engineReady) return@launch
-        requireEngine().clearManualQueue()
+        requireBackend().clearManualQueue()
         refreshQueue()
     }
 
     fun moveQueueItemUp(index: Int) = scope.launch {
         if (!engineReady) return@launch
-        runCatching { requireEngine().moveQueueItemUp(index.toUInt()) }
+        runCatching { requireBackend().moveQueueItemUp(index.toUInt()) }
             .onSuccess { refreshQueue() }
             .onFailure { e -> android.util.Log.w("Playback", "moveQueueItemUp failed", e) }
     }
 
     fun moveQueueItemDown(index: Int) = scope.launch {
         if (!engineReady) return@launch
-        runCatching { requireEngine().moveQueueItemDown(index.toUInt()) }
+        runCatching { requireBackend().moveQueueItemDown(index.toUInt()) }
             .onSuccess { refreshQueue() }
             .onFailure { e -> android.util.Log.w("Playback", "moveQueueItemDown failed", e) }
     }
 
     fun moveContextItemUp(index: Int) = scope.launch {
         if (!engineReady) return@launch
-        runCatching { requireEngine().moveContextItemUp(index.toUInt()) }
+        runCatching { requireBackend().moveContextItemUp(index.toUInt()) }
             .onSuccess { refreshQueue() }
             .onFailure { e -> android.util.Log.w("Playback", "moveContextItemUp failed", e) }
     }
 
     fun moveContextItemDown(index: Int) = scope.launch {
         if (!engineReady) return@launch
-        runCatching { requireEngine().moveContextItemDown(index.toUInt()) }
+        runCatching { requireBackend().moveContextItemDown(index.toUInt()) }
             .onSuccess { refreshQueue() }
             .onFailure { e -> android.util.Log.w("Playback", "moveContextItemDown failed", e) }
     }
@@ -1035,7 +1040,7 @@ class PlaybackController private constructor(
                 proxy = pendingSettings.proxy,
             )
         }
-        val eng = requireEngine()
+        val eng = requireBackend()
         return SettingsSnapshot(
             streamingQuality = eng.getStreamingQuality(),
             gaplessEnabled = eng.getGaplessEnabled(),
@@ -1048,40 +1053,56 @@ class PlaybackController private constructor(
     fun setStreamingQuality(quality: StreamingQuality) {
         pendingSettings.streamingQuality = quality
         scope.launch {
-            if (ensureEngineReady()) requireEngine().setStreamingQuality(quality)
+            if (ensureEngineReady()) requireBackend().setStreamingQuality(quality)
+        }
+    }
+
+    fun getTidalAudioQuality(): com.lightphone.spotify.data.tidal.TidalAudioQuality =
+        (backend as? com.lightphone.spotify.playback.tidal.TidalPlaybackBackend)
+            ?.getTidalAudioQuality()
+            ?: tidalAuth?.audioQuality()
+            ?: com.lightphone.spotify.data.tidal.TidalAudioQuality.DEFAULT
+
+    fun setTidalAudioQuality(quality: com.lightphone.spotify.data.tidal.TidalAudioQuality) {
+        tidalAuth?.setAudioQuality(quality)
+        scope.launch {
+            if (ensureEngineReady()) {
+                (requireBackend() as? com.lightphone.spotify.playback.tidal.TidalPlaybackBackend)
+                    ?.setTidalAudioQuality(quality)
+            }
         }
     }
 
     fun setGaplessEnabled(enabled: Boolean) {
         pendingSettings.gaplessEnabled = enabled
         scope.launch {
-            if (ensureEngineReady()) requireEngine().setGaplessEnabled(enabled)
+            if (ensureEngineReady()) requireBackend().setGaplessEnabled(enabled)
         }
     }
 
     fun setNormalizationEnabled(enabled: Boolean) {
         pendingSettings.normalizationEnabled = enabled
         scope.launch {
-            if (ensureEngineReady()) requireEngine().setNormalizationEnabled(enabled)
+            if (ensureEngineReady()) requireBackend().setNormalizationEnabled(enabled)
         }
     }
 
     fun setNormalizationType(type: NormalizationType) {
         pendingSettings.normalizationType = type
         scope.launch {
-            if (ensureEngineReady()) requireEngine().setNormalizationType(type)
+            if (ensureEngineReady()) requireBackend().setNormalizationType(type)
         }
     }
 
     fun setProxy(proxy: String?) {
         pendingSettings.proxy = proxy
         scope.launch {
-            if (ensureEngineReady()) requireEngine().setProxy(proxy)
+            if (ensureEngineReady()) requireBackend().setProxy(proxy)
         }
     }
 
     fun clearAudioCache() = scope.launch {
-        if (ensureEngineReady()) requireEngine().clearAudioCache()
+        if (ensureEngineReady()) requireBackend().clearAudioCache()
     }
 
     /** Search tracks via Web API (catalog search, track type only). */
@@ -1095,6 +1116,8 @@ class PlaybackController private constructor(
                     "searchTracks returned ${tracks.size} results for '$query'",
                 )
                 Result.success(tracks)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 android.util.Log.e("Search", "searchTracks failed", e)
                 Result.failure(Exception(mapWebApiError(e)))
@@ -1212,6 +1235,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.playlistDetail(playlistId)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "playlistDetail failed", e)
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
@@ -1222,6 +1247,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.createPlaylist(name, isPublic)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
@@ -1231,6 +1258,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.renamePlaylist(playlistId, name)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
@@ -1244,6 +1273,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.addTrackToPlaylist(playlistId, uri, snapshotId)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
@@ -1253,6 +1284,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.removeTrackFromPlaylist(playlistId, uri, snapshotId)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
@@ -1266,6 +1299,8 @@ class PlaybackController private constructor(
     ): String = kotlinx.coroutines.withContext(Dispatchers.IO) {
         try {
             repository.reorderPlaylistTrack(playlistId, fromIndex, toIndex, snapshotId)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Throwable) {
             throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
         }
@@ -1275,6 +1310,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.editablePlaylists(userId)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
             }
@@ -1289,6 +1326,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.albumDetail(albumId)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "albumDetail failed", e)
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
@@ -1299,6 +1338,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.artistDetail(artistId)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "artistDetail failed", e)
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
@@ -1309,6 +1350,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.search(query, limitPerType)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 android.util.Log.e("Search", "search failed", e)
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
@@ -1319,6 +1362,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.playlistTracks(playlistId, limit)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 android.util.Log.e("Search", "playlistTracks failed", e)
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
@@ -1329,6 +1374,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.albumTracks(albumId)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "albumTracks failed", e)
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
@@ -1361,6 +1408,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.saveTrack(uri)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "saveTrack failed", e)
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
@@ -1371,6 +1420,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.removeTrack(uri)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "removeTrack failed", e)
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
@@ -1381,6 +1432,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.saveAlbum(albumId)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "saveAlbum failed", e)
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
@@ -1391,6 +1444,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.removeAlbum(albumId)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "removeAlbum failed", e)
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
@@ -1401,6 +1456,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.followPlaylist(playlistId)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "followPlaylist failed", e)
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
@@ -1411,6 +1468,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.unfollowPlaylist(playlistId)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "unfollowPlaylist failed", e)
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
@@ -1427,6 +1486,8 @@ class PlaybackController private constructor(
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 repository.dailyMixes()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 android.util.Log.e("Library", "dailyMixes failed", e)
                 throw Exception(mapRepositoryError(e, repository.hasPlaybackCredsWithoutLiveSession()))
@@ -1641,8 +1702,8 @@ class PlaybackController private constructor(
         if (!engineReady) return
         _state.update {
             it.copy(
-                shuffleEnabled = requireEngine().getShuffle(),
-                repeatMode = requireEngine().getRepeatMode(),
+                shuffleEnabled = requireBackend().getShuffle(),
+                repeatMode = requireBackend().getRepeatMode(),
             )
         }
     }
@@ -1714,12 +1775,42 @@ class PlaybackController private constructor(
 
         fun get(context: Context): PlaybackController {
             return instance ?: synchronized(this) {
-                instance ?: PlaybackController(
-                    appContext = context.applicationContext,
-                    webApiAuth = PlaybackEngineHolder.webApiAuth(context),
-                ).also { instance = it }
+                instance ?: run {
+                    val choice = com.lightphone.spotify.data.backend.BackendPreferences(context)
+                        .choice()
+                        ?: error("PlaybackController requires a BackendChoice — pick a service first")
+                    PlaybackController(
+                        appContext = context.applicationContext,
+                        backendChoice = choice,
+                        webApiAuth = PlaybackEngineHolder.webApiAuth(context),
+                    )
+                }.also { instance = it }
             }
         }
+
+        /** Tear down the singleton after logout so a new backend pick can rebuild. */
+        fun clearInstance() {
+            synchronized(this) {
+                val old = instance ?: return
+                instance = null
+                old.scope.cancel()
+                runCatching {
+                    old.appContext.stopService(Intent(old.appContext, PlaybackService::class.java))
+                }
+                PlaybackEngineHolder.resetForBackendSwitch()
+            }
+        }
+    }
+
+    /** Build the concrete [PlaybackBackend] for the active [backendChoice]. */
+    @androidx.media3.common.util.UnstableApi
+    internal fun createBackend(): PlaybackBackend = when (backendChoice) {
+        BackendChoice.SPOTIFY ->
+            com.lightphone.spotify.playback.backend.LibrespotPlaybackBackend(
+                PlaybackEngineHolder.createEngine(appContext),
+            )
+        BackendChoice.TIDAL ->
+            TidalPlaybackBackend(appContext, tidalAuth!!, tidalApi!!)
     }
 }
 

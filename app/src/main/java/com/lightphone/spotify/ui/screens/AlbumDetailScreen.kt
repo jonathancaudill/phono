@@ -24,6 +24,7 @@ import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
 import com.lightphone.spotify.ui.components.PhonoTrackListItem
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.PhonoScreenShell
+import com.lightphone.spotify.ui.phono.PhonoTextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Remove
@@ -38,6 +39,7 @@ fun AlbumDetailScreen(
     onPlayTrack: (Int) -> Unit,
 ) {
     val state by vm.albumDetail.collectAsState()
+    val downloads by vm.downloads.collectAsState()
 
     LaunchedEffect(albumId) { vm.loadAlbumDetail(albumId) }
 
@@ -45,6 +47,8 @@ fun AlbumDetailScreen(
     val title = album?.name ?: fallbackTitle
     val tracks = album?.tracks?.items.orEmpty()
     val showSaveLoading = state.loading && !state.isSavedConfirmed
+    val trackUris = remember(tracks) { tracks.map { it.uri } }
+    val downloadLabel = remember(trackUris, downloads) { vm.collectionDownloadLabel(trackUris) }
 
     // Keep the last loaded track list visible until this screen leaves composition
     // so the layout (and scrollbar) do not collapse a frame before pop completes.
@@ -68,6 +72,16 @@ fun AlbumDetailScreen(
         horizontalPadding = legacyNToGridDp(20),
         modifier = Modifier.fillMaxSize(),
     ) {
+        if (vm.downloadsSupported && hasTrackContent) {
+            PhonoTextButton(
+                text = downloadLabel,
+                onClick = {
+                    if (downloadLabel == "Remove download") vm.removeCurrentAlbumDownloads()
+                    else vm.downloadCurrentAlbum()
+                },
+                modifier = Modifier.padding(bottom = legacyNToGridDp(12)),
+            )
+        }
         Box(
             Modifier
                 .weight(1f)

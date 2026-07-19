@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.style.TextAlign
+import com.lightphone.spotify.data.tidal.TidalAudioQuality
 import com.lightphone.spotify.ffi.NormalizationType
 import com.lightphone.spotify.ffi.StreamingQuality
 import com.lightphone.spotify.ui.AppViewModel
@@ -43,6 +44,7 @@ fun SettingsScreen(
 ) {
     val settings by vm.settings.collectAsState()
     var confirm by remember { mutableStateOf<ConfirmRequest?>(null) }
+    val tidalQualityUi = vm.downloadsSupported
 
     confirm?.let { request ->
         PhonoConfirmScreen(
@@ -78,7 +80,11 @@ fun SettingsScreen(
                 }
 
                 SectionLabel("Audio quality")
-                StreamingQualityOptions(settings.streamingQuality, vm::setStreamingQuality)
+                if (tidalQualityUi) {
+                    TidalAudioQualityOptions(settings.tidalAudioQuality, vm::setTidalAudioQuality)
+                } else {
+                    StreamingQualityOptions(settings.streamingQuality, vm::setStreamingQuality)
+                }
 
                 SectionLabel("Storage")
                 SettingsActionRow("Clear Cache") {
@@ -104,7 +110,7 @@ fun SettingsScreen(
                 SettingsActionRow("Logout") {
                     confirm = ConfirmRequest(
                         title = "Logout",
-                        message = "Are you sure you want to logout?",
+                        message = "Sign out and return to service selection?",
                         confirmText = "Logout",
                         onConfirm = onLogout,
                     )
@@ -185,6 +191,20 @@ private fun StreamingQualityOptions(selected: StreamingQuality, onSelect: (Strea
     )
     options.forEach { (quality, label) ->
         SettingsActionRow(text = label, selected = quality == selected, onClick = { onSelect(quality) })
+    }
+}
+
+@Composable
+private fun TidalAudioQualityOptions(
+    selected: TidalAudioQuality,
+    onSelect: (TidalAudioQuality) -> Unit,
+) {
+    TidalAudioQuality.entries.forEach { quality ->
+        SettingsActionRow(
+            text = quality.label,
+            selected = quality == selected,
+            onClick = { onSelect(quality) },
+        )
     }
 }
 

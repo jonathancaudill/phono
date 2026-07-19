@@ -1,5 +1,6 @@
 package com.lightphone.spotify.ui.navigation
 
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -16,6 +17,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -37,6 +39,7 @@ import com.lightphone.spotify.ui.screens.AlbumDetailScreen
 import com.lightphone.spotify.ui.screens.AlbumsScreen
 import com.lightphone.spotify.ui.screens.ArtistDetailScreen
 import com.lightphone.spotify.ui.screens.CreatePlaylistScreen
+import com.lightphone.spotify.ui.screens.DownloadsScreen
 import com.lightphone.spotify.ui.screens.LikedSongsScreen
 import com.lightphone.spotify.ui.screens.PlayingScreen
 import com.lightphone.spotify.ui.screens.PlaylistDetailScreen
@@ -97,11 +100,16 @@ fun PhonoShell(
         ),
     )
     val currentTab by shellVm.currentTab.collectAsState()
+    val tabs = remember(vm.downloadsSupported) { phonoTabs(includeDownloads = vm.downloadsSupported) }
 
     LaunchedEffect(shellPlayback.loggedIn) {
         if (!shellPlayback.loggedIn) {
             overlayNav.popToRoot()
         }
+    }
+
+    LaunchedEffect(tabs, currentTab) {
+        if (currentTab !in tabs) shellVm.selectTab(PhonoTab.Liked)
     }
 
     val showOverlayLayer = visibleOverlayEntries.any { entry ->
@@ -201,15 +209,30 @@ fun PhonoShell(
                                 overlayNav.navigate(OverlayDestination.SearchInput(query))
                             },
                         )
-                        PhonoTab.Settings -> SettingsScreen(
+                        PhonoTab.Downloads -> DownloadsScreen(
                             vm = vm,
-                            onLogout = { vm.logout() },
+                            onOpenPlaying = { overlayNav.navigate(OverlayDestination.Playing) },
+                            onPlayTrack = { track ->
+                                vm.playTracks(listOf(track), 0, "Downloads")
+                                overlayNav.navigate(OverlayDestination.Playing)
+                            },
                         )
+                        PhonoTab.Settings -> {
+                            val activity = LocalContext.current as? ComponentActivity
+                            SettingsScreen(
+                                vm = vm,
+                                onLogout = {
+                                    vm.logout {
+                                        activity?.recreate()
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
 
                 PhonoTabBar(
-                    tabs = DefaultPhonoTabs,
+                    tabs = tabs,
                     currentTab = currentTab,
                     onTabSelected = shellVm::selectTab,
                     statusMessage = navbarStatusMessage,

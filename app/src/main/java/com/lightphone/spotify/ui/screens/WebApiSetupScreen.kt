@@ -38,19 +38,6 @@ import com.thelightphone.sdk.ui.LightText
 import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
 
-/**
- * Exact scheme+host+port+path match against [redirect] — NOT `toString().startsWith(...)`,
- * which would also accept `$redirect-evil-suffix` since that string literally starts with
- * the expected prefix.
- */
-private fun matchesRedirectUri(url: Uri, redirect: String): Boolean {
-    val expected = Uri.parse(redirect)
-    return url.scheme == expected.scheme &&
-        url.host == expected.host &&
-        url.port == expected.port &&
-        url.path == expected.path
-}
-
 @Composable
 fun WebApiSetupScreen(vm: AppViewModel) {
     val playback by vm.playback.collectAsState()

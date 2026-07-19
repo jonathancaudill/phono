@@ -44,6 +44,7 @@ fun PlaylistDetailScreen(
     onPlayTrack: (Int) -> Unit,
 ) {
     val state by vm.playlistDetail.collectAsState()
+    val downloads by vm.downloads.collectAsState()
     val listState = rememberLazyListState()
     var renameDraft by remember { mutableStateOf<String?>(null) }
 
@@ -64,6 +65,8 @@ fun PlaylistDetailScreen(
     val detail = state.detail?.takeIf { it.id == playlistId }
     val title = detail?.name ?: fallbackTitle
     val tracks = if (state.requestedId == playlistId) state.tracks else emptyList()
+    val trackUris = remember(tracks) { tracks.map { it.track.uri } }
+    val downloadLabel = remember(trackUris, downloads) { vm.collectionDownloadLabel(trackUris) }
 
     PhonoScreenShell(
         title = title,
@@ -94,6 +97,16 @@ fun PlaylistDetailScreen(
     ) {
         if (state.mutationError != null) {
             LibraryPartialSyncBanner(state.mutationError!!)
+        }
+        if (vm.downloadsSupported && tracks.isNotEmpty() && !state.editMode) {
+            PhonoTextButton(
+                text = downloadLabel,
+                onClick = {
+                    if (downloadLabel == "Remove download") vm.removeCurrentPlaylistDownloads()
+                    else vm.downloadCurrentPlaylist()
+                },
+                modifier = Modifier.padding(bottom = legacyNToGridDp(12)),
+            )
         }
         Box(
             Modifier

@@ -20,6 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import com.lightphone.spotify.data.tidal.TidalAuth
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
@@ -27,23 +28,16 @@ import com.thelightphone.sdk.ui.LightText
 import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
 
-private const val REDIRECT_PREFIX = "http://127.0.0.1:8898/login"
-
 /**
- * Exact scheme+host+port+path match against [redirect] — NOT `toString().startsWith(...)`,
- * which would also accept `$redirect-evil-suffix` since that string literally starts with
- * the expected prefix.
+ * TIDAL PKCE login. Reuses the same WebView-intercept pattern as [LoginScreen]:
+ * the auth URL comes from the backend ([AppViewModel.beginLogin] ->
+ * `TidalPlaybackBackend.beginLogin` -> `TidalAuth.buildAuthorizeUrl`), and the
+ * intercepted `?code=` is exchanged via [AppViewModel.completeLogin].
+ *
+ * Single-auth: there is no Step 2 for TIDAL.
  */
-internal fun matchesRedirectUri(url: Uri, redirect: String): Boolean {
-    val expected = Uri.parse(redirect)
-    return url.scheme == expected.scheme &&
-        url.host == expected.host &&
-        url.port == expected.port &&
-        url.path == expected.path
-}
-
 @Composable
-fun LoginScreen(vm: AppViewModel) {
+fun TidalLoginScreen(vm: AppViewModel) {
     val playback by vm.playback.collectAsState()
     var authUrl by remember { mutableStateOf<String?>(null) }
     val colors = LightThemeTokens.colors
@@ -57,9 +51,9 @@ fun LoginScreen(vm: AppViewModel) {
                     .fillMaxWidth()
                     .padding(horizontal = legacyNToGridDp(22), vertical = legacyNToGridDp(8)),
             ) {
-                LightText(text = "Step 1: Playback", variant = LightTextVariant.Copy)
+                LightText(text = "Sign in to TIDAL", variant = LightTextVariant.Copy)
                 LightText(
-                    text = "Sign in with Spotify for audio playback (librespot).",
+                    text = "Sign in for lossless / hi-res playback and your library.",
                     variant = LightTextVariant.Detail,
                     color = PhonoSemanticColors.Placeholder,
                 )
@@ -86,7 +80,7 @@ fun LoginScreen(vm: AppViewModel) {
                                     request: WebResourceRequest?,
                                 ): Boolean {
                                     val uri = request?.url ?: return false
-                                    if (matchesRedirectUri(uri, REDIRECT_PREFIX)) {
+                                    if (matchesRedirectUri(uri, TidalAuth.REDIRECT_URI)) {
                                         val code = uri.getQueryParameter("code")
                                         val state = uri.getQueryParameter("state")
                                         if (code != null) vm.completeLogin(code, state)

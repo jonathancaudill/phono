@@ -41,14 +41,14 @@ private fun computeBatchNextOffset(
  */
 internal class LikedTracksSync(
     private val database: PhonoDatabase,
-    private val webApi: SpotifyWebApi,
+    private val pageFetcher: suspend (offset: Int) -> LibraryPage<SpotifySavedTrack>,
 ) {
     private val trackDao = database.likedTrackDao()
     private val syncDao = database.librarySyncDao()
 
     /** @return true when a network fetch and local rewrite occurred. */
     suspend fun refresh(): Boolean {
-        val page = webApi.savedTracksPage(offset = 0)
+        val page = pageFetcher(0)
         val head = page.items.firstOrNull()
         val sync = syncDao.get(LibraryResource.LIKED_TRACKS)
 
@@ -75,7 +75,7 @@ internal class LikedTracksSync(
         val offset = sync.next_offset
         if (offset >= sync.remote_total) return false
 
-        val page = webApi.savedTracksPage(offset = offset)
+        val page = pageFetcher(offset)
         if (page.items.isEmpty()) return false
 
         database.withTransaction {
@@ -97,7 +97,7 @@ internal class LikedTracksSync(
 
             val pages = coroutineScope {
                 batch.map { offset ->
-                    async { offset to webApi.savedTracksPage(offset) }
+                    async { offset to pageFetcher(offset) }
                 }.awaitAll()
             }
 
@@ -173,13 +173,13 @@ internal class LikedTracksSync(
 
 internal class SavedAlbumsSync(
     private val database: PhonoDatabase,
-    private val webApi: SpotifyWebApi,
+    private val pageFetcher: suspend (offset: Int) -> LibraryPage<SpotifySavedAlbum>,
 ) {
     private val albumDao = database.savedAlbumDao()
     private val syncDao = database.librarySyncDao()
 
     suspend fun refresh(): Boolean {
-        val page = webApi.savedAlbumsPage(offset = 0)
+        val page = pageFetcher(0)
         val head = page.items.firstOrNull()
         val sync = syncDao.get(LibraryResource.SAVED_ALBUMS)
 
@@ -206,7 +206,7 @@ internal class SavedAlbumsSync(
         val offset = sync.next_offset
         if (offset >= sync.remote_total) return false
 
-        val page = webApi.savedAlbumsPage(offset = offset)
+        val page = pageFetcher(offset)
         if (page.items.isEmpty()) return false
 
         database.withTransaction {
@@ -227,7 +227,7 @@ internal class SavedAlbumsSync(
 
             val pages = coroutineScope {
                 batch.map { offset ->
-                    async { offset to webApi.savedAlbumsPage(offset) }
+                    async { offset to pageFetcher(offset) }
                 }.awaitAll()
             }
 

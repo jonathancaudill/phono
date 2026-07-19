@@ -68,6 +68,8 @@ android {
     kotlin {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+            // TIDAL backend uses Media3 ExoPlayer/DownloadManager, which are @UnstableApi.
+            optIn.add("androidx.media3.common.util.UnstableApi")
         }
     }
 
@@ -101,8 +103,12 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.5")
 
     // Media3 session for OS media controls (modern replacement for MediaSessionCompat).
-    implementation("androidx.media3:media3-session:1.5.1")
-    implementation("androidx.media3:media3-common:1.5.1")
+    // Bumped to 1.9.3 for the gapless audio-offload fix; ExoPlayer(+dash) powers the TIDAL backend.
+    implementation("androidx.media3:media3-session:1.9.3")
+    implementation("androidx.media3:media3-common:1.9.3")
+    implementation("androidx.media3:media3-exoplayer:1.9.3")
+    implementation("androidx.media3:media3-exoplayer-dash:1.9.3")
+    implementation("androidx.media3:media3-datasource:1.9.3")
     // SimpleBasePlayer handler methods return Guava ListenableFutures.
     implementation("com.google.guava:guava:33.3.1-android")
 

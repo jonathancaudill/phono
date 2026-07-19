@@ -15,7 +15,12 @@ object SpotifyRepositoryTestHarness {
         val db = Room.inMemoryDatabaseBuilder(context, PhonoDatabase::class.java)
             .allowMainThreadQueries()
             .build()
-        val library = LibraryRepository(db, webApi)
+        val library = LibraryRepository(
+            db,
+            likedTracksPageFetcher = webApi::savedTracksPage,
+            savedAlbumsPageFetcher = webApi::savedAlbumsPage,
+            playlistsPageFetcher = webApi::playlistsPage,
+        )
         val detail = DetailCacheRepository(
             db,
             Json {

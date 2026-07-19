@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  TIDAL signed CDN URLs are often http://*.audio.tidal.com. Without this,
+  Android blocks cleartext and ExoPlayer only reports "Source error".
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">tidal.com</domain>
+        <domain includeSubdomains="true">tidalhifi.com</domain>
+    </domain-config>
+</network-security-config>

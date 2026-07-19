@@ -3,30 +3,40 @@ package com.lightphone.spotify.data.local
 import androidx.room.withTransaction
 import com.lightphone.spotify.data.SpotifyPlaylistSimple
 import com.lightphone.spotify.data.SpotifySavedAlbum
+import com.lightphone.spotify.data.SpotifySavedTrack
 import com.lightphone.spotify.data.TrackMetadata
 import com.lightphone.spotify.data.mapRepositoryError
 import com.lightphone.spotify.data.mapWebApiError
+import com.lightphone.spotify.data.webapi.LibraryPage
 import com.lightphone.spotify.data.webapi.SpotifyWebApi
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import java.time.Instant
 
+/**
+ * Backend-neutral local library cache. The three library lists (liked tracks,
+ * saved albums, user playlists) are synced via injected page fetchers so the same
+ * Room-backed store serves both the Spotify (Web API) and TIDAL backends.
+ */
 class LibraryRepository(
     private val database: PhonoDatabase,
-    private val webApi: SpotifyWebApi,
+    likedTracksPageFetcher: suspend (offset: Int) -> LibraryPage<SpotifySavedTrack>,
+    savedAlbumsPageFetcher: suspend (offset: Int) -> LibraryPage<SpotifySavedAlbum>,
+    private val playlistsPageFetcher: suspend (offset: Int, limit: Int) -> LibraryPage<SpotifyPlaylistSimple>,
 ) {
     private val trackDao = database.likedTrackDao()
     private val albumDao = database.savedAlbumDao()
     private val playlistDao = database.playlistDao()
     private val syncDao = database.librarySyncDao()
 
-    private val likedTracksSync = LikedTracksSync(database, webApi)
-    private val savedAlbumsSync = SavedAlbumsSync(database, webApi)
+    private val likedTracksSync = LikedTracksSync(database, likedTracksPageFetcher)
+    private val savedAlbumsSync = SavedAlbumsSync(database, savedAlbumsPageFetcher)
     private val userPlaylistsSync = UserPlaylistsSync(database) { offset ->
         val limit = SpotifyWebApi.LIBRARY_PAGE_LIMIT
         playlistLibraryPageFetcher?.invoke(offset, limit)
-            ?: webApi.savedPlaylistsPage(offset)
+            ?: playlistsPageFetcher(offset, limit)
     }
 
     /** Native spclient rootlist fetcher; when set, playlist library sync uses Login5. */
@@ -73,12 +83,8 @@ class LibraryRepository(
             Triple(items, total, hasMore)
         }
 
-    suspend fun refreshLikedTracks(): Boolean {
-        try {
-            return likedTracksSync.refresh()
-        } catch (e: Throwable) {
-            throw Exception(mapWebApiError(e))
-        }
+    suspend fun refreshLikedTracks(): Boolean = mapWebApi {
+        likedTracksSync.refresh()
     }
 
     suspend fun likedTracksNeedsFill(): Boolean {
@@ -86,20 +92,12 @@ class LibraryRepository(
         return sync.next_offset < sync.remote_total
     }
 
-    suspend fun appendLikedTracks(): Boolean {
-        try {
-            return likedTracksSync.append()
-        } catch (e: Throwable) {
-            throw Exception(mapWebApiError(e))
-        }
+    suspend fun appendLikedTracks(): Boolean = mapWebApi {
+        likedTracksSync.append()
     }
 
-    suspend fun refreshSavedAlbums(): Boolean {
-        try {
-            return savedAlbumsSync.refresh()
-        } catch (e: Throwable) {
-            throw Exception(mapWebApiError(e))
-        }
+    suspend fun refreshSavedAlbums(): Boolean = mapWebApi {
+        savedAlbumsSync.refresh()
     }
 
     suspend fun savedAlbumsNeedsFill(): Boolean {
@@ -107,38 +105,22 @@ class LibraryRepository(
         return sync.next_offset < sync.remote_total
     }
 
-    suspend fun appendSavedAlbums(): Boolean {
-        try {
-            return savedAlbumsSync.append()
-        } catch (e: Throwable) {
-            throw Exception(mapWebApiError(e))
-        }
+    suspend fun appendSavedAlbums(): Boolean = mapWebApi {
+        savedAlbumsSync.append()
     }
 
     /** Drain all remaining liked-track pages into Room (parallel fetch batches). */
-    suspend fun fillRemainingLikedTracks(): Int {
-        try {
-            return likedTracksSync.fillRemainingParallel()
-        } catch (e: Throwable) {
-            throw Exception(mapWebApiError(e))
-        }
+    suspend fun fillRemainingLikedTracks(): Int = mapWebApi {
+        likedTracksSync.fillRemainingParallel()
     }
 
     /** Drain all remaining saved-album pages into Room (parallel fetch batches). */
-    suspend fun fillRemainingSavedAlbums(): Int {
-        try {
-            return savedAlbumsSync.fillRemainingParallel()
-        } catch (e: Throwable) {
-            throw Exception(mapWebApiError(e))
-        }
+    suspend fun fillRemainingSavedAlbums(): Int = mapWebApi {
+        savedAlbumsSync.fillRemainingParallel()
     }
 
-    suspend fun refreshPlaylists(): Boolean {
-        try {
-            return userPlaylistsSync.refresh()
-        } catch (e: Throwable) {
-            throw Exception(mapRepositoryError(e))
-        }
+    suspend fun refreshPlaylists(): Boolean = mapRepo {
+        userPlaylistsSync.refresh()
     }
 
     suspend fun playlistsNeedsFill(): Boolean {
@@ -146,21 +128,29 @@ class LibraryRepository(
         return sync.next_offset < sync.remote_total
     }
 
-    suspend fun appendPlaylists(): Boolean {
-        try {
-            return userPlaylistsSync.append()
-        } catch (e: Throwable) {
-            throw Exception(mapRepositoryError(e))
-        }
+    suspend fun appendPlaylists(): Boolean = mapRepo {
+        userPlaylistsSync.append()
     }
 
     /** Drain all remaining playlist pages into Room (parallel fetch batches). */
-    suspend fun fillRemainingPlaylists(): Int {
-        try {
-            return userPlaylistsSync.fillRemainingParallel()
-        } catch (e: Throwable) {
-            throw Exception(mapRepositoryError(e))
-        }
+    suspend fun fillRemainingPlaylists(): Int = mapRepo {
+        userPlaylistsSync.fillRemainingParallel()
+    }
+
+    private inline fun <T> mapWebApi(block: () -> T): T = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        throw Exception(mapWebApiError(e))
+    }
+
+    private inline fun <T> mapRepo(block: () -> T): T = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        throw Exception(mapRepositoryError(e))
     }
 
     suspend fun likedTracksForPlayback(fromIndex: Int, batchSize: Int = 500): List<TrackMetadata> {
@@ -311,6 +301,9 @@ class LibraryRepository(
             database.playlistUriIndexDao().clearAll()
         }
     }
+
+    suspend fun isSavedAlbumCached(albumId: String): Boolean =
+        albumDao.exists(albumId)
 
     suspend fun getPlaylistSnapshot(playlistId: String): String? =
         playlistDao.getSnapshot(playlistId)
