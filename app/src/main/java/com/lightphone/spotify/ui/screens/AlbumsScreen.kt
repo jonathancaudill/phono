@@ -95,7 +95,13 @@ fun AlbumsScreen(
                             onLongClick = {
                                 vm.showAlbumContextMenu(
                                     saved.album_id,
-                                    saved.uri.ifBlank { "spotify:album:${saved.album_id}" },
+                                    saved.uri.ifBlank {
+                                        com.lightphone.spotify.data.backend.collectionUri(
+                                            vm.backendChoice,
+                                            com.lightphone.spotify.data.backend.CollectionKind.Album,
+                                            saved.album_id,
+                                        )
+                                    },
                                 )
                             },
                         )

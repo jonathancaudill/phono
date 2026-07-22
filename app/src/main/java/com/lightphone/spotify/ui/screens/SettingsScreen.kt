@@ -44,7 +44,7 @@ fun SettingsScreen(
 ) {
     val settings by vm.settings.collectAsState()
     var confirm by remember { mutableStateOf<ConfirmRequest?>(null) }
-    val tidalQualityUi = vm.downloadsSupported
+    val caps = vm.capabilities
 
     confirm?.let { request ->
         PhonoConfirmScreen(
@@ -78,24 +78,30 @@ fun SettingsScreen(
                     Spacer(Modifier.height(legacyNToGridDp(8)))
                     NormalizationOptions(settings.normalizationType, vm::setNormalizationType)
                 }
-                if (tidalQualityUi) {
+                if (caps.tidalStyleAudioQuality) {
                     SettingsToggleRow(
-                        "Report plays to TIDAL",
+                        "Report plays",
                         settings.tidalReportPlays,
                         vm::setTidalReportPlays,
                     )
                 }
 
                 SectionLabel("Audio quality")
-                if (tidalQualityUi) {
+                if (caps.tidalStyleAudioQuality) {
                     TidalAudioQualityOptions(settings.tidalAudioQuality, vm::setTidalAudioQuality)
-                    SectionLabel("Download quality")
-                    TidalAudioQualityOptions(
-                        settings.tidalDownloadQuality,
-                        vm::setTidalDownloadQuality,
-                    )
-                } else {
+                } else if (caps.spotifyStreamingQuality) {
                     StreamingQualityOptions(settings.streamingQuality, vm::setStreamingQuality)
+                }
+                if (caps.downloads) {
+                    SectionLabel("Download quality")
+                    if (caps.tidalStyleAudioQuality) {
+                        TidalAudioQualityOptions(
+                            settings.tidalDownloadQuality,
+                            vm::setTidalDownloadQuality,
+                        )
+                    } else if (caps.spotifyStreamingQuality) {
+                        StreamingQualityOptions(settings.downloadQuality, vm::setDownloadQuality)
+                    }
                 }
 
                 SectionLabel("Storage")

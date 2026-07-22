@@ -117,6 +117,8 @@ pub struct PlayerConfig {
     pub normalisation_knee_db: f64,
 
     pub local_file_directories: Vec<PathBuf>,
+    /// When set, `spotify:track:` loads prefer a decrypted `.ogg` pin in this dir.
+    pub offline_pin_directory: Option<PathBuf>,
 
     // pass function pointers so they can be lazily instantiated *after* spawning a thread
     // (thereby circumventing Send bounds that they might not satisfy)
@@ -143,6 +145,7 @@ impl Default for PlayerConfig {
             ditherer: Some(mk_ditherer::<TriangularDitherer>),
             position_update_interval: None,
             local_file_directories: Vec::new(),
+            offline_pin_directory: None,
         }
     }
 }

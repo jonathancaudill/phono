@@ -1,14 +1,12 @@
 package com.lightphone.spotify.ui.screens
 
-import android.net.Uri
-import android.webkit.WebResourceRequest
 import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -23,6 +21,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.lightphone.spotify.data.tidal.TidalAuth
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.WebViewAuthCleanup
+import com.lightphone.spotify.ui.configureOAuthWebView
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.thelightphone.sdk.ui.LightText
@@ -31,12 +30,8 @@ import com.thelightphone.sdk.ui.LightThemeTokens
 import com.thelightphone.sdk.ui.lightClickable
 
 /**
- * TIDAL PKCE login. Reuses the same WebView-intercept pattern as [LoginScreen]:
- * the auth URL comes from the backend ([AppViewModel.beginLogin] ->
- * `TidalPlaybackBackend.beginLogin` -> `TidalAuth.buildAuthorizeUrl`), and the
- * intercepted `?code=` is exchanged via [AppViewModel.completeLogin].
- *
- * Single-auth: there is no Step 2 for TIDAL.
+ * TIDAL PKCE login. Same OAuth WebView intercept as [LoginScreen]; TIDAL's
+ * redirect is HTTPS so it is more forgiving than Spotify's loopback cleartext.
  */
 @Composable
 fun TidalLoginScreen(vm: AppViewModel) {
@@ -60,7 +55,7 @@ fun TidalLoginScreen(vm: AppViewModel) {
         webView?.loadUrl(authUrl!!)
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(colors.background)) {
+    Box(modifier = Modifier.fillMaxSize().background(colors.background).imePadding()) {
         Column(modifier = Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
@@ -90,34 +85,16 @@ fun TidalLoginScreen(vm: AppViewModel) {
                     factory = { context ->
                         WebView(context).apply {
                             webView = this
-                            settings.javaScriptEnabled = true
-                            settings.domStorageEnabled = true
-                            settings.databaseEnabled = true
-                            settings.userAgentString =
-                                "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
-                                    "Chrome/126.0.0.0 Mobile Safari/537.36"
-                            val cookieManager = android.webkit.CookieManager.getInstance()
-                            cookieManager.setAcceptCookie(true)
-                            cookieManager.setAcceptThirdPartyCookies(this, true)
-                            webViewClient = object : WebViewClient() {
-                                override fun shouldOverrideUrlLoading(
-                                    view: WebView?,
-                                    request: WebResourceRequest?,
-                                ): Boolean {
-                                    val uri = request?.url ?: return false
-                                    if (matchesRedirectUri(uri, TidalAuth.REDIRECT_URI)) {
-                                        if (codeConsumed || signingIn) return true
-                                        val code = uri.getQueryParameter("code")
-                                        val state = uri.getQueryParameter("state")
-                                        if (code != null) {
-                                            codeConsumed = true
-                                            signingIn = true
-                                            vm.completeLogin(code, state)
-                                        }
-                                        return true
-                                    }
-                                    return false
-                                }
+                            configureOAuthWebView(
+                                redirectUri = TidalAuth.REDIRECT_URI,
+                                userAgent =
+                                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 " +
+                                        "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
+                            ) { code, state ->
+                                if (codeConsumed || signingIn) return@configureOAuthWebView
+                                codeConsumed = true
+                                signingIn = true
+                                vm.completeLogin(code, state)
                             }
                             loadUrl(authUrl!!)
                         }

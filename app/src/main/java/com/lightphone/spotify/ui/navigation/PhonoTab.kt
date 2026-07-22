@@ -47,7 +47,7 @@ enum class PhonoTab(
     ),
 }
 
-/** Library tabs always present. [PhonoTab.Downloads] is TIDAL-only. */
+/** Library tabs always present. [PhonoTab.Downloads] when offline downloads are supported. */
 fun phonoTabs(includeDownloads: Boolean): List<PhonoTab> = buildList {
     add(PhonoTab.Liked)
     add(PhonoTab.Albums)

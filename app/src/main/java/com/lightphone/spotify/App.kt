@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.lightphone.spotify.data.backend.BackendPreferences
 import com.lightphone.spotify.playback.PlaybackController
+import com.lightphone.spotify.playback.download.OfflinePinHygiene
 import com.lightphone.spotify.ui.light.ThemePreferences
 
 class App : Application() {
@@ -26,6 +27,7 @@ class App : Application() {
     /** Build the controller for the persisted backend choice (idempotent). */
     fun ensureController(): PlaybackController {
         controller?.let { return it }
+        OfflinePinHygiene.enforce(this)
         val c = PlaybackController.get(this)
         controller = c
         if (!foregroundObserverRegistered) {

@@ -1,16 +1,15 @@
 package com.lightphone.spotify.ui.screens
 
-import android.net.Uri
-import android.webkit.WebResourceRequest
 import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -21,7 +20,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.lightphone.spotify.ui.AppViewModel
+import com.lightphone.spotify.ui.SpotifyOAuthLoopback
 import com.lightphone.spotify.ui.WebViewAuthCleanup
+import com.lightphone.spotify.ui.configureOAuthWebView
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.thelightphone.sdk.ui.LightText
@@ -29,20 +30,7 @@ import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
 import com.thelightphone.sdk.ui.lightClickable
 
-private const val REDIRECT_PREFIX = "http://127.0.0.1:8898/login"
-
-/**
- * Exact scheme+host+port+path match against [redirect] — NOT `toString().startsWith(...)`,
- * which would also accept `$redirect-evil-suffix` since that string literally starts with
- * the expected prefix.
- */
-internal fun matchesRedirectUri(url: Uri, redirect: String): Boolean {
-    val expected = Uri.parse(redirect)
-    return url.scheme == expected.scheme &&
-        url.host == expected.host &&
-        url.port == expected.port &&
-        url.path == expected.path
-}
+private const val REDIRECT_URI = "http://127.0.0.1:8898/login"
 
 @Composable
 fun LoginScreen(vm: AppViewModel) {
@@ -66,7 +54,19 @@ fun LoginScreen(vm: AppViewModel) {
         webView?.loadUrl(authUrl!!)
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(colors.background)) {
+    DisposableEffect(retryKey) {
+        fun deliverCode(code: String, state: String?, via: String) {
+            android.util.Log.e("LoginScreen", "oauth code via=$via")
+            if (codeConsumed || signingIn) return
+            codeConsumed = true
+            signingIn = true
+            vm.completeLogin(code, state)
+        }
+        SpotifyOAuthLoopback.start { code, state -> deliverCode(code, state, "loopback") }
+        onDispose { SpotifyOAuthLoopback.stop() }
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(colors.background).imePadding()) {
         Column(modifier = Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
@@ -96,34 +96,12 @@ fun LoginScreen(vm: AppViewModel) {
                     factory = { context ->
                         WebView(context).apply {
                             webView = this
-                            settings.javaScriptEnabled = true
-                            settings.domStorageEnabled = true
-                            settings.databaseEnabled = true
-                            settings.userAgentString =
-                                "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
-                                    "Chrome/126.0.0.0 Mobile Safari/537.36"
-                            val cookieManager = android.webkit.CookieManager.getInstance()
-                            cookieManager.setAcceptCookie(true)
-                            cookieManager.setAcceptThirdPartyCookies(this, true)
-                            webViewClient = object : WebViewClient() {
-                                override fun shouldOverrideUrlLoading(
-                                    view: WebView?,
-                                    request: WebResourceRequest?,
-                                ): Boolean {
-                                    val uri = request?.url ?: return false
-                                    if (matchesRedirectUri(uri, REDIRECT_PREFIX)) {
-                                        if (codeConsumed || signingIn) return true
-                                        val code = uri.getQueryParameter("code")
-                                        val state = uri.getQueryParameter("state")
-                                        if (code != null) {
-                                            codeConsumed = true
-                                            signingIn = true
-                                            vm.completeLogin(code, state)
-                                        }
-                                        return true
-                                    }
-                                    return false
-                                }
+                            configureOAuthWebView(REDIRECT_URI) { code, state ->
+                                if (codeConsumed || signingIn) return@configureOAuthWebView
+                                codeConsumed = true
+                                signingIn = true
+                                android.util.Log.e("LoginScreen", "oauth code via=webview")
+                                vm.completeLogin(code, state)
                             }
                             loadUrl(authUrl!!)
                         }

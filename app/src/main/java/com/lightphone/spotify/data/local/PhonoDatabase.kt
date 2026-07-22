@@ -23,7 +23,7 @@ import androidx.room.TypeConverters
     ],
     // v5: entity ids are now backend-namespaced URIs (`spotify:`/`tidal:`); single
     // active backend per install, so a destructive migration is correct here.
-    // v6: adds the `downloaded_tracks` table for optional TIDAL offline playback.
+    // v6: adds the `downloaded_tracks` table for offline playback pins.
     // v7: downloaded albums/playlists + membership for the Downloads tab.
     version = 7,
     exportSchema = false,

@@ -6,9 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import com.lightphone.spotify.data.backend.BackendChoice
 import com.lightphone.spotify.data.backend.BackendPreferences
-import com.lightphone.spotify.playback.tidal.TidalDownloadCenter
 import com.lightphone.spotify.ui.light.LightPhonoTheme
 import com.lightphone.spotify.ui.navigation.SpotifyApp
 import com.lightphone.spotify.ui.screens.BackendPickerScreen
@@ -48,10 +46,9 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             } else {
-                (application as App).ensureController()
-                if (backendPrefs.choice() == BackendChoice.TIDAL) {
-                    TidalDownloadCenter.resumeDownloads(this)
-                }
+                val app = application as App
+                app.ensureController()
+                app.controller?.offlineDownloads?.resumeDownloads(this)
                 SpotifyApp()
             }
         }

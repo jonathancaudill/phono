@@ -22,6 +22,7 @@ import com.lightphone.spotify.ui.light.lightIconFor
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.consumeScrimTouches
 import com.thelightphone.sdk.ui.LightBarButton
+import com.thelightphone.sdk.ui.LightBarButtonDefaults
 import com.thelightphone.sdk.ui.LightIcon
 import com.thelightphone.sdk.ui.LightIconConfiguration
 import com.thelightphone.sdk.ui.LightIcons
@@ -71,7 +72,13 @@ fun PhonoScreenShell(
             leftIcon != null && onLeftIconClick != null -> {
                 val lightIcon = lightIconFor(leftIcon)
                 if (lightIcon != null) {
-                    LightBarButton.LightIcon(lightIcon, onClick = onLeftIconClick)
+                    LightBarButton.LightIcon(
+                        icon = lightIcon,
+                        onClick = onLeftIconClick,
+                        // Pencil vector fills its viewport more than Add/Back; shrink so it
+                        // matches other top-bar icons visually.
+                        sizeUnits = barIconSizeUnits(lightIcon),
+                    )
                 } else {
                     LightBarButton.Icon(
                         painter = rememberVectorPainter(leftIcon),
@@ -88,11 +95,19 @@ fun PhonoScreenShell(
             showSecondaryRight -> null
             rightLoading -> null
             rightIconVisible && rightLightIcon != null && onRightIconClick != null ->
-                LightBarButton.LightIcon(rightLightIcon, onClick = onRightIconClick)
+                LightBarButton.LightIcon(
+                    icon = rightLightIcon,
+                    onClick = onRightIconClick,
+                    sizeUnits = barIconSizeUnits(rightLightIcon),
+                )
             rightIconVisible && rightIcon != null && onRightIconClick != null -> {
                 val lightIcon = lightIconFor(rightIcon)
                 if (lightIcon != null) {
-                    LightBarButton.LightIcon(lightIcon, onClick = onRightIconClick)
+                    LightBarButton.LightIcon(
+                        icon = lightIcon,
+                        onClick = onRightIconClick,
+                        sizeUnits = barIconSizeUnits(lightIcon),
+                    )
                 } else {
                     LightBarButton.Icon(
                         painter = rememberVectorPainter(rightIcon),
@@ -139,7 +154,7 @@ fun PhonoScreenShell(
                     if (secondaryRightLoading) {
                         CircularProgressIndicator(
                             modifier = Modifier
-                                .padding(end = legacyNToGridDp(12))
+                                .padding(end = SecondaryRightGap)
                                 .size(legacyNToGridDp(20)),
                             color = colors.content,
                             strokeWidth = 2.dp,
@@ -147,8 +162,9 @@ fun PhonoScreenShell(
                     } else if (secondaryRightLightIcon != null && onSecondaryRightIconClick != null) {
                         LightIcon(
                             icon = secondaryRightLightIcon,
+                            size = barIconSizeUnits(secondaryRightLightIcon),
                             modifier = Modifier
-                                .padding(end = legacyNToGridDp(12))
+                                .padding(end = SecondaryRightGap)
                                 .lightClickable(onClick = onSecondaryRightIconClick),
                             contentDescription = null,
                         )
@@ -164,6 +180,7 @@ fun PhonoScreenShell(
                         rightIconVisible && rightLightIcon != null && onRightIconClick != null -> {
                             LightIcon(
                                 icon = rightLightIcon,
+                                size = barIconSizeUnits(rightLightIcon),
                                 modifier = Modifier.lightClickable(onClick = onRightIconClick),
                                 contentDescription = null,
                             )
@@ -173,6 +190,7 @@ fun PhonoScreenShell(
                             if (lightIcon != null) {
                                 LightIcon(
                                     icon = lightIcon,
+                                    size = barIconSizeUnits(lightIcon),
                                     modifier = Modifier.lightClickable(onClick = onRightIconClick),
                                     contentDescription = null,
                                 )
@@ -234,6 +252,7 @@ fun PhonoHeaderIcon(
     if (lightIcon != null) {
         LightIcon(
             icon = lightIcon,
+            size = barIconSizeUnits(lightIcon),
             modifier = modifier.lightClickable(onClick = onClick),
             contentDescription = contentDescription,
         )
@@ -246,3 +265,16 @@ fun PhonoHeaderIcon(
         )
     }
 }
+
+/** Gap between download (secondary) and Add/Remove (primary) so hit targets don't overlap. */
+private val SecondaryRightGap @Composable get() = legacyNToGridDp(18)
+
+/**
+ * Pencil fills its 40dp viewport more tightly than Add (~30dp); render slightly smaller
+ * so top-bar chrome stays visually consistent.
+ */
+private fun barIconSizeUnits(icon: LightIconConfiguration): Float =
+    when (icon) {
+        LightIcons.PENCIL -> 1.55f
+        else -> LightBarButtonDefaults.ICON_SIZE_UNITS
+    }

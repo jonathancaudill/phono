@@ -118,7 +118,13 @@ fun PlaylistsScreen(
                             onLongClick = {
                                 vm.showPlaylistContextMenu(
                                     playlistId = playlist.playlist_id,
-                                    uri = playlist.uri.ifBlank { "spotify:playlist:${playlist.playlist_id}" },
+                                    uri = playlist.uri.ifBlank {
+                                        com.lightphone.spotify.data.backend.collectionUri(
+                                            vm.backendChoice,
+                                            com.lightphone.spotify.data.backend.CollectionKind.Playlist,
+                                            playlist.playlist_id,
+                                        )
+                                    },
                                     ownerId = playlist.owner_id,
                                 )
                             },

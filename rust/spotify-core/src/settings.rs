@@ -27,7 +27,7 @@ impl Default for StreamingQuality {
 }
 
 impl StreamingQuality {
-    fn to_bitrate(self) -> Bitrate {
+    pub fn to_bitrate(self) -> Bitrate {
         match self {
             Self::Low => Bitrate::Bitrate96,
             Self::Normal => Bitrate::Bitrate160,
@@ -137,6 +137,9 @@ pub fn apply_audio_fetch_params(preset: NetworkBufferPreset) {
 pub struct AppSettings {
     #[serde(default)]
     pub streaming_quality: StreamingQuality,
+    /// Independent of [streaming_quality]; used only when enqueueing new offline pins.
+    #[serde(default = "default_download_quality")]
+    pub download_quality: StreamingQuality,
     #[serde(default = "default_true")]
     pub gapless_enabled: bool,
     #[serde(default)]
@@ -153,10 +156,15 @@ fn default_true() -> bool {
     true
 }
 
+fn default_download_quality() -> StreamingQuality {
+    StreamingQuality::High
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             streaming_quality: StreamingQuality::default(),
+            download_quality: StreamingQuality::High,
             gapless_enabled: true,
             normalization_enabled: false,
             normalization_type: NormalizationType::default(),

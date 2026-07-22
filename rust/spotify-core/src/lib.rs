@@ -32,6 +32,7 @@ mod user_profile;
 mod playback_checkpoint;
 mod queue;
 mod settings;
+mod downloads;
 mod pcm_ring;
 #[cfg(target_os = "android")]
 mod android_ctx;
@@ -186,6 +187,7 @@ struct EngineShared {
     cred_dir: PathBuf,
     audio_dir: PathBuf,
     tmp_dir: PathBuf,
+    downloads_dir: PathBuf,
     settings: settings::SettingsStore,
     listener: SharedListener,
     pkce_verifier: Mutex<Option<String>>,
@@ -292,8 +294,9 @@ impl LibrespotEngine {
         self.shared.begin_login()
     }
 
-    /// Complete OAuth using the `?code=` and `?state=` captured by the WebView.
-    /// `state` must match the value handed out by `begin_login`'s authorize URL.
+    /// Complete OAuth using the `?code=` (and optional `?state=`) from the WebView.
+    /// Explicit state mismatches still abort; a missing redirect `state` is allowed
+    /// (Spotify email-OTP often omits it). Pending PKCE is reused across begin_login.
     pub fn login_with_oauth_code(
         &self,
         code: String,
@@ -539,6 +542,49 @@ impl LibrespotEngine {
         self.rebuild_player_if_active();
     }
 
+    pub fn get_download_quality(&self) -> StreamingQuality {
+        self.shared.settings.get().download_quality
+    }
+
+    /// Future-only: changing this does not rewrite completed offline pins.
+    pub fn set_download_quality(&self, quality: StreamingQuality) {
+        self.shared
+            .settings
+            .update(|s| s.download_quality = quality);
+    }
+
+    /// Download and decrypt a track to the durable pin directory (requires live session).
+    pub fn download_track(
+        &self,
+        uri: String,
+        quality: StreamingQuality,
+    ) -> Result<downloads::DownloadInfo, SpotifyError> {
+        self.ensure_playback_ready()?;
+        let session = {
+            let guard = self.shared.active.lock().unwrap();
+            guard
+                .as_ref()
+                .map(|a| a.session.clone())
+                .ok_or(SpotifyError::NotLoggedIn)?
+        };
+        let downloads = self.shared.downloads_dir.clone();
+        self.shared.runtime.block_on(async move {
+            downloads::download_track(&session, &downloads, &uri, quality).await
+        })
+    }
+
+    pub fn is_track_downloaded(&self, uri: String) -> bool {
+        downloads::is_downloaded(&self.shared.downloads_dir, &uri)
+    }
+
+    pub fn remove_download(&self, uri: String) -> Result<(), SpotifyError> {
+        downloads::remove_download(&self.shared.downloads_dir, &uri)
+    }
+
+    pub fn downloads_directory(&self) -> String {
+        self.shared.downloads_dir.to_string_lossy().into_owned()
+    }
+
     pub fn get_gapless_enabled(&self) -> bool {
         self.shared.settings.get().gapless_enabled
     }
@@ -677,9 +723,11 @@ impl EngineShared {
         let cred_dir = base.join("creds");
         let audio_dir = base.join("audio");
         let tmp_dir = base.join("streaming-tmp");
+        let downloads_dir = downloads::downloads_dir(&base);
         let _ = std::fs::create_dir_all(&cred_dir);
         let _ = std::fs::create_dir_all(&audio_dir);
         let _ = std::fs::create_dir_all(&tmp_dir);
+        let _ = std::fs::create_dir_all(&downloads_dir);
 
         let settings = settings::SettingsStore::new(&base);
         let buffer_preset = settings.get().network_buffer_preset;
@@ -739,6 +787,7 @@ impl EngineShared {
             cred_dir,
             audio_dir,
             tmp_dir,
+            downloads_dir,
             settings,
             listener: Arc::new(Mutex::new(None)),
             pkce_verifier: Mutex::new(None),
@@ -900,6 +949,17 @@ impl EngineShared {
     }
 
     fn begin_login(&self) -> String {
+        // Reuse in-flight PKCE + state so a second begin_login (Compose remount,
+        // retry of loadUrl, etc.) during Spotify email-OTP does not invalidate
+        // the authorize URL the WebView is already on.
+        {
+            let verifier = self.pkce_verifier.lock().unwrap();
+            let state = self.oauth_login_state.lock().unwrap();
+            if let (Some(verifier), Some(state)) = (verifier.as_ref(), state.as_ref()) {
+                let challenge = auth::challenge_from_verifier(verifier);
+                return auth::build_auth_url(&challenge, state);
+            }
+        }
         let pkce = auth::Pkce::generate();
         let state = random_hex(16);
         let url = auth::build_auth_url(&pkce.challenge, &state);
@@ -913,7 +973,30 @@ impl EngineShared {
         code: String,
         state: Option<String>,
     ) -> Result<(), SpotifyError> {
-        let expected_state = self.oauth_login_state.lock().unwrap().take();
+        // Validate CSRF state *before* consuming the PKCE verifier so a mismatch
+        // (or a remount) does not permanently burn the in-flight login.
+        //
+        // v0.0.1 ignored `state` entirely. After df00419 we required both sides
+        // to be Some+equal, which broke Spotify email-OTP: that SPA path often
+        // returns `?code=` without `?state=`, or the long wait remounts begin_login.
+        // Fail only on an *explicit* mismatch; allow a missing redirect state.
+        {
+            let expected = self.oauth_login_state.lock().unwrap().clone();
+            match (expected.as_deref(), state.as_deref()) {
+                (Some(exp), Some(got)) if exp != got => {
+                    return Err(SpotifyError::Auth {
+                        msg: "OAuth state mismatch — possible CSRF, aborting login".into(),
+                    });
+                }
+                (Some(_), None) => {
+                    log::warn!(
+                        "oauth redirect missing state param — allowing (email-OTP / legacy path)"
+                    );
+                }
+                _ => {}
+            }
+        }
+
         let verifier = self
             .pkce_verifier
             .lock()
@@ -922,14 +1005,7 @@ impl EngineShared {
             .ok_or(SpotifyError::Auth {
                 msg: "no pending login (call begin_login first)".into(),
             })?;
-        match (expected_state, state) {
-            (Some(expected), Some(got)) if expected == got => {}
-            _ => {
-                return Err(SpotifyError::Auth {
-                    msg: "OAuth state mismatch — possible CSRF, aborting login".into(),
-                });
-            }
-        }
+        let _ = self.oauth_login_state.lock().unwrap().take();
 
         let handle = self.runtime.handle().clone();
         let tokens = handle.block_on(auth::exchange_code(&code, &verifier))?;
@@ -1644,7 +1720,8 @@ impl EngineShared {
         );
         let volume_getter = mixer.get_soft_volume();
 
-        let player_config = self.settings.get().player_config();
+        let mut player_config = self.settings.get().player_config();
+        player_config.offline_pin_directory = Some(self.downloads_dir.clone());
         let audio_format = AudioFormat::S16;
 
         #[cfg(all(target_os = "android", feature = "audiotrack-sink"))]
@@ -2170,7 +2247,7 @@ fn map_connect_err(e: librespot::core::Error) -> SpotifyError {
     }
 }
 
-fn parse_uri(input: &str) -> Result<SpotifyUri, SpotifyError> {
+pub(crate) fn parse_uri(input: &str) -> Result<SpotifyUri, SpotifyError> {
     let s = input.trim().split('?').next().unwrap_or(input.trim());
     // Handles `spotify:track:...`, `spotify:episode:...`, and the https forms.
     if let Ok(uri) = SpotifyUri::from_uri(s) {
@@ -2187,7 +2264,7 @@ fn uri_to_string(uri: &SpotifyUri) -> String {
     uri.to_uri().unwrap_or_default()
 }
 
-fn preferred_formats(bitrate: Bitrate) -> &'static [AudioFileFormat] {
+pub(crate) fn preferred_formats(bitrate: Bitrate) -> &'static [AudioFileFormat] {
     use AudioFileFormat::*;
     match bitrate {
         Bitrate::Bitrate96 => &[
@@ -2220,7 +2297,7 @@ fn preferred_formats(bitrate: Bitrate) -> &'static [AudioFileFormat] {
     }
 }
 
-fn bytes_per_second(format: AudioFileFormat) -> usize {
+pub(crate) fn bytes_per_second(format: AudioFileFormat) -> usize {
     use AudioFileFormat::*;
     let kbps: f32 = match format {
         OGG_VORBIS_96 => 12.,
@@ -2246,11 +2323,11 @@ fn bytes_per_second(format: AudioFileFormat) -> usize {
     (kbps * 1024.).ceil() as usize
 }
 
-async fn resolve_playable_file(
+pub(crate) async fn resolve_playable_file(
     session: &Session,
     uri: SpotifyUri,
     bitrate: Bitrate,
-) -> Option<(librespot::core::FileId, usize)> {
+) -> Option<(librespot::core::FileId, usize, AudioFileFormat)> {
     let mut item = AudioItem::get_file(session, uri).await.ok()?;
     if item.files.is_empty() {
         if let Some(alts) = item.alternatives.clone() {
@@ -2266,14 +2343,14 @@ async fn resolve_playable_file(
     }
     for &fmt in preferred_formats(bitrate) {
         if let Some(&file_id) = item.files.get(&fmt) {
-            return Some((file_id, bytes_per_second(fmt)));
+            return Some((file_id, bytes_per_second(fmt), fmt));
         }
     }
     None
 }
 
 async fn prefetch_track(session: &Session, uri: SpotifyUri, bitrate: Bitrate) {
-    let Some((file_id, bps)) = resolve_playable_file(session, uri, bitrate).await else {
+    let Some((file_id, bps, _)) = resolve_playable_file(session, uri, bitrate).await else {
         return;
     };
     match AudioFile::open(session, file_id, bps).await {

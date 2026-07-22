@@ -26,10 +26,22 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.Phono.Splash">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Spotify Step 1 loopback redirect fallback (WebView + local server). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="http"
+                    android:host="127.0.0.1"
+                    android:port="8898"
+                    android:path="/login" />
             </intent-filter>
         </activity>
 
@@ -43,7 +55,7 @@
             </intent-filter>
         </service>
 
-        <!-- Optional TIDAL offline downloads (Media3 DownloadService). -->
+        <!-- Offline downloads (Media3 TIDAL + custom Spotify FGS). -->
         <service
             android:name=".playback.tidal.TidalDownloadService"
             android:exported="false"
@@ -53,6 +65,11 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </service>
+
+        <service
+            android:name=".playback.download.SpotifyDownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
     </application>
 </manifest>

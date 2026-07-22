@@ -72,6 +72,8 @@ interface PlaybackBackend {
     // --- settings -----------------------------------------------------------
     fun getStreamingQuality(): StreamingQuality
     fun setStreamingQuality(quality: StreamingQuality)
+    fun getDownloadQuality(): StreamingQuality = StreamingQuality.HIGH
+    fun setDownloadQuality(quality: StreamingQuality) {}
     fun getGaplessEnabled(): Boolean
     fun setGaplessEnabled(enabled: Boolean)
     fun getNormalizationEnabled(): Boolean

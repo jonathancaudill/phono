@@ -21,6 +21,9 @@ import com.lightphone.spotify.data.local.LikedTrackEntity
 import com.lightphone.spotify.data.local.PlaylistEntity
 import com.lightphone.spotify.data.local.SavedAlbumEntity
 import com.lightphone.spotify.data.session.SessionEvent
+import com.lightphone.spotify.data.backend.BackendCapabilities
+import com.lightphone.spotify.data.backend.CollectionKind
+import com.lightphone.spotify.data.backend.collectionUri
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ffi.NormalizationType
 import com.lightphone.spotify.ffi.StreamingQuality
@@ -28,6 +31,7 @@ import com.lightphone.spotify.ui.components.PhonoContextMenuItem
 import com.lightphone.spotify.playback.PlaybackController
 import com.lightphone.spotify.playback.PlaybackUiState
 import com.lightphone.spotify.playback.SettingsSnapshot
+import com.lightphone.spotify.playback.download.DownloadStates
 import com.lightphone.spotify.ui.light.ThemePreferences
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -101,6 +105,7 @@ data class PlayingExtrasState(
 
 data class SettingsUiState(
     val streamingQuality: StreamingQuality = StreamingQuality.NORMAL,
+    val downloadQuality: StreamingQuality = StreamingQuality.HIGH,
     val tidalAudioQuality: com.lightphone.spotify.data.tidal.TidalAudioQuality =
         com.lightphone.spotify.data.tidal.TidalAudioQuality.DEFAULT,
     val tidalDownloadQuality: com.lightphone.spotify.data.tidal.TidalAudioQuality =
@@ -202,36 +207,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     val playback: StateFlow<PlaybackUiState> = controller.state
 
-    /** Offline downloads (TIDAL only). Empty on the Spotify backend. */
+    /** Offline downloads (Room-backed). Empty when the backend does not support pins. */
     val downloads: StateFlow<List<com.lightphone.spotify.data.local.DownloadedTrackEntity>> =
-        if (backendChoice == com.lightphone.spotify.data.backend.BackendChoice.TIDAL) {
+        if (controller.capabilities.downloads) {
             com.lightphone.spotify.data.local.PhonoDatabase.get(app)
                 .downloadedTrackDao()
                 .observeAll()
                 .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptyList())
         } else {
-            MutableStateFlow<List<com.lightphone.spotify.data.local.DownloadedTrackEntity>>(emptyList())
+            MutableStateFlow(emptyList())
         }
 
-    @androidx.media3.common.util.UnstableApi
     val downloadCollections: StateFlow<List<com.lightphone.spotify.data.local.DownloadedCollectionWithProgress>> =
-        if (backendChoice == com.lightphone.spotify.data.backend.BackendChoice.TIDAL) {
+        if (controller.capabilities.downloads) {
             com.lightphone.spotify.data.local.PhonoDatabase.get(app)
                 .downloadedCollectionDao()
                 .observeCollectionsWithProgress(
-                    completedState = androidx.media3.exoplayer.offline.Download.STATE_COMPLETED,
-                    queuedState = androidx.media3.exoplayer.offline.Download.STATE_QUEUED,
-                    downloadingState = androidx.media3.exoplayer.offline.Download.STATE_DOWNLOADING,
-                    restartingState = androidx.media3.exoplayer.offline.Download.STATE_RESTARTING,
-                    failedState = androidx.media3.exoplayer.offline.Download.STATE_FAILED,
+                    completedState = DownloadStates.COMPLETED,
+                    queuedState = DownloadStates.QUEUED,
+                    downloadingState = DownloadStates.DOWNLOADING,
+                    restartingState = DownloadStates.RESTARTING,
+                    failedState = DownloadStates.FAILED,
                 )
                 .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptyList())
         } else {
             MutableStateFlow(emptyList())
         }
 
-    val downloadsSupported: Boolean =
-        backendChoice == com.lightphone.spotify.data.backend.BackendChoice.TIDAL
+    val downloadsSupported: Boolean = controller.capabilities.downloads
+    val capabilities: BackendCapabilities = controller.capabilities
 
     fun observeDownloadCollectionTracks(
         collectionUri: String,
@@ -244,50 +248,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Pin a track for offline playback (uses download quality, not streaming). */
-    @androidx.media3.common.util.UnstableApi
     fun downloadTrack(track: TrackMetadata) {
         if (!downloadsSupported) return
-        val quality = controller.getTidalDownloadQuality().apiValue
-        com.lightphone.spotify.playback.tidal.TidalDownloadCenter.download(
-            getApplication(),
-            track,
-            quality = quality,
-        )
+        val quality = controller.downloadQualityApiValue()
+        controller.offlineDownloads.download(getApplication(), track, quality)
     }
 
-    @androidx.media3.common.util.UnstableApi
     fun removeDownload(track: TrackMetadata) {
         if (!downloadsSupported) return
-        // Prefer the quality the file was pinned at (may differ from current setting).
         val quality = downloads.value.firstOrNull { it.uri == track.uri }?.quality
-            ?: controller.getTidalDownloadQuality().apiValue
-        com.lightphone.spotify.playback.tidal.TidalDownloadCenter.remove(
-            getApplication(),
-            track,
-            quality = quality,
-        )
+            ?: controller.downloadQualityApiValue()
+        controller.offlineDownloads.remove(getApplication(), track, quality)
     }
 
-    @androidx.media3.common.util.UnstableApi
     fun removeDownloadCollection(collectionUri: String) {
         if (!downloadsSupported) return
-        com.lightphone.spotify.playback.tidal.TidalDownloadCenter.removeCollection(
-            getApplication(),
-            collectionUri,
-        )
+        controller.offlineDownloads.removeCollection(getApplication(), collectionUri)
     }
 
-    /** Download every track in the current album detail (TIDAL only). */
-    @androidx.media3.common.util.UnstableApi
+    /** Download every track in the current album detail. */
     fun downloadCurrentAlbum() {
         if (!downloadsSupported) return
         val album = _albumDetail.value.album ?: return
         val tracks = album.tracks?.items.orEmpty().map { it.toMetadata() }
         if (tracks.isEmpty()) return
-        val quality = controller.getTidalDownloadQuality().apiValue
-        com.lightphone.spotify.playback.tidal.TidalDownloadCenter.downloadCollection(
+        val quality = controller.downloadQualityApiValue()
+        controller.offlineDownloads.downloadCollection(
             context = getApplication(),
-            collectionUri = album.uri.ifBlank { "tidal:album:${album.id}" },
+            collectionUri = collectionUri(
+                backendChoice, CollectionKind.Album, album.id, album.uri,
+            ),
             type = "album",
             name = album.name,
             artUrl = album.images.firstOrNull()?.url,
@@ -296,24 +286,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    @androidx.media3.common.util.UnstableApi
     fun removeCurrentAlbumDownloads() {
         if (!downloadsSupported) return
         val album = _albumDetail.value.album ?: return
-        removeDownloadCollection(album.uri.ifBlank { "tidal:album:${album.id}" })
+        removeDownloadCollection(
+            collectionUri(backendChoice, CollectionKind.Album, album.id, album.uri),
+        )
     }
 
-    /** Download every track in the current playlist detail (TIDAL only). */
-    @androidx.media3.common.util.UnstableApi
+    /** Download every track in the current playlist detail. */
     fun downloadCurrentPlaylist() {
         if (!downloadsSupported) return
         val detail = _playlistDetail.value.detail ?: return
         val tracks = _playlistDetail.value.tracks.map { it.track.toMetadata() }
         if (tracks.isEmpty()) return
-        val quality = controller.getTidalDownloadQuality().apiValue
-        com.lightphone.spotify.playback.tidal.TidalDownloadCenter.downloadCollection(
+        val quality = controller.downloadQualityApiValue()
+        controller.offlineDownloads.downloadCollection(
             context = getApplication(),
-            collectionUri = detail.uri.ifBlank { "tidal:playlist:${detail.id}" },
+            collectionUri = collectionUri(
+                backendChoice, CollectionKind.Playlist, detail.id, detail.uri,
+            ),
             type = "playlist",
             name = detail.name,
             artUrl = detail.images?.firstOrNull()?.url,
@@ -322,11 +314,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    @androidx.media3.common.util.UnstableApi
     fun removeCurrentPlaylistDownloads() {
         if (!downloadsSupported) return
         val detail = _playlistDetail.value.detail ?: return
-        removeDownloadCollection(detail.uri.ifBlank { "tidal:playlist:${detail.id}" })
+        removeDownloadCollection(
+            collectionUri(backendChoice, CollectionKind.Playlist, detail.id, detail.uri),
+        )
     }
 
     /** Aggregate download state for album/playlist header + menus. */
@@ -337,10 +330,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         var inProgress = 0
         for (uri in trackUris) {
             when (byUri[uri]?.state) {
-                androidx.media3.exoplayer.offline.Download.STATE_COMPLETED -> completed++
-                androidx.media3.exoplayer.offline.Download.STATE_DOWNLOADING,
-                androidx.media3.exoplayer.offline.Download.STATE_QUEUED,
-                androidx.media3.exoplayer.offline.Download.STATE_RESTARTING,
+                DownloadStates.COMPLETED -> completed++
+                DownloadStates.DOWNLOADING,
+                DownloadStates.QUEUED,
+                DownloadStates.RESTARTING,
                 -> inProgress++
                 else -> Unit
             }
@@ -367,7 +360,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             (row.completed_count in 1 until row.track_count)
     }
 
-    @androidx.media3.common.util.UnstableApi
     fun downloadAlbumById(albumId: String, uri: String = "") {
         if (!downloadsSupported) return
         viewModelScope.launch {
@@ -376,10 +368,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val album = result.album
                 val tracks = album.tracks?.items.orEmpty().map { it.toMetadata() }
                 if (tracks.isEmpty()) return@runCatching
-                val quality = controller.getTidalDownloadQuality().apiValue
-                com.lightphone.spotify.playback.tidal.TidalDownloadCenter.downloadCollection(
+                val quality = controller.downloadQualityApiValue()
+                controller.offlineDownloads.downloadCollection(
                     context = getApplication(),
-                    collectionUri = uri.ifBlank { album.uri.ifBlank { "tidal:album:$albumId" } },
+                    collectionUri = collectionUri(
+                        backendChoice, CollectionKind.Album, albumId, uri.ifBlank { album.uri },
+                    ),
                     type = "album",
                     name = album.name,
                     artUrl = album.images.firstOrNull()?.url,
@@ -392,7 +386,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    @androidx.media3.common.util.UnstableApi
     fun downloadPlaylistById(playlistId: String, uri: String = "") {
         if (!downloadsSupported) return
         viewModelScope.launch {
@@ -401,12 +394,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val detail = result.detail
                 val tracks = result.tracks.mapNotNull { it.track?.toMetadata() }
                 if (tracks.isEmpty()) return@runCatching
-                val quality = controller.getTidalDownloadQuality().apiValue
-                com.lightphone.spotify.playback.tidal.TidalDownloadCenter.downloadCollection(
+                val quality = controller.downloadQualityApiValue()
+                controller.offlineDownloads.downloadCollection(
                     context = getApplication(),
-                    collectionUri = uri.ifBlank {
-                        detail.uri.ifBlank { "tidal:playlist:$playlistId" }
-                    },
+                    collectionUri = collectionUri(
+                        backendChoice,
+                        CollectionKind.Playlist,
+                        playlistId,
+                        uri.ifBlank { detail.uri },
+                    ),
                     type = "playlist",
                     name = detail.name,
                     artUrl = detail.images?.firstOrNull()?.url,
@@ -610,17 +606,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _settings.value = snap.toUiState(
                 showAdvanced = current.showAdvanced,
                 darkTheme = current.darkTheme,
-                tidalAudioQuality = if (downloadsSupported) {
+                downloadQuality = if (capabilities.spotifyStreamingQuality) {
+                    controller.getSpotifyDownloadQuality()
+                } else {
+                    current.downloadQuality
+                },
+                tidalAudioQuality = if (capabilities.tidalStyleAudioQuality) {
                     controller.getTidalAudioQuality()
                 } else {
                     current.tidalAudioQuality
                 },
-                tidalDownloadQuality = if (downloadsSupported) {
+                tidalDownloadQuality = if (capabilities.tidalStyleAudioQuality) {
                     controller.getTidalDownloadQuality()
                 } else {
                     current.tidalDownloadQuality
                 },
-                tidalReportPlays = if (downloadsSupported) {
+                tidalReportPlays = if (capabilities.tidalStyleAudioQuality) {
                     controller.tidalReportPlaysEnabled()
                 } else {
                     current.tidalReportPlays
@@ -1806,6 +1807,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         controller.setStreamingQuality(quality)
     }
 
+    fun setDownloadQuality(quality: StreamingQuality) {
+        // Future-only: never requeues or rewrites existing pins.
+        _settings.value = _settings.value.copy(downloadQuality = quality)
+        controller.setSpotifyDownloadQuality(quality)
+    }
+
     fun setTidalAudioQuality(quality: com.lightphone.spotify.data.tidal.TidalAudioQuality) {
         _settings.value = _settings.value.copy(tidalAudioQuality = quality)
         controller.setTidalAudioQuality(quality)
@@ -1897,8 +1904,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 add(PhonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink))
                 add(PhonoContextMenuItem("Remove From Library", ContextMenuAction.RemoveFromLibrary))
                 if (downloadsSupported) {
-                    val collectionUri = target.uri.ifBlank { "tidal:album:${target.albumId}" }
-                    if (isCollectionDownloaded(collectionUri) || isCollectionDownloading(collectionUri)) {
+                    val collUri = collectionUri(
+                        backendChoice, CollectionKind.Album, target.albumId, target.uri,
+                    )
+                    if (isCollectionDownloaded(collUri) || isCollectionDownloading(collUri)) {
                         add(PhonoContextMenuItem("Remove download", ContextMenuAction.RemoveDownload))
                     } else {
                         add(PhonoContextMenuItem("Download", ContextMenuAction.Download))
@@ -1911,8 +1920,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     add(PhonoContextMenuItem("Delete Playlist", ContextMenuAction.DeletePlaylist))
                 }
                 if (downloadsSupported) {
-                    val collectionUri = target.uri.ifBlank { "tidal:playlist:${target.playlistId}" }
-                    if (isCollectionDownloaded(collectionUri) || isCollectionDownloading(collectionUri)) {
+                    val collUri = collectionUri(
+                        backendChoice, CollectionKind.Playlist, target.playlistId, target.uri,
+                    )
+                    if (isCollectionDownloaded(collUri) || isCollectionDownloading(collUri)) {
                         add(PhonoContextMenuItem("Remove download", ContextMenuAction.RemoveDownload))
                     } else {
                         add(PhonoContextMenuItem("Download", ContextMenuAction.Download))
@@ -1959,11 +1970,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 when (target) {
                     is ContextMenuTarget.Album ->
                         removeDownloadCollection(
-                            target.uri.ifBlank { "tidal:album:${target.albumId}" },
+                            collectionUri(
+                                backendChoice, CollectionKind.Album, target.albumId, target.uri,
+                            ),
                         )
                     is ContextMenuTarget.Playlist ->
                         removeDownloadCollection(
-                            target.uri.ifBlank { "tidal:playlist:${target.playlistId}" },
+                            collectionUri(
+                                backendChoice, CollectionKind.Playlist, target.playlistId, target.uri,
+                            ),
                         )
                     is ContextMenuTarget.Track -> Unit
                 }
@@ -2021,6 +2036,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 private fun SettingsSnapshot.toUiState(
     showAdvanced: Boolean,
     darkTheme: Boolean,
+    downloadQuality: StreamingQuality = StreamingQuality.HIGH,
     tidalAudioQuality: com.lightphone.spotify.data.tidal.TidalAudioQuality =
         com.lightphone.spotify.data.tidal.TidalAudioQuality.DEFAULT,
     tidalDownloadQuality: com.lightphone.spotify.data.tidal.TidalAudioQuality =
@@ -2028,6 +2044,7 @@ private fun SettingsSnapshot.toUiState(
     tidalReportPlays: Boolean = true,
 ) = SettingsUiState(
     streamingQuality = streamingQuality,
+    downloadQuality = downloadQuality,
     tidalAudioQuality = tidalAudioQuality,
     tidalDownloadQuality = tidalDownloadQuality,
     tidalReportPlays = tidalReportPlays,

@@ -10,7 +10,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import kotlinx.coroutines.flow.Flow
 
-/** Album or playlist pinned for offline download (TIDAL). */
+/** Album or playlist pinned for offline download. */
 @Entity(tableName = "downloaded_collections")
 data class DownloadedCollectionEntity(
     @PrimaryKey val uri: String,

@@ -52,6 +52,27 @@ const SPOTIFY_OGG_HEADER_END: u64 = 0xa7;
 
 const LOAD_HANDLES_POISON_MSG: &str = "load handles mutex should not be poisoned";
 
+fn find_offline_pin(pin_dir: &std::path::Path, track_id_base62: &str) -> Option<std::path::PathBuf> {
+    if !pin_dir.is_dir() {
+        return None;
+    }
+    let prefix = format!("{track_id_base62}_");
+    let mut matches: Vec<_> = fs::read_dir(pin_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension().and_then(|e| e.to_str()) == Some("ogg")
+                && p.file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.starts_with(&prefix) || s == track_id_base62)
+                    .unwrap_or(false)
+        })
+        .collect();
+    matches.sort();
+    matches.pop()
+}
+
 pub type PlayerResult = Result<(), Error>;
 
 pub struct Player {
@@ -1001,10 +1022,21 @@ impl PlayerTrackLoader {
         track_uri: SpotifyUri,
         position_ms: u32,
     ) -> Option<PlayerLoadedTrackData> {
-        match track_uri {
-            SpotifyUri::Track { .. } | SpotifyUri::Episode { .. } => {
+        match &track_uri {
+            SpotifyUri::Track { id } => {
+                if let Some(ref pin_dir) = self.config.offline_pin_directory {
+                    if let Ok(base62) = id.to_base62() {
+                        if let Some(path) = find_offline_pin(pin_dir, &base62) {
+                            info!("Loading offline pin <{path:?}> for <{track_uri}>");
+                            return self
+                                .load_pinned_track(track_uri.clone(), &path, position_ms)
+                                .await;
+                        }
+                    }
+                }
                 self.load_remote_track(track_uri, position_ms).await
             }
+            SpotifyUri::Episode { .. } => self.load_remote_track(track_uri, position_ms).await,
             SpotifyUri::Local { .. } => self.load_local_track(track_uri, position_ms).await,
             _ => {
                 error!("Cannot handle load of track with URI: <{track_uri}>",);
@@ -1253,6 +1285,87 @@ impl PlayerTrackLoader {
                 is_explicit,
             });
         }
+    }
+
+    async fn load_pinned_track(
+        &self,
+        track_uri: SpotifyUri,
+        path: &std::path::Path,
+        position_ms: u32,
+    ) -> Option<PlayerLoadedTrackData> {
+        let src = match File::open(path) {
+            Ok(src) => src,
+            Err(e) => {
+                error!("Failed to open offline pin {path:?}: {e}");
+                return None;
+            }
+        };
+
+        let mut hint = Hint::new();
+        hint.with_extension("ogg");
+
+        let decoder = match SymphoniaDecoder::new(src, hint) {
+            Ok(decoder) => decoder,
+            Err(e) => {
+                error!("Error decoding offline pin {path:?}: {e}");
+                return None;
+            }
+        };
+
+        let mut decoder = Box::new(decoder);
+        let normalisation_data = decoder.normalisation_data().unwrap_or_default();
+
+        let stream_position_ms = match decoder.seek(position_ms) {
+            Ok(new_position_ms) => new_position_ms,
+            Err(e) => {
+                error!("load_pinned_track seek to {position_ms} failed: {e}");
+                return None;
+            }
+        };
+
+        let file_size = fs::metadata(path).ok()?.len().max(1);
+        // ~40 bytes/ms at Ogg Vorbis 320 kbps
+        let duration_ms = ((file_size * 1000) / 40_000).max(1) as u32;
+        let bytes_per_second = ((file_size * 1000) / duration_ms.max(1) as u64) as usize;
+        let stream_loader_controller = StreamLoaderController::from_local_file(file_size);
+
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Offline track")
+            .to_string();
+
+        info!("Loaded offline pin <{name}> from {}", path.display());
+
+        Some(PlayerLoadedTrackData {
+            decoder,
+            normalisation_data,
+            stream_loader_controller,
+            bytes_per_second,
+            duration_ms,
+            stream_position_ms,
+            is_explicit: false,
+            audio_item: AudioItem {
+                duration_ms,
+                uri: track_uri.to_uri().unwrap_or_default(),
+                track_id: track_uri,
+                files: Default::default(),
+                name,
+                covers: vec![],
+                language: vec![],
+                is_explicit: false,
+                availability: Ok(()),
+                alternatives: None,
+                unique_fields: UniqueFields::Local {
+                    artists: None,
+                    album: None,
+                    album_artists: None,
+                    number: None,
+                    disc_number: None,
+                    path: path.to_path_buf(),
+                },
+            },
+        })
     }
 
     async fn load_local_track(

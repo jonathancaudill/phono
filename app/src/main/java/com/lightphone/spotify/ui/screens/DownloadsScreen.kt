@@ -19,10 +19,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.media3.exoplayer.offline.Download
 import com.lightphone.spotify.data.TrackMetadata
 import com.lightphone.spotify.data.local.DownloadedCollectionWithProgress
 import com.lightphone.spotify.data.local.DownloadedTrackEntity
+import com.lightphone.spotify.playback.download.DownloadStates
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
 import com.lightphone.spotify.ui.components.PhonoMediaListItem
@@ -136,7 +136,7 @@ fun DownloadCollectionDetailScreen(
                 else -> CustomScrollView(state = listState) {
                     items(tracks, key = { it.uri }) { row ->
                         val track = remember(row.uri) { row.toTrackMetadata() }
-                        val completed = row.state == Download.STATE_COMPLETED
+                        val completed = row.state == DownloadStates.COMPLETED
                         Column {
                             PhonoMediaListItem(
                                 primaryText = row.title,
@@ -192,11 +192,11 @@ private fun collectionSubtitle(row: DownloadedCollectionWithProgress): String {
 private fun downloadTrackSubtitle(row: DownloadedTrackEntity): String {
     val artists = row.artists.ifBlank { "Unknown artist" }
     val status = when (row.state) {
-        Download.STATE_COMPLETED -> null
-        Download.STATE_DOWNLOADING, Download.STATE_QUEUED, Download.STATE_RESTARTING -> "Downloading…"
-        Download.STATE_FAILED -> "Failed"
-        Download.STATE_STOPPED -> "Paused"
-        Download.STATE_REMOVING -> "Removing…"
+        DownloadStates.COMPLETED -> null
+        DownloadStates.DOWNLOADING, DownloadStates.QUEUED, DownloadStates.RESTARTING -> "Downloading…"
+        DownloadStates.FAILED -> "Failed"
+        DownloadStates.STOPPED -> "Paused"
+        DownloadStates.REMOVING -> "Removing…"
         else -> "Pending"
     }
     return if (status != null) "$artists · $status" else artists

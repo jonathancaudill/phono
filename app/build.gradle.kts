@@ -48,6 +48,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
+            // Keep Log.e/w so OAuth diagnosis survives release (proguard-android-optimize
+            // strips Log.d/v/i; we also pin OAuthWebView + Playback login logs).
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

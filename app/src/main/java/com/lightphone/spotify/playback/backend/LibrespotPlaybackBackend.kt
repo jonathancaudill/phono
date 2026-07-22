@@ -140,6 +140,8 @@ class LibrespotPlaybackBackend(
     // --- settings -----------------------------------------------------------
     override fun getStreamingQuality(): StreamingQuality = engine.getStreamingQuality()
     override fun setStreamingQuality(quality: StreamingQuality) = engine.setStreamingQuality(quality)
+    override fun getDownloadQuality(): StreamingQuality = engine.getDownloadQuality()
+    override fun setDownloadQuality(quality: StreamingQuality) = engine.setDownloadQuality(quality)
     override fun getGaplessEnabled(): Boolean = engine.getGaplessEnabled()
     override fun setGaplessEnabled(enabled: Boolean) = engine.setGaplessEnabled(enabled)
     override fun getNormalizationEnabled(): Boolean = engine.getNormalizationEnabled()

@@ -9,9 +9,10 @@ import androidx.room.Query
 import kotlinx.coroutines.flow.Flow
 
 /**
- * Index of TIDAL tracks pinned for offline playback (Media3 `DownloadManager`
- * writes the audio into the shared no-evictor cache; this row drives the UI and
- * storage totals). `uri` is the canonical `tidal:track:{id}` id.
+ * Index of tracks pinned for offline playback. Audio lives in a backend-specific
+ * durable store (Media3 pin cache for TIDAL; decrypted Ogg for Spotify); this row
+ * drives the UI and storage totals. `uri` is the canonical namespaced track id
+ * (`spotify:track:…` / `tidal:track:…`).
  */
 @Entity(tableName = "downloaded_tracks")
 data class DownloadedTrackEntity(

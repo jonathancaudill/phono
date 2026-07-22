@@ -2,10 +2,17 @@
 <!--
   TIDAL signed CDN URLs are often http://*.audio.tidal.com. Without this,
   Android blocks cleartext and ExoPlayer only reports "Source error".
+
+  Spotify OAuth redirects to http://127.0.0.1:…/login (Keymaster loopback).
+  TIDAL uses an HTTPS redirect, so it never needed this; Spotify email-OTP
+  SPA navigations sometimes miss shouldOverrideUrlLoading and then die on
+  ERR_CLEARTEXT_NOT_PERMITTED unless loopback is allowlisted.
 -->
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">tidal.com</domain>
         <domain includeSubdomains="true">tidalhifi.com</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
     </domain-config>
 </network-security-config>

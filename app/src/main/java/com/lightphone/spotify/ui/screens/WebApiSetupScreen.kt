@@ -1,9 +1,6 @@
 package com.lightphone.spotify.ui.screens
 
-import android.net.Uri
-import android.webkit.WebResourceRequest
 import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +8,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
@@ -29,6 +27,7 @@ import com.lightphone.spotify.data.webapi.WebApiAuth
 import com.lightphone.spotify.data.webapi.WebApiSessionState
 import com.lightphone.spotify.data.webapi.parseWebApiQrPayload
 import com.lightphone.spotify.ui.AppViewModel
+import com.lightphone.spotify.ui.configureOAuthWebView
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.PhonoScreenShell
@@ -86,30 +85,14 @@ fun WebApiSetupScreen(vm: AppViewModel) {
     }
 
     if (showWebView && authUrl != null) {
-        Box(Modifier.fillMaxSize().background(colors.background)) {
+        Box(Modifier.fillMaxSize().background(colors.background).imePadding()) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { context ->
                     WebView(context).apply {
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        webViewClient = object : WebViewClient() {
-                            override fun shouldOverrideUrlLoading(
-                                view: WebView?,
-                                request: WebResourceRequest?,
-                            ): Boolean {
-                                val uri = request?.url ?: return false
-                                if (matchesRedirectUri(uri, WebApiAuth.REDIRECT_URI)) {
-                                    val code = uri.getQueryParameter("code")
-                                    val state = uri.getQueryParameter("state")
-                                    if (code != null) {
-                                        vm.completeWebApiAuth(code, state) { result ->
-                                            if (result.isSuccess) showWebView = false
-                                        }
-                                    }
-                                    return true
-                                }
-                                return false
+                        configureOAuthWebView(WebApiAuth.REDIRECT_URI) { code, state ->
+                            vm.completeWebApiAuth(code, state) { result ->
+                                if (result.isSuccess) showWebView = false
                             }
                         }
                         loadUrl(authUrl!!)

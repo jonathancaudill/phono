@@ -39,6 +39,7 @@ import com.lightphone.spotify.data.SearchResults
 import coil.Coil
 import com.lightphone.spotify.data.TrackMetadata
 import com.lightphone.spotify.data.toMetadata
+import com.lightphone.spotify.data.backend.BackendCapabilities
 import com.lightphone.spotify.data.backend.BackendChoice
 import com.lightphone.spotify.data.tidal.TidalApiClient
 import com.lightphone.spotify.data.tidal.TidalAuth
@@ -46,7 +47,10 @@ import com.lightphone.spotify.data.tidal.TidalRepository
 import com.lightphone.spotify.data.tidal.TidalSessionState
 import com.lightphone.spotify.playback.backend.PlaybackBackend
 import com.lightphone.spotify.playback.backend.PlaybackEventListener
-import com.lightphone.spotify.playback.tidal.TidalDownloadCenter
+import com.lightphone.spotify.playback.download.OfflineDownloadCenter
+import com.lightphone.spotify.playback.download.OfflinePinHygiene
+import com.lightphone.spotify.playback.download.SpotifyDownloadCenter
+import com.lightphone.spotify.playback.download.TidalOfflineDownloadCenter
 import com.lightphone.spotify.playback.tidal.TidalPlaybackBackend
 import com.lightphone.spotify.data.webapi.SpotifyWebApi
 import com.lightphone.spotify.data.webapi.WebApiAuth
@@ -140,11 +144,19 @@ class PlaybackController private constructor(
         if (backendChoice == BackendChoice.TIDAL) TidalAuth(appContext) else null
     private val tidalApi: TidalApiClient? = tidalAuth?.let { TidalApiClient(it) }
 
-    init {
-        if (tidalAuth != null && tidalApi != null) {
-            TidalDownloadCenter.bind(tidalAuth, tidalApi)
+    val capabilities: BackendCapabilities = BackendCapabilities.forChoice(backendChoice)
+
+    /**
+     * Offline pin façade for the active backend. TIDAL uses Media3; Spotify uses
+     * [com.lightphone.spotify.playback.download.SpotifyDownloadCenter] once wired.
+     */
+    val offlineDownloads: OfflineDownloadCenter =
+        when (backendChoice) {
+            BackendChoice.TIDAL -> TidalOfflineDownloadCenter(tidalAuth!!, tidalApi!!)
+            BackendChoice.SPOTIFY -> SpotifyDownloadCenter.also {
+                it.bindEngine { runCatching { PlaybackEngineHolder.createEngine(appContext) }.getOrNull() }
+            }
         }
-    }
 
     private val streamingPolicy = StreamingPolicy(this)
 
@@ -304,6 +316,7 @@ class PlaybackController private constructor(
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             networkLostGraceJob?.cancel()
+            OfflinePinHygiene.markOnline(appContext)
             scope.launch {
                 _state.update {
                     recomputeStatusMessage(it.copy(networkOnline = true, sessionExpired = false))
@@ -330,6 +343,9 @@ class PlaybackController private constructor(
         }
 
         override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                OfflinePinHygiene.markOnline(appContext)
+            }
             streamingPolicy.onCapabilitiesChanged(caps)
             val transport = when {
                 caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
@@ -339,27 +355,59 @@ class PlaybackController private constructor(
                     NetworkCapabilities.TRANSPORT_CELLULAR
                 else -> null
             }
-            if (transport != null && lastTransport != null && transport != lastTransport) {
-                if (pendingTransport == transport) {
-                    transportConfirmCount++
-                } else {
-                    pendingTransport = transport
-                    transportConfirmCount = 1
-                }
-            } else if (transport == lastTransport) {
+            // Prefer cellular over a Wi‑Fi blip: do not treat a cellular→Wi‑Fi
+            // handoff as confirmed until StreamingPolicy's 2‑minute Wi‑Fi gate.
+            // Wi‑Fi→cellular (and same-transport) keep the existing sample confirm.
+            val wifiHandoffBlocked = transport == NetworkCapabilities.TRANSPORT_WIFI &&
+                lastTransport == NetworkCapabilities.TRANSPORT_CELLULAR &&
+                !streamingPolicy.shouldPreferWifi(caps)
+            if (wifiHandoffBlocked) {
                 pendingTransport = null
                 transportConfirmCount = 0
+                return
             }
-            lastTransport = transport ?: lastTransport
-            if (
-                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
-                transportConfirmCount >= TRANSPORT_CONFIRM_SAMPLES &&
-                (_state.value.isPlaying || _state.value.reconnecting)
-            ) {
-                pendingTransport = null
-                transportConfirmCount = 0
-                debouncedForceReconnect()
+            considerTransportHandoff(transport, caps)
+        }
+    }
+
+    /**
+     * Called when [StreamingPolicy]'s Wi‑Fi stability gate elapses so a deferred
+     * cellular→Wi‑Fi session handoff can proceed without waiting for another
+     * capabilities callback.
+     */
+    internal fun onWifiPreferGateElapsed(caps: NetworkCapabilities) {
+        val transport = when {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ->
+                NetworkCapabilities.TRANSPORT_WIFI
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ->
+                NetworkCapabilities.TRANSPORT_CELLULAR
+            else -> null
+        } ?: return
+        considerTransportHandoff(transport, caps)
+    }
+
+    private fun considerTransportHandoff(transport: Int?, caps: NetworkCapabilities) {
+        if (transport != null && lastTransport != null && transport != lastTransport) {
+            if (pendingTransport == transport) {
+                transportConfirmCount++
+            } else {
+                pendingTransport = transport
+                transportConfirmCount = 1
             }
+        } else if (transport == lastTransport) {
+            pendingTransport = null
+            transportConfirmCount = 0
+        }
+        lastTransport = transport ?: lastTransport
+        if (
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+            transportConfirmCount >= TRANSPORT_CONFIRM_SAMPLES &&
+            (_state.value.isPlaying || _state.value.reconnecting)
+        ) {
+            pendingTransport = null
+            transportConfirmCount = 0
+            debouncedForceReconnect()
         }
     }
 
@@ -550,6 +598,7 @@ class PlaybackController private constructor(
         if (!engineReady) return
         val eng = requireBackend()
         pendingSettings.streamingQuality?.let { eng.setStreamingQuality(it) }
+        pendingSettings.downloadQuality?.let { eng.setDownloadQuality(it) }
         pendingSettings.gaplessEnabled?.let { eng.setGaplessEnabled(it) }
         pendingSettings.normalizationEnabled?.let { eng.setNormalizationEnabled(it) }
         pendingSettings.normalizationType?.let { eng.setNormalizationType(it) }
@@ -700,6 +749,7 @@ class PlaybackController private constructor(
                 runCatching { requireBackend().loginWithOauthCode(code, state) }
             }
             result.onFailure { e ->
+                android.util.Log.e("Playback", "completeLogin failed: ${e.message}", e)
                 val sessionExpired = e is SpotifyException.Auth
                 _state.update {
                     recomputeStatusMessage(
@@ -712,6 +762,7 @@ class PlaybackController private constructor(
                 }
             }
             result.onSuccess {
+                android.util.Log.i("Playback", "completeLogin ok")
                 _state.update {
                     recomputeStatusMessage(
                         it.copy(loggedIn = true, sessionExpired = false, error = null),
@@ -1090,6 +1141,29 @@ class PlaybackController private constructor(
         tidalAuth?.setDownloadQuality(quality)
     }
 
+    /**
+     * Quality string passed to [OfflineDownloadCenter.download] / collection enqueue.
+     * TIDAL: API values (`LOSSLESS`, …). Spotify: `LOW` / `NORMAL` / `HIGH`.
+     */
+    fun downloadQualityApiValue(): String = when (backendChoice) {
+        BackendChoice.TIDAL -> getTidalDownloadQuality().apiValue
+        BackendChoice.SPOTIFY -> getSpotifyDownloadQuality().name
+    }
+
+    fun getSpotifyDownloadQuality(): StreamingQuality =
+        pendingSettings.downloadQuality
+            ?: runCatching {
+                if (engineReady) requireBackend().getDownloadQuality() else null
+            }.getOrNull()
+            ?: StreamingQuality.HIGH
+
+    fun setSpotifyDownloadQuality(quality: StreamingQuality) {
+        pendingSettings.downloadQuality = quality
+        scope.launch {
+            if (ensureEngineReady()) requireBackend().setDownloadQuality(quality)
+        }
+    }
+
     fun tidalReportPlaysEnabled(): Boolean =
         (backend as? TidalPlaybackBackend)?.reportPlaysEnabled()
             ?: tidalAuth?.reportPlaysEnabled()
@@ -1241,6 +1315,7 @@ class PlaybackController private constructor(
 
     private data class PendingPlaybackSettings(
         var streamingQuality: StreamingQuality? = null,
+        var downloadQuality: StreamingQuality? = null,
         var gaplessEnabled: Boolean? = null,
         var normalizationEnabled: Boolean? = null,
         var normalizationType: NormalizationType? = null,
@@ -1782,15 +1857,24 @@ class PlaybackController private constructor(
             }
         }
         val message = when (e) {
-            is SpotifyException.Auth -> "Session expired — sign out and sign in again."
+            // Keep the real Auth message on login (e.g. state mismatch / no pending).
+            // "Session expired" is wrong for first-time OAuth failures.
+            is SpotifyException.Auth -> e.message?.takeIf { it.isNotBlank() }
+                ?: "Sign-in failed. Try again."
             is SpotifyException.Network ->
                 if (!_state.value.networkOnline) "No connection."
                 else "Can't reach Spotify right now. Try again."
             is SpotifyException.NotLoggedIn -> "Not signed in."
-            else -> httpMessage ?: "Something went wrong. Try again."
+            else -> httpMessage ?: (e.message?.takeIf { it.isNotBlank() } ?: "Something went wrong. Try again.")
         }
         if (e is SpotifyException.Auth) {
-            _state.update { recomputeStatusMessage(it.copy(sessionExpired = true)) }
+            // Only mark session-expired for post-login auth failures, not OAuth bootstrap.
+            val bootstrap = e.message?.contains("pending login", ignoreCase = true) == true ||
+                e.message?.contains("state mismatch", ignoreCase = true) == true ||
+                e.message?.contains("CSRF", ignoreCase = true) == true
+            if (!bootstrap) {
+                _state.update { recomputeStatusMessage(it.copy(sessionExpired = true)) }
+            }
         }
         return message
     }
