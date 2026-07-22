@@ -35,11 +35,11 @@ class BackendPreferences(context: Context) {
     fun isChosen(): Boolean = choice() != null
 
     fun setChoice(choice: BackendChoice) {
-        prefs.edit().putString(KEY_CHOICE, choice.name).apply()
+        prefs.edit().putString(KEY_CHOICE, choice.name).commit()
     }
 
     fun clear() {
-        prefs.edit().remove(KEY_CHOICE).apply()
+        prefs.edit().remove(KEY_CHOICE).commit()
     }
 
     companion object {

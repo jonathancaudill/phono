@@ -310,6 +310,7 @@ internal class UserPlaylistsSync(
     private val syncDao = database.librarySyncDao()
 
     suspend fun refresh(): Boolean {
+        val needsOwnerBackfill = playlistDao.hasUnresolvedOwnerNames()
         val page = pageFetcher(0)
         val head = page.items.firstOrNull()
         val sync = syncDao.get(LibraryResource.USER_PLAYLISTS)
@@ -318,7 +319,8 @@ internal class UserPlaylistsSync(
             sync.remote_total == page.total &&
             sync.head_id == head?.id &&
             sync.head_added_at == head?.snapshotId &&
-            sync.next_offset >= sync.remote_total
+            sync.next_offset >= sync.remote_total &&
+            !needsOwnerBackfill
         ) {
             return false
         }

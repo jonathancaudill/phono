@@ -96,6 +96,28 @@ internal data class TidalCreator(
     val name: String? = null,
 )
 
+@Serializable
+data class TidalUser(
+    val id: Long? = null,
+    val username: String? = null,
+    val firstName: String? = null,
+    val lastName: String? = null,
+) {
+    /** Prefer real name, then username (skip emails / placeholder `"user"`). */
+    fun displayName(): String? {
+        val full = listOfNotNull(firstName, lastName)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString(" ")
+            .ifBlank { null }
+        if (full != null) return full
+        val user = username?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        if (user.equals("user", ignoreCase = true)) return null
+        if ('@' in user) return null
+        return user
+    }
+}
+
 // --- list wrappers ---------------------------------------------------------
 
 @Serializable

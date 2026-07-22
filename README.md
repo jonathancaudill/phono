@@ -128,8 +128,12 @@ Per-query in-memory cache (5 min); filter chips reuse cached response.
 
 ### Audio stream cache
 
-Ogg chunks under `filesDir/spotify-cache/`. **Opportunistic buffering** on good Wi‑Fi:
-`buffer_current_to_end()` + `prefetch_upcoming()` via patched librespot player API.
+- **Spotify:** Ogg chunks under `filesDir/spotify-cache/`. Opportunistic buffering on
+  good networks: `buffer_current_to_end()` + `prefetch_upcoming()` via patched librespot.
+- **TIDAL:** Stream LRU under `cacheDir/tidal-stream` (~256 MiB); download pins stay under
+  `filesDir/tidal-downloads` (read-only for playback). `StreamingPolicy` banks the **rest of
+  the current track** first (`CacheWriter` / `DashDownloader`), then expands JIT resolve for
+  upcoming items. Settings “Clear Cache” clears the stream LRU only.
 
 ## Build
 

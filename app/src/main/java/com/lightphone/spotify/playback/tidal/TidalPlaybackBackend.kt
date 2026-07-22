@@ -4,10 +4,13 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.PriorityTaskManager
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.lightphone.spotify.data.native.NativeMetadataGateway
@@ -20,9 +23,8 @@ import com.lightphone.spotify.ffi.RepeatMode
 import com.lightphone.spotify.ffi.StreamingQuality
 import com.lightphone.spotify.playback.backend.PlaybackBackend
 import com.lightphone.spotify.playback.backend.PlaybackEventListener
-import java.io.File
 import java.util.concurrent.Executors
-
+import java.util.concurrent.atomic.AtomicInteger
 /**
  * [PlaybackBackend] for TIDAL, built on Media3 [ExoPlayer].
  *
@@ -64,21 +66,42 @@ class TidalPlaybackBackend(
     private var cachedQueue: QueueSnapshot =
         QueueSnapshot(null, emptyList(), null, emptyList())
 
+    private val priorityTaskManager = PriorityTaskManager()
+    private val streamBanker = TidalStreamBanker(appContext, priorityTaskManager)
     private val player: ExoPlayer by lazy { buildPlayer() }
-    private val mpdCacheDir = File(appContext.cacheDir, "tidal-mpd")
+    private val mpdCacheDir = TidalMediaCache.mpdDir(appContext)
     private val resolveExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "tidal-resolve").apply { isDaemon = true }
     }
+    private val playReporter = TidalPlaybackReporter(auth)
+
+    /** Last look-ahead depth requested by [prefetchUpcoming] (0–3). */
+    private val resolveAhead = AtomicInteger(2)
 
     /** Exposed so the MediaSession (PlaybackService) can drive TIDAL directly. */
     fun exoPlayer(): ExoPlayer = player
 
     private fun buildPlayer(): ExoPlayer {
-        val cacheFactory = TidalMediaCache.cacheDataSourceFactory(appContext, api)
+        val cacheFactory = TidalMediaCache.cacheDataSourceFactory(
+            appContext,
+            priorityTaskManager,
+            C.PRIORITY_PLAYBACK,
+        )
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMsForStreaming(
+                /* minBufferMs= */ 15_000,
+                /* maxBufferMs= */ 90_000,
+                /* bufferForPlaybackMs= */ 2_500,
+                /* bufferForPlaybackAfterRebufferMs= */ 5_000,
+            )
+            .build()
         return ExoPlayer.Builder(appContext)
             // DefaultMediaSourceFactory picks Progressive vs DASH from mime/uri
             // after we've already resolved off the main thread.
             .setMediaSourceFactory(DefaultMediaSourceFactory(cacheFactory))
+            .setLoadControl(loadControl)
+            .setPriorityTaskManager(priorityTaskManager)
+            .setPriority(C.PRIORITY_PLAYBACK)
             .setHandleAudioBecomingNoisy(true)
             .build()
             .also { it.addListener(playerListener) }
@@ -115,13 +138,23 @@ class TidalPlaybackBackend(
     override fun loginWithCachedCredentials(): Boolean = auth.isAuthorized()
 
     override fun logout() {
-        onPlayer {
-            player.stop()
-            player.clearMediaItems()
+        playReporter.onTrackStopped()
+        streamBanker.shutdown()
+        runCatching {
+            onPlayer {
+                player.stop()
+                player.clearMediaItems()
+                player.release()
+            }
         }
+        resolveExecutor.shutdownNow()
         manualMediaIds.clear()
         auth.clearAll()
     }
+
+    fun setReportPlaysEnabled(enabled: Boolean) = playReporter.setEnabled(enabled)
+
+    fun reportPlaysEnabled(): Boolean = playReporter.isEnabled()
 
     // --- transport ----------------------------------------------------------
 
@@ -138,22 +171,25 @@ class TidalPlaybackBackend(
                 runCatching { auth.ensureSessionMeta() }
                 // Resolve a window around the start index so long playlists don't
                 // block forever / burn expired CDN URLs for distant tracks.
-                val from = (start - 1).coerceAtLeast(0)
-                val to = (start + 2).coerceAtMost(uris.lastIndex)
+                val ahead = resolveAhead.get().coerceIn(0, 3)
+                val range = TidalPrefetchWindows.playStartResolveRange(start, uris.lastIndex, ahead)
                 val items = uris.mapIndexed { index, uri ->
-                    if (index in from..to) {
-                        TidalPlayableItems.fromCanonicalUri(api, uri, tidalQuality, mpdCacheDir)
+                    if (index in range) {
+                        TidalPlayableItems.fromCanonicalUri(
+                            appContext, api, uri, tidalQuality, mpdCacheDir,
+                        )
                     } else {
                         // Placeholder; replaced when approached (see onMediaItemTransition).
                         MediaItem.Builder().setMediaId(uri).setUri(Uri.EMPTY).build()
                     }
                 }
                 mainHandler.post {
+                    streamBanker.cancel()
                     player.setMediaItems(items, start, 0L)
                     player.prepare()
                     player.playWhenReady = true
                     refreshQueue()
-                    ensureResolvedAround(start)
+                    ensureResolvedAround(start, ahead)
                 }
             } catch (e: Exception) {
                 android.util.Log.e("TidalPlayback", "playUris resolve failed", e)
@@ -189,7 +225,9 @@ class TidalPlaybackBackend(
         manualMediaIds.add(uri)
         resolveExecutor.execute {
             try {
-                val item = TidalPlayableItems.fromCanonicalUri(api, uri, tidalQuality, mpdCacheDir)
+                val item = TidalPlayableItems.fromCanonicalUri(
+                    appContext, api, uri, tidalQuality, mpdCacheDir,
+                )
                 mainHandler.post {
                     val insertAt = insertionIndexForManual()
                     player.addMediaItem(insertAt, item)
@@ -278,16 +316,59 @@ class TidalPlaybackBackend(
     // --- cache / prefetch ---------------------------------------------------
 
     override fun clearAudioCache() {
-        runCatching {
-            val cache = TidalMediaCache.cache(appContext)
-            for (key in cache.keys.toList()) {
-                cache.removeResource(key)
+        runCatching { TidalMediaCache.clearStreamCache(appContext) }
+    }
+
+    /**
+     * Bank the remainder of the current track into the stream LRU (primary cellular goal).
+     * Progressive → CacheWriter; ClearDash → DashDownloader. Playback outranks the banker.
+     */
+    override fun bufferCurrentToEnd() {
+        onPlayer {
+            val item = player.currentMediaItem ?: return@onPlayer
+            if (needsResolve(item)) {
+                // Resolve first, then bank once the playable item is in place.
+                val index = player.currentMediaItemIndex
+                val canonical = item.mediaId
+                if (!canonical.startsWith("tidal:")) return@onPlayer
+                resolveExecutor.execute {
+                    try {
+                        val playable = TidalPlayableItems.fromCanonicalUri(
+                            appContext, api, canonical, tidalQuality, mpdCacheDir,
+                        )
+                        mainHandler.post {
+                            if (index < player.mediaItemCount &&
+                                player.getMediaItemAt(index).mediaId == canonical
+                            ) {
+                                if (needsResolve(player.getMediaItemAt(index))) {
+                                    player.replaceMediaItem(index, playable)
+                                }
+                                val current = player.getMediaItemAt(index)
+                                streamBanker.bankCurrentToEnd(current, player.currentPosition)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.w("TidalPlayback", "bank resolve failed for $canonical", e)
+                    }
+                }
+                return@onPlayer
             }
+            streamBanker.bankCurrentToEnd(item, player.currentPosition)
         }
     }
 
-    override fun bufferCurrentToEnd() { /* ExoPlayer buffers ahead automatically */ }
-    override fun prefetchUpcoming(ahead: UInt) { /* handled by ExoPlayer's default LoadControl */ }
+    /**
+     * Secondary look-ahead: expand JIT URL/MPD resolve for the next [ahead] items.
+     * Does not CacheWriter×N — current-track banking owns CDN priority.
+     */
+    override fun prefetchUpcoming(ahead: UInt) {
+        val depth = ahead.toInt().coerceIn(0, 3)
+        resolveAhead.set(depth)
+        if (depth <= 0) return
+        onPlayer {
+            ensureResolvedAround(player.currentMediaItemIndex, depth)
+        }
+    }
 
     // --- internals ----------------------------------------------------------
 
@@ -297,11 +378,18 @@ class TidalPlaybackBackend(
     }
 
     /** Snapshot placeholders on the main thread, resolve on the worker, replace on main. */
-    private fun ensureResolvedAround(index: Int) {
+    private fun ensureResolvedAround(index: Int, ahead: Int = resolveAhead.get()) {
         val count = player.mediaItemCount
         if (count == 0) return
+        val indices = TidalPrefetchWindows.resolvedIndices(
+            timeline = player.currentTimeline,
+            from = index,
+            ahead = ahead,
+            repeatMode = player.repeatMode,
+            shuffleModeEnabled = player.shuffleModeEnabled,
+        )
         val pending = buildList {
-            for (i in listOf(index, index + 1, index + 2)) {
+            for (i in indices) {
                 if (i !in 0 until count) continue
                 val item = player.getMediaItemAt(i)
                 if (needsResolve(item) && item.mediaId.startsWith("tidal:")) {
@@ -314,7 +402,7 @@ class TidalPlaybackBackend(
             for ((i, canonical) in pending) {
                 try {
                     val playable = TidalPlayableItems.fromCanonicalUri(
-                        api, canonical, tidalQuality, mpdCacheDir,
+                        appContext, api, canonical, tidalQuality, mpdCacheDir,
                     )
                     mainHandler.post {
                         if (i < player.mediaItemCount &&
@@ -344,7 +432,7 @@ class TidalPlaybackBackend(
         resolveExecutor.execute {
             try {
                 val playable = TidalPlayableItems.fromCanonicalUri(
-                    api, canonical, tidalQuality, mpdCacheDir,
+                    appContext, api, canonical, tidalQuality, mpdCacheDir,
                 )
                 mainHandler.post {
                     if (index < player.mediaItemCount &&
@@ -423,9 +511,17 @@ class TidalPlaybackBackend(
 
     private val playerListener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            mediaItem?.mediaId?.let { listener?.onTrackChanged(it) }
+            streamBanker.cancel()
+            mediaItem?.mediaId?.let { uri ->
+                listener?.onTrackChanged(uri)
+                playReporter.onTrackStarted(
+                    uri = uri,
+                    qualityApiValue = tidalQuality.apiValue,
+                    durationMs = player.duration.takeIf { it > 0 } ?: 0L,
+                )
+            }
             refreshQueue()
-            ensureResolvedAround(player.currentMediaItemIndex)
+            ensureResolvedAround(player.currentMediaItemIndex, resolveAhead.get())
         }
 
         override fun onPlaybackStateChanged(state: Int) {
@@ -435,16 +531,21 @@ class TidalPlaybackBackend(
                     listener?.onBuffering(true)
                 }
                 Player.STATE_READY -> listener?.onBuffering(false)
-                Player.STATE_ENDED -> listener?.onEndOfTrack()
+                Player.STATE_ENDED -> {
+                    playReporter.onTrackStopped()
+                    listener?.onEndOfTrack()
+                }
                 Player.STATE_IDLE -> {}
             }
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) {
+                playReporter.onPlaying()
                 listener?.onPlaying(player.currentPosition)
                 mainHandler.post(positionPoller)
             } else {
+                playReporter.onPaused()
                 listener?.onPaused(player.currentPosition)
             }
         }

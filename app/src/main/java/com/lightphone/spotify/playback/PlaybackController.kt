@@ -46,6 +46,7 @@ import com.lightphone.spotify.data.tidal.TidalRepository
 import com.lightphone.spotify.data.tidal.TidalSessionState
 import com.lightphone.spotify.playback.backend.PlaybackBackend
 import com.lightphone.spotify.playback.backend.PlaybackEventListener
+import com.lightphone.spotify.playback.tidal.TidalDownloadCenter
 import com.lightphone.spotify.playback.tidal.TidalPlaybackBackend
 import com.lightphone.spotify.data.webapi.SpotifyWebApi
 import com.lightphone.spotify.data.webapi.WebApiAuth
@@ -71,6 +72,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 data class QueueUiItem(
     val uri: String,
@@ -136,6 +139,12 @@ class PlaybackController private constructor(
     private val tidalAuth: TidalAuth? =
         if (backendChoice == BackendChoice.TIDAL) TidalAuth(appContext) else null
     private val tidalApi: TidalApiClient? = tidalAuth?.let { TidalApiClient(it) }
+
+    init {
+        if (tidalAuth != null && tidalApi != null) {
+            TidalDownloadCenter.bind(tidalAuth, tidalApi)
+        }
+    }
 
     private val streamingPolicy = StreamingPolicy(this)
 
@@ -203,7 +212,10 @@ class PlaybackController private constructor(
             if (engineReady) {
                 runCatching { requireBackend().logout() }
             }
+            // Always wipe both backends' auth stores so a switch cannot leave
+            // stale Step-2 / TIDAL tokens that race the next login.
             tidalAuth?.clearAll()
+            runCatching { webApiAuth.clearAll() }
             clearPlaybackCredentialFiles()
         },
     )
@@ -667,9 +679,14 @@ class PlaybackController private constructor(
 
     // --- Auth ---------------------------------------------------------------
 
-    fun beginLogin(): String {
+    /** Bring up the engine off the main thread, then return the authorize URL. */
+    suspend fun beginLogin(): String = withContext(Dispatchers.IO) {
         ensureEngineReady()
-        return requireBackend().beginLogin()
+        requireBackend().beginLogin()
+    }
+
+    fun clearLoginError() {
+        _state.update { recomputeStatusMessage(it.copy(error = null)) }
     }
 
     fun completeLogin(code: String, state: String?, onResult: (Result<Unit>) -> Unit) {
@@ -732,21 +749,23 @@ class PlaybackController private constructor(
                     sessionCoordinator.signOut(
                         onCancelInFlight = {
                             // Cancel every job that can still reach into the native engine,
-                            // then join the ones that make FFI calls so none of them can be
-                            // mid-call when rustLogout()'s credential wipe + session
-                            // shutdown runs right after this callback returns.
+                            // then join (with a short timeout) so logout always reaches
+                            // the backend picker even if a transport job is stuck.
                             reconnectDebounceJob?.cancel()
                             audioRouteDebounceJob?.cancel()
                             networkLostGraceJob?.cancel()
                             playlistUriIndexJob?.cancel()
                             transportJob?.cancel()
-                            transportJob?.join()
-                            reconnectDebounceJob?.join()
-                            audioRouteDebounceJob?.join()
+                            withTimeoutOrNull(LOGOUT_JOIN_TIMEOUT_MS) { transportJob?.join() }
+                            withTimeoutOrNull(LOGOUT_JOIN_TIMEOUT_MS) { reconnectDebounceJob?.join() }
+                            withTimeoutOrNull(LOGOUT_JOIN_TIMEOUT_MS) { audioRouteDebounceJob?.join() }
                         },
                     )
                 }
                 abandonFocus()
+                runCatching {
+                    com.lightphone.spotify.ui.WebViewAuthCleanup.clear()
+                }
                 _state.value = recomputeStatusMessage(
                     PlaybackUiState(
                         loggedIn = false,
@@ -1062,6 +1081,24 @@ class PlaybackController private constructor(
             ?.getTidalAudioQuality()
             ?: tidalAuth?.audioQuality()
             ?: com.lightphone.spotify.data.tidal.TidalAudioQuality.DEFAULT
+
+    fun getTidalDownloadQuality(): com.lightphone.spotify.data.tidal.TidalAudioQuality =
+        tidalAuth?.downloadQuality()
+            ?: com.lightphone.spotify.data.tidal.TidalAudioQuality.DEFAULT
+
+    fun setTidalDownloadQuality(quality: com.lightphone.spotify.data.tidal.TidalAudioQuality) {
+        tidalAuth?.setDownloadQuality(quality)
+    }
+
+    fun tidalReportPlaysEnabled(): Boolean =
+        (backend as? TidalPlaybackBackend)?.reportPlaysEnabled()
+            ?: tidalAuth?.reportPlaysEnabled()
+            ?: true
+
+    fun setTidalReportPlaysEnabled(enabled: Boolean) {
+        tidalAuth?.setReportPlaysEnabled(enabled)
+        (backend as? TidalPlaybackBackend)?.setReportPlaysEnabled(enabled)
+    }
 
     fun setTidalAudioQuality(quality: com.lightphone.spotify.data.tidal.TidalAudioQuality) {
         tidalAuth?.setAudioQuality(quality)
@@ -1765,6 +1802,7 @@ class PlaybackController private constructor(
         private const val RECONNECT_DEBOUNCE_MS = 6000L
         private const val AUDIO_ROUTE_DEBOUNCE_MS = 400L
         private const val TRANSPORT_CONFIRM_SAMPLES = 2
+        private const val LOGOUT_JOIN_TIMEOUT_MS = 3_000L
 
         /** Coalesce window for rapid transport taps while reconnecting so a burst
          *  of skips triggers a single native load/rebuild for the final target. */

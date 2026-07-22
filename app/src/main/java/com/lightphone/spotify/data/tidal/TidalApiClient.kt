@@ -141,6 +141,10 @@ class TidalApiClient(
 
     fun track(trackId: String): SpotifyTrack = get<TidalTrack>("/tracks/$trackId").toDomain()
 
+    /** Public-ish user profile (username / first+last) for playlist owner labels. */
+    fun userProfile(userId: String): TidalUser =
+        get("/users/${userId.trim()}")
+
     fun playlist(uuid: String): SpotifyPlaylistDetail =
         get<TidalPlaylist>("/playlists/$uuid").toDomainDetail()
 

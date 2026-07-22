@@ -8,6 +8,7 @@ import com.lightphone.spotify.data.SearchRanking
 import com.lightphone.spotify.data.SearchResults
 import com.lightphone.spotify.data.SpotifyAlbumSimple
 import com.lightphone.spotify.data.SpotifyPlaylistDetail
+import com.lightphone.spotify.data.SpotifyPlaylistOwner
 import com.lightphone.spotify.data.SpotifyPlaylistSimple
 import com.lightphone.spotify.data.SpotifyPlaylistTrackItem
 import com.lightphone.spotify.data.SpotifySavedAlbum
@@ -66,8 +67,12 @@ class TidalRepository(
             val userId = auth.userId().orEmpty()
             val isEditable = detail.owner?.id == userId && userId.isNotBlank()
             val isInLibrary = libraryRepository.playlistsSnapshot().any { it.playlist_id == uuid }
+            val resolvedOwner = resolveOwner(detail.owner)
+            resolvedOwner?.displayName
+                ?.takeIf { it.isNotBlank() && it != resolvedOwner.id }
+                ?.let { libraryRepository.updatePlaylistOwnerName(uuid, it) }
             PlaylistDetailResult(
-                detail = detail,
+                detail = detail.copy(owner = resolvedOwner),
                 tracks = tracks,
                 currentUserId = userId,
                 isEditable = isEditable,
@@ -255,7 +260,20 @@ class TidalRepository(
     override suspend fun playlistLibraryPage(
         offset: Int,
         limit: Int,
-    ): LibraryPage<SpotifyPlaylistSimple> = api.playlistsPage(offset, limit)
+    ): LibraryPage<SpotifyPlaylistSimple> = withContext(Dispatchers.IO) {
+        val page = api.playlistsPage(offset, limit)
+        val me = auth.userId().orEmpty()
+        val resolved = page.items.map { simple ->
+            val owner = simple.owner ?: return@map simple
+            val display = TidalPlaylistOwners.resolve(owner.id, owner.displayName, me)
+            simple.copy(owner = owner.copy(displayName = display)).also {
+                if (display.isNotBlank() && display != owner.id) {
+                    libraryRepository.updatePlaylistOwnerName(simple.id, display)
+                }
+            }
+        }
+        page.copy(items = resolved)
+    }
 
     // --- cache lifecycle ----------------------------------------------------
 
@@ -265,6 +283,12 @@ class TidalRepository(
 
     override fun clearSessionCaches() {
         searchCache.clear()
+    }
+
+    private fun resolveOwner(owner: SpotifyPlaylistOwner?): SpotifyPlaylistOwner? {
+        if (owner == null || owner.id.isBlank()) return owner
+        val me = auth.userId().orEmpty()
+        return owner.copy(displayName = TidalPlaylistOwners.resolve(owner.id, owner.displayName, me))
     }
 
     private fun normalize(uri: String): String = uri.substringBefore('?').trim()

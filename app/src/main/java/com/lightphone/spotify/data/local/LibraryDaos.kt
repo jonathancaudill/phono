@@ -113,6 +113,20 @@ interface PlaylistDao {
 
     @Query("UPDATE playlists SET owner_name = :ownerName WHERE playlist_id = :playlistId")
     suspend fun updateOwnerName(playlistId: String, ownerName: String)
+
+    /** True when any row still needs owner-label backfill (blank, id-as-name, or numeric). */
+    @Query(
+        """
+        SELECT EXISTS(
+            SELECT 1 FROM playlists
+            WHERE owner_name = ''
+               OR owner_name = owner_id
+               OR (length(owner_name) > 0 AND owner_name GLOB '[0-9]*')
+            LIMIT 1
+        )
+        """,
+    )
+    suspend fun hasUnresolvedOwnerNames(): Boolean
 }
 
 @Dao

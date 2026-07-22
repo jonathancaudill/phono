@@ -78,10 +78,22 @@ fun SettingsScreen(
                     Spacer(Modifier.height(legacyNToGridDp(8)))
                     NormalizationOptions(settings.normalizationType, vm::setNormalizationType)
                 }
+                if (tidalQualityUi) {
+                    SettingsToggleRow(
+                        "Report plays to TIDAL",
+                        settings.tidalReportPlays,
+                        vm::setTidalReportPlays,
+                    )
+                }
 
                 SectionLabel("Audio quality")
                 if (tidalQualityUi) {
                     TidalAudioQualityOptions(settings.tidalAudioQuality, vm::setTidalAudioQuality)
+                    SectionLabel("Download quality")
+                    TidalAudioQualityOptions(
+                        settings.tidalDownloadQuality,
+                        vm::setTidalDownloadQuality,
+                    )
                 } else {
                     StreamingQualityOptions(settings.streamingQuality, vm::setStreamingQuality)
                 }
@@ -90,7 +102,7 @@ fun SettingsScreen(
                 SettingsActionRow("Clear Cache") {
                     confirm = ConfirmRequest(
                         title = "Clear Cache",
-                        message = "Delete downloaded audio cache files? Credentials are kept.",
+                        message = "Delete temporary streaming cache? Offline downloads and credentials are kept.",
                         confirmText = "Clear",
                         onConfirm = { vm.clearAudioCache() },
                     )

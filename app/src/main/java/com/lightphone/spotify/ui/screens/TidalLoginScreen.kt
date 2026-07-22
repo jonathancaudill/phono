@@ -22,11 +22,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.lightphone.spotify.data.tidal.TidalAuth
 import com.lightphone.spotify.ui.AppViewModel
+import com.lightphone.spotify.ui.WebViewAuthCleanup
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.thelightphone.sdk.ui.LightText
 import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
+import com.thelightphone.sdk.ui.lightClickable
 
 /**
  * TIDAL PKCE login. Reuses the same WebView-intercept pattern as [LoginScreen]:
@@ -40,12 +42,26 @@ import com.thelightphone.sdk.ui.LightThemeTokens
 fun TidalLoginScreen(vm: AppViewModel) {
     val playback by vm.playback.collectAsState()
     var authUrl by remember { mutableStateOf<String?>(null) }
+    var preparing by remember { mutableStateOf(true) }
+    var signingIn by remember { mutableStateOf(false) }
+    var codeConsumed by remember { mutableStateOf(false) }
+    var retryKey by remember { mutableStateOf(0) }
+    var webView by remember { mutableStateOf<WebView?>(null) }
     val colors = LightThemeTokens.colors
-    LaunchedEffect(Unit) {
+
+    LaunchedEffect(retryKey) {
+        preparing = true
+        signingIn = false
+        codeConsumed = false
+        authUrl = null
+        WebViewAuthCleanup.clear()
         authUrl = vm.beginLogin()
+        preparing = false
+        webView?.loadUrl(authUrl!!)
     }
-    Box(Modifier.fillMaxSize().background(colors.background)) {
-        Column(Modifier.fillMaxSize()) {
+
+    Box(modifier = Modifier.fillMaxSize().background(colors.background)) {
+        Column(modifier = Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -58,13 +74,22 @@ fun TidalLoginScreen(vm: AppViewModel) {
                     color = PhonoSemanticColors.Placeholder,
                 )
             }
-            if (authUrl != null) {
-                AndroidView(
+            when {
+                preparing -> Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    LightText(text = "Preparing sign-in…", variant = LightTextVariant.Detail)
+                }
+                authUrl != null -> AndroidView(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
                     factory = { context ->
                         WebView(context).apply {
+                            webView = this
                             settings.javaScriptEnabled = true
                             settings.domStorageEnabled = true
                             settings.databaseEnabled = true
@@ -81,9 +106,14 @@ fun TidalLoginScreen(vm: AppViewModel) {
                                 ): Boolean {
                                     val uri = request?.url ?: return false
                                     if (matchesRedirectUri(uri, TidalAuth.REDIRECT_URI)) {
+                                        if (codeConsumed || signingIn) return true
                                         val code = uri.getQueryParameter("code")
                                         val state = uri.getQueryParameter("state")
-                                        if (code != null) vm.completeLogin(code, state)
+                                        if (code != null) {
+                                            codeConsumed = true
+                                            signingIn = true
+                                            vm.completeLogin(code, state)
+                                        }
                                         return true
                                     }
                                     return false
@@ -92,7 +122,20 @@ fun TidalLoginScreen(vm: AppViewModel) {
                             loadUrl(authUrl!!)
                         }
                     },
+                    update = { view ->
+                        webView = view
+                    },
                 )
+            }
+        }
+        if (signingIn && playback.error == null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(colors.background.copy(alpha = 0.92f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                LightText(text = "Signing in…", variant = LightTextVariant.Copy)
             }
         }
         playback.error?.let { message ->
@@ -112,6 +155,16 @@ fun TidalLoginScreen(vm: AppViewModel) {
                         variant = LightTextVariant.Detail,
                         color = PhonoSemanticColors.Error,
                         modifier = Modifier.padding(top = legacyNToGridDp(12)),
+                    )
+                    LightText(
+                        text = "Try again",
+                        variant = LightTextVariant.Copy,
+                        modifier = Modifier
+                            .padding(top = legacyNToGridDp(20))
+                            .lightClickable {
+                                vm.clearLoginError()
+                                retryKey += 1
+                            },
                     )
                 }
             }

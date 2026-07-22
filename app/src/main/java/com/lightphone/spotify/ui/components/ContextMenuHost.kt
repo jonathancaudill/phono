@@ -5,6 +5,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import com.lightphone.spotify.ui.AppViewModel
@@ -17,6 +18,7 @@ fun ContextMenuHost(
 ) {
     val state by vm.contextMenu.collectAsState()
     val playlists by vm.playlists.collectAsState()
+    val downloadCollections by vm.downloadCollections.collectAsState()
 
     LaunchedEffect(state.navigateToPlaylistPickerUri) {
         val uri = state.navigateToPlaylistPickerUri ?: return@LaunchedEffect
@@ -44,7 +46,9 @@ fun ContextMenuHost(
     }
 
     state.target?.let { target ->
-        val items = vm.contextMenuItemsFor(target, playlists.currentUserId)
+        val items = remember(target, playlists.currentUserId, downloadCollections) {
+            vm.contextMenuItemsFor(target, playlists.currentUserId)
+        }
         PhonoContextMenuOverlay(
             items = items,
             onItemClick = { item -> vm.onContextMenuAction(item.action) },

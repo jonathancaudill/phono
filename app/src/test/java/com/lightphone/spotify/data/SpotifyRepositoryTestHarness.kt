@@ -19,7 +19,7 @@ object SpotifyRepositoryTestHarness {
             db,
             likedTracksPageFetcher = webApi::savedTracksPage,
             savedAlbumsPageFetcher = webApi::savedAlbumsPage,
-            playlistsPageFetcher = webApi::playlistsPage,
+            playlistsPageFetcher = webApi::savedPlaylistsPage,
         )
         val detail = DetailCacheRepository(
             db,

@@ -115,6 +115,27 @@ class TidalAuth private constructor(
     }
 
     /**
+     * Quality used when enqueueing **new** offline downloads. Independent of
+     * [audioQuality]; changing this never rewrites existing pins.
+     */
+    fun downloadQuality(): TidalAudioQuality = synchronized(lock) {
+        TidalAudioQuality.fromApiValue(prefs.getString(KEY_DOWNLOAD_QUALITY, null))
+    }
+
+    fun setDownloadQuality(quality: TidalAudioQuality) = synchronized(lock) {
+        prefs.edit().putString(KEY_DOWNLOAD_QUALITY, quality.apiValue).apply()
+    }
+
+    /** Opt-in Event Platform play reporting (default on). */
+    fun reportPlaysEnabled(): Boolean = synchronized(lock) {
+        prefs.getBoolean(KEY_REPORT_PLAYS, true)
+    }
+
+    fun setReportPlaysEnabled(enabled: Boolean) = synchronized(lock) {
+        prefs.edit().putBoolean(KEY_REPORT_PLAYS, enabled).apply()
+    }
+
+    /**
      * Refresh userId/country from `/v1/sessions` when missing. Playbackinfo 4032
      * ("No content matching subscription location") is often a stale/wrong
      * countryCode defaulting to US.
@@ -523,6 +544,8 @@ class TidalAuth private constructor(
         private const val KEY_CLIENT_ID_OVERRIDE = "client_id_override"
         private const val KEY_AUTH_MODE = "auth_mode"
         private const val KEY_AUDIO_QUALITY = "audio_quality"
+        private const val KEY_DOWNLOAD_QUALITY = "download_quality"
+        private const val KEY_REPORT_PLAYS = "report_plays"
         private const val AUTH_MODE_PKCE = "pkce"
         private const val AUTH_MODE_DEVICE = "device"
         private const val TAG = "TidalAuth"

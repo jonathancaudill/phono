@@ -1,5 +1,6 @@
 package com.lightphone.spotify.ui.navigation
 
+import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.EnterTransition
@@ -39,6 +40,7 @@ import com.lightphone.spotify.ui.screens.AlbumDetailScreen
 import com.lightphone.spotify.ui.screens.AlbumsScreen
 import com.lightphone.spotify.ui.screens.ArtistDetailScreen
 import com.lightphone.spotify.ui.screens.CreatePlaylistScreen
+import com.lightphone.spotify.ui.screens.DownloadCollectionDetailScreen
 import com.lightphone.spotify.ui.screens.DownloadsScreen
 import com.lightphone.spotify.ui.screens.LikedSongsScreen
 import com.lightphone.spotify.ui.screens.PlayingScreen
@@ -212,9 +214,10 @@ fun PhonoShell(
                         PhonoTab.Downloads -> DownloadsScreen(
                             vm = vm,
                             onOpenPlaying = { overlayNav.navigate(OverlayDestination.Playing) },
-                            onPlayTrack = { track ->
-                                vm.playTracks(listOf(track), 0, "Downloads")
-                                overlayNav.navigate(OverlayDestination.Playing)
+                            onOpenCollection = { uri, title ->
+                                overlayNav.navigate(
+                                    OverlayDestination.DownloadCollection(uri, title),
+                                )
                             },
                         )
                         PhonoTab.Settings -> {
@@ -223,6 +226,9 @@ fun PhonoShell(
                                 vm = vm,
                                 onLogout = {
                                     vm.logout {
+                                        // Drop retained ViewModels so the next backend pick
+                                        // builds a fresh AppViewModel with the right choice.
+                                        activity?.viewModelStore?.clear()
                                         activity?.recreate()
                                     }
                                 },
@@ -441,6 +447,29 @@ private fun NavGraphBuilder.overlayDestinations(
             },
             onPlayTopTrack = { index ->
                 vm.playArtistTopTrack(index)
+                overlayNav.navigate(OverlayDestination.Playing)
+            },
+        )
+    }
+    composable(
+        route = Routes.DownloadCollection,
+        arguments = listOf(
+            navArgument("collectionUri") { type = NavType.StringType },
+            navArgument("title") {
+                type = NavType.StringType
+                defaultValue = ""
+            },
+        ),
+    ) { entry ->
+        val collectionUri = Uri.decode(entry.arguments?.getString("collectionUri").orEmpty())
+        val title = Uri.decode(entry.arguments?.getString("title").orEmpty()).ifBlank { "Downloads" }
+        DownloadCollectionDetailScreen(
+            vm = vm,
+            collectionUri = collectionUri,
+            title = title,
+            onBack = { overlayNavController.popBackStack() },
+            onPlayTrack = { track ->
+                vm.playTracks(listOf(track), 0, title)
                 overlayNav.navigate(OverlayDestination.Playing)
             },
         )

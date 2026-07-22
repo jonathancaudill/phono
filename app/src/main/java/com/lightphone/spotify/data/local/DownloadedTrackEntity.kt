@@ -38,6 +38,9 @@ interface DownloadedTrackDao {
     @Query("SELECT EXISTS(SELECT 1 FROM downloaded_tracks WHERE uri = :uri AND state = :completedState LIMIT 1)")
     suspend fun isDownloaded(uri: String, completedState: Int): Boolean
 
+    @Query("SELECT * FROM downloaded_tracks WHERE uri = :uri LIMIT 1")
+    suspend fun getByUri(uri: String): DownloadedTrackEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: DownloadedTrackEntity)
 

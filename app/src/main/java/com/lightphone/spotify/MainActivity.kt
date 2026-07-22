@@ -6,7 +6,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import com.lightphone.spotify.data.backend.BackendChoice
 import com.lightphone.spotify.data.backend.BackendPreferences
+import com.lightphone.spotify.playback.tidal.TidalDownloadCenter
 import com.lightphone.spotify.ui.light.LightPhonoTheme
 import com.lightphone.spotify.ui.navigation.SpotifyApp
 import com.lightphone.spotify.ui.screens.BackendPickerScreen
@@ -38,13 +40,18 @@ class MainActivity : ComponentActivity() {
                     BackendPickerScreen(
                         onPicked = { choice ->
                             backendPrefs.setChoice(choice)
-                            // Rebuild from scratch so App.onCreate builds the right controller.
+                            // Drop retained ViewModels so AppViewModel rebinds to the
+                            // new backend (recreate alone keeps the ViewModelStore).
+                            viewModelStore.clear()
                             recreate()
                         },
                     )
                 }
             } else {
                 (application as App).ensureController()
+                if (backendPrefs.choice() == BackendChoice.TIDAL) {
+                    TidalDownloadCenter.resumeDownloads(this)
+                }
                 SpotifyApp()
             }
         }
