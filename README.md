@@ -2,6 +2,8 @@
 
 <img width="2572" height="1048" alt="phono-readme-mockup" src="https://github.com/user-attachments/assets/0fde28e8-b041-4c93-b457-217fd87fe06f" />
 
+### This project currently has a couple bugs. I'm gonna fix them tonight or tomorrow. Just know if you're seeing this to check again in a day or two for v0.1.1!
+
 Thanks to **[Vandam Dinh](https://github.com/vandamd)** — especially
 [Echo](https://github.com/vandamd/echo) — for the Light Phone UI
 patterns and product direction this client builds on.
