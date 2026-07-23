@@ -64,8 +64,8 @@ On first launch, choose **Spotify** or **TIDAL**. Setup differs by backend.
    - On a computer, open **[jonathancaudill.github.io/phono](https://jonathancaudill.github.io/phono/)** to generate a QR code, then tap **Scan QR** on the phone
 3. Tap **Connect Web API** and authorize when prompted
 
-The setup page runs entirely in your browser — credentials are never sent to a server. The QR
-code encodes your client secret in plain text; generate and scan in private.
+The setup page runs entirely in your browser; it's just a static page. The QR
+code encodes your client secret in plain text, so be careful sharing it :)
 
 **Note:** Credentials may expire around 6 months. Rotate the secret and redo steps 2–3.
 
