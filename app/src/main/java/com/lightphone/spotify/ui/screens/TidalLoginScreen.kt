@@ -17,6 +17,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.lightphone.spotify.data.tidal.TidalAuth
 import com.lightphone.spotify.ui.AppViewModel
@@ -24,6 +25,7 @@ import com.lightphone.spotify.ui.WebViewAuthCleanup
 import com.lightphone.spotify.ui.configureOAuthWebView
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.lightphone.spotify.ui.phono.PhonoScreenShell
 import com.thelightphone.sdk.ui.LightText
 import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
@@ -34,7 +36,7 @@ import com.thelightphone.sdk.ui.lightClickable
  * redirect is HTTPS so it is more forgiving than Spotify's loopback cleartext.
  */
 @Composable
-fun TidalLoginScreen(vm: AppViewModel) {
+fun TidalLoginScreen(vm: AppViewModel, onBack: () -> Unit) {
     val playback by vm.playback.collectAsState()
     var authUrl by remember { mutableStateOf<String?>(null) }
     var preparing by remember { mutableStateOf(true) }
@@ -55,20 +57,15 @@ fun TidalLoginScreen(vm: AppViewModel) {
         webView?.loadUrl(authUrl!!)
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(colors.background).imePadding()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = legacyNToGridDp(22), vertical = legacyNToGridDp(8)),
-            ) {
-                LightText(text = "Sign in to TIDAL", variant = LightTextVariant.Copy)
-                LightText(
-                    text = "Sign in for lossless / hi-res playback and your library.",
-                    variant = LightTextVariant.Detail,
-                    color = PhonoSemanticColors.Placeholder,
-                )
-            }
+    Box(modifier = Modifier.fillMaxSize().imePadding()) {
+        PhonoScreenShell(
+            title = "Sign in",
+            hideBackButton = false,
+            onBack = onBack,
+            // WebView edge-to-edge under the header.
+            horizontalPadding = 0.dp,
+            modifier = Modifier.fillMaxSize(),
+        ) {
             when {
                 preparing -> Box(
                     Modifier

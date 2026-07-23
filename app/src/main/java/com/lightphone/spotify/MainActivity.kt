@@ -49,7 +49,12 @@ class MainActivity : ComponentActivity() {
                 val app = application as App
                 app.ensureController()
                 app.controller?.offlineDownloads?.resumeDownloads(this)
-                SpotifyApp()
+                SpotifyApp(
+                    onReturnToPicker = {
+                        viewModelStore.clear()
+                        recreate()
+                    },
+                )
             }
         }
     }

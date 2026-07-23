@@ -22,6 +22,7 @@ import com.lightphone.spotify.data.local.PlaylistEntity
 import com.lightphone.spotify.data.local.SavedAlbumEntity
 import com.lightphone.spotify.data.session.SessionEvent
 import com.lightphone.spotify.data.backend.BackendCapabilities
+import com.lightphone.spotify.data.backend.BackendChoice
 import com.lightphone.spotify.data.backend.CollectionKind
 import com.lightphone.spotify.data.backend.collectionUri
 import com.lightphone.spotify.data.toMetadata
@@ -34,10 +35,14 @@ import com.lightphone.spotify.playback.SettingsSnapshot
 import com.lightphone.spotify.playback.download.DownloadStates
 import com.lightphone.spotify.ui.light.ThemePreferences
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -683,6 +688,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun onLoggedIn() {
+        // Spotify Liked/Albums need the Step-2 Web API bearer. Calling this after
+        // playback-only login would start empty syncs, clear the splash, and leave
+        // Albums broken until a force-stop — LightOS can't recover from that.
+        if (backendChoice == BackendChoice.SPOTIFY && !playback.value.webApiReady) {
+            return
+        }
         if (onLoggedInCalled) {
             refreshLikedTracks()
             refreshSavedAlbums()
@@ -690,26 +701,46 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         onLoggedInCalled = true
-        if (_likedTracks.value.items.isEmpty()) {
+        val cacheEmpty =
+            _likedTracks.value.items.isEmpty() &&
+                _savedAlbums.value.items.isEmpty() &&
+                _playlists.value.items.isEmpty()
+        if (cacheEmpty) {
             _libraryBootstrapping.value = true
         }
         ensureLikedTracksLoaded()
         ensureSavedAlbumsLoaded()
         viewModelScope.launch {
-            withTimeoutOrNull(WARM_TIMEOUT_MS) {
-                controller.warmSpclientSession()
-            } ?: android.util.Log.w(
-                "AppViewModel",
-                "warmSpclientSession timed out after ${WARM_TIMEOUT_MS}ms; loading playlists anyway",
-            )
-            ensurePlaylistsLoaded()
-        }
-        if (_libraryBootstrapping.value) {
-            viewModelScope.launch {
+            try {
                 withTimeoutOrNull(WARM_TIMEOUT_MS) {
-                    likedTracks.first { !it.initialLoading }
+                    controller.warmSpclientSession()
+                } ?: android.util.Log.w(
+                    "AppViewModel",
+                    "warmSpclientSession timed out after ${WARM_TIMEOUT_MS}ms; loading playlists anyway",
+                )
+                ensurePlaylistsLoaded()
+                if (!_libraryBootstrapping.value) return@launch
+                // First launch: hold the splash until first pages land, then drain
+                // the rest of the library (even on cellular) so tabs open populated.
+                withTimeoutOrNull(LIBRARY_BOOTSTRAP_TIMEOUT_MS) {
+                    combine(likedTracks, savedAlbums, playlists) { liked, albums, lists ->
+                        !liked.initialLoading && !albums.initialLoading && !lists.initialLoading
+                    }.first { it }
+                    coroutineScope {
+                        listOf(
+                            async { awaitLikedTracksFilled() },
+                            async { awaitSavedAlbumsFilled() },
+                            async { awaitPlaylistsFilled() },
+                        ).awaitAll()
+                    }
+                } ?: android.util.Log.w(
+                    "AppViewModel",
+                    "library bootstrap timed out after ${LIBRARY_BOOTSTRAP_TIMEOUT_MS}ms; opening shell",
+                )
+            } finally {
+                if (_libraryBootstrapping.value) {
+                    _libraryBootstrapping.value = false
                 }
-                _libraryBootstrapping.value = false
             }
         }
     }
@@ -790,40 +821,57 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun startLikedTracksFill() {
+    private fun startLikedTracksFill(force: Boolean = false) {
         if (likedFillJob?.isActive == true) return
-        if (!controller.isUnmeteredNetwork()) return
+        if (!force && !controller.isUnmeteredNetwork()) return
         likedFillJob = viewModelScope.launch {
-            val gen = sessionGeneration
-            _likedTracks.update { it.copy(appending = true) }
-            try {
-                runCatching { controller.fillRemainingLikedTracks() }
-                    .onSuccess {
-                        if (gen == sessionGeneration && !controller.likedTracksNeedsFill()) {
-                            likedFillRetries = 0
-                        }
+            fillLikedTracksBlocking(force = force)
+        }
+    }
+
+    /** Drain remaining liked pages. [force] ignores the Wi‑Fi-only gate (first-login splash). */
+    private suspend fun fillLikedTracksBlocking(force: Boolean) {
+        if (!force && !controller.isUnmeteredNetwork()) return
+        if (!controller.likedTracksNeedsFill()) return
+        val gen = sessionGeneration
+        _likedTracks.update { it.copy(appending = true) }
+        try {
+            runCatching { controller.fillRemainingLikedTracks() }
+                .onSuccess {
+                    if (gen == sessionGeneration && !controller.likedTracksNeedsFill()) {
+                        likedFillRetries = 0
                     }
-                    .onFailure { e ->
-                        android.util.Log.e("Library", "fill liked tracks failed", e)
-                        if (gen != sessionGeneration) return@onFailure
-                        _likedTracks.update {
-                            it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
-                        }
-                        if (likedFillRetries < 3 && controller.likedTracksNeedsFill()) {
-                            likedFillRetries++
-                            likedFillRetryJob = viewModelScope.launch {
-                                delay(2000L * likedFillRetries)
-                                if (gen == sessionGeneration) startLikedTracksFill()
-                            }
-                        }
-                    }
-            } finally {
-                if (gen == sessionGeneration) {
-                    _likedTracks.update { it.copy(appending = false) }
-                    runPendingLibraryRefresh()
                 }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    android.util.Log.e("Library", "fill liked tracks failed", e)
+                    if (gen != sessionGeneration) return@onFailure
+                    _likedTracks.update {
+                        it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
+                    }
+                    if (!force && likedFillRetries < 3 && controller.likedTracksNeedsFill()) {
+                        likedFillRetries++
+                        likedFillRetryJob = viewModelScope.launch {
+                            delay(2000L * likedFillRetries)
+                            if (gen == sessionGeneration) startLikedTracksFill()
+                        }
+                    }
+                }
+        } finally {
+            if (gen == sessionGeneration) {
+                _likedTracks.update { it.copy(appending = false) }
+                runPendingLibraryRefresh()
             }
         }
+    }
+
+    /** Join an in-flight fill, or start a forced drain (bootstrap). */
+    private suspend fun awaitLikedTracksFilled() {
+        likedFillJob?.takeIf { it.isActive }?.join()
+        if (!controller.likedTracksNeedsFill()) return
+        val job = viewModelScope.launch { fillLikedTracksBlocking(force = true) }
+        likedFillJob = job
+        job.join()
     }
 
     fun resumeLikedTracksFillIfNeeded() {
@@ -944,40 +992,55 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         listState.scrollToItem(targetIndex)
     }
 
-    private fun startSavedAlbumsFill() {
+    private fun startSavedAlbumsFill(force: Boolean = false) {
         if (savedFillJob?.isActive == true) return
-        if (!controller.isUnmeteredNetwork()) return
+        if (!force && !controller.isUnmeteredNetwork()) return
         savedFillJob = viewModelScope.launch {
-            val gen = sessionGeneration
-            _savedAlbums.update { it.copy(appending = true) }
-            try {
-                runCatching { controller.fillRemainingSavedAlbums() }
-                    .onSuccess {
-                        if (gen == sessionGeneration && !controller.savedAlbumsNeedsFill()) {
-                            savedFillRetries = 0
-                        }
+            fillSavedAlbumsBlocking(force = force)
+        }
+    }
+
+    private suspend fun fillSavedAlbumsBlocking(force: Boolean) {
+        if (!force && !controller.isUnmeteredNetwork()) return
+        if (!controller.savedAlbumsNeedsFill()) return
+        val gen = sessionGeneration
+        _savedAlbums.update { it.copy(appending = true) }
+        try {
+            runCatching { controller.fillRemainingSavedAlbums() }
+                .onSuccess {
+                    if (gen == sessionGeneration && !controller.savedAlbumsNeedsFill()) {
+                        savedFillRetries = 0
                     }
-                    .onFailure { e ->
-                        android.util.Log.e("Library", "fill saved albums failed", e)
-                        if (gen != sessionGeneration) return@onFailure
-                        _savedAlbums.update {
-                            it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
-                        }
-                        if (savedFillRetries < 3 && controller.savedAlbumsNeedsFill()) {
-                            savedFillRetries++
-                            savedFillRetryJob = viewModelScope.launch {
-                                delay(2000L * savedFillRetries)
-                                if (gen == sessionGeneration) startSavedAlbumsFill()
-                            }
-                        }
-                    }
-            } finally {
-                if (gen == sessionGeneration) {
-                    _savedAlbums.update { it.copy(appending = false) }
-                    runPendingLibraryRefresh()
                 }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    android.util.Log.e("Library", "fill saved albums failed", e)
+                    if (gen != sessionGeneration) return@onFailure
+                    _savedAlbums.update {
+                        it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
+                    }
+                    if (!force && savedFillRetries < 3 && controller.savedAlbumsNeedsFill()) {
+                        savedFillRetries++
+                        savedFillRetryJob = viewModelScope.launch {
+                            delay(2000L * savedFillRetries)
+                            if (gen == sessionGeneration) startSavedAlbumsFill()
+                        }
+                    }
+                }
+        } finally {
+            if (gen == sessionGeneration) {
+                _savedAlbums.update { it.copy(appending = false) }
+                runPendingLibraryRefresh()
             }
         }
+    }
+
+    private suspend fun awaitSavedAlbumsFilled() {
+        savedFillJob?.takeIf { it.isActive }?.join()
+        if (!controller.savedAlbumsNeedsFill()) return
+        val job = viewModelScope.launch { fillSavedAlbumsBlocking(force = true) }
+        savedFillJob = job
+        job.join()
     }
 
     fun resumeSavedAlbumsFillIfNeeded() {
@@ -1085,40 +1148,55 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         listState.scrollToItem(targetIndex)
     }
 
-    private fun startPlaylistsFill() {
+    private fun startPlaylistsFill(force: Boolean = false) {
         if (playlistsFillJob?.isActive == true) return
-        if (!controller.isUnmeteredNetwork()) return
+        if (!force && !controller.isUnmeteredNetwork()) return
         playlistsFillJob = viewModelScope.launch {
-            val gen = sessionGeneration
-            _playlists.update { it.copy(appending = true) }
-            try {
-                runCatching { controller.fillRemainingPlaylists() }
-                    .onSuccess {
-                        if (gen == sessionGeneration && !controller.playlistsNeedsFill()) {
-                            playlistsFillRetries = 0
-                        }
+            fillPlaylistsBlocking(force = force)
+        }
+    }
+
+    private suspend fun fillPlaylistsBlocking(force: Boolean) {
+        if (!force && !controller.isUnmeteredNetwork()) return
+        if (!controller.playlistsNeedsFill()) return
+        val gen = sessionGeneration
+        _playlists.update { it.copy(appending = true) }
+        try {
+            runCatching { controller.fillRemainingPlaylists() }
+                .onSuccess {
+                    if (gen == sessionGeneration && !controller.playlistsNeedsFill()) {
+                        playlistsFillRetries = 0
                     }
-                    .onFailure { e ->
-                        android.util.Log.e("Library", "fill playlists failed", e)
-                        if (gen != sessionGeneration) return@onFailure
-                        _playlists.update {
-                            it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
-                        }
-                        if (playlistsFillRetries < 3 && controller.playlistsNeedsFill()) {
-                            playlistsFillRetries++
-                            playlistsFillRetryJob = viewModelScope.launch {
-                                delay(2000L * playlistsFillRetries)
-                                if (gen == sessionGeneration) startPlaylistsFill()
-                            }
-                        }
-                    }
-            } finally {
-                if (gen == sessionGeneration) {
-                    _playlists.update { it.copy(appending = false) }
-                    runPendingLibraryRefresh()
                 }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    android.util.Log.e("Library", "fill playlists failed", e)
+                    if (gen != sessionGeneration) return@onFailure
+                    _playlists.update {
+                        it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
+                    }
+                    if (!force && playlistsFillRetries < 3 && controller.playlistsNeedsFill()) {
+                        playlistsFillRetries++
+                        playlistsFillRetryJob = viewModelScope.launch {
+                            delay(2000L * playlistsFillRetries)
+                            if (gen == sessionGeneration) startPlaylistsFill()
+                        }
+                    }
+                }
+        } finally {
+            if (gen == sessionGeneration) {
+                _playlists.update { it.copy(appending = false) }
+                runPendingLibraryRefresh()
             }
         }
+    }
+
+    private suspend fun awaitPlaylistsFilled() {
+        playlistsFillJob?.takeIf { it.isActive }?.join()
+        if (!controller.playlistsNeedsFill()) return
+        val job = viewModelScope.launch { fillPlaylistsBlocking(force = true) }
+        playlistsFillJob = job
+        job.join()
     }
 
     fun resumePlaylistsFillIfNeeded() {
@@ -2097,6 +2175,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val SEARCH_TIMEOUT_MS = 30_000L
         private const val WARM_TIMEOUT_MS = 15_000L
+        /** First-login splash: first pages + full library drain (Wi‑Fi or cellular). */
+        private const val LIBRARY_BOOTSTRAP_TIMEOUT_MS = 45_000L
         private const val LOOKAHEAD_ROWS = 150
     }
 }

@@ -28,7 +28,10 @@ private data class AppAuthState(
 )
 
 @Composable
-fun SpotifyApp(vm: AppViewModel = viewModel()) {
+fun SpotifyApp(
+    vm: AppViewModel = viewModel(),
+    onReturnToPicker: () -> Unit = {},
+) {
     val auth by remember(vm) {
         vm.playback.map { p ->
             AppAuthState(
@@ -45,6 +48,9 @@ fun SpotifyApp(vm: AppViewModel = viewModel()) {
         ),
     )
     val libraryBootstrapping by vm.libraryBootstrapping.collectAsState()
+    val onLoginBack = {
+        vm.logout(onReturnToPicker)
+    }
     LightPhonoTheme {
         when {
             !auth.authInitialized -> Box(
@@ -55,7 +61,11 @@ fun SpotifyApp(vm: AppViewModel = viewModel()) {
                 EmptyListMessage("Loading…")
             }
             !auth.loggedIn ->
-                if (vm.backendChoice == BackendChoice.TIDAL) TidalLoginScreen(vm) else LoginScreen(vm)
+                if (vm.backendChoice == BackendChoice.TIDAL) {
+                    TidalLoginScreen(vm, onBack = onLoginBack)
+                } else {
+                    LoginScreen(vm, onBack = onLoginBack)
+                }
             // Spotify Step 2 only — TIDAL never uses the dev-app Web API.
             vm.backendChoice == BackendChoice.SPOTIFY && !auth.webApiReady -> WebApiSetupScreen(vm)
             else -> {
@@ -66,7 +76,7 @@ fun SpotifyApp(vm: AppViewModel = viewModel()) {
                             .fillMaxSize()
                             .background(LightThemeTokens.colors.background),
                     ) {
-                        EmptyListMessage("Loading…")
+                        EmptyListMessage("Loading your library…")
                     }
                 } else {
                     PhonoShell(vm)
