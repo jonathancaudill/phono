@@ -1,4 +1,4 @@
-# Phono — Spotify Client for Light Phone III
+# Phono — Spotify & TIDAL Client for Light Phone III
 
 <img width="480" height="580" alt="1000000482" src="https://github.com/user-attachments/assets/783e74e2-c3a2-4014-a990-ffedd4189a9d" />
 
@@ -10,7 +10,7 @@ An independent, minimal Spotify client for LightOS. **Playback** runs in-process
 a patched fork of librespot (Rust). **Metadata** (search, library, albums, artists,
 playlists) uses the official Spotify Web API with **your own** developer-app credentials.
 
-> Requires a Spotify **Premium** account. This is not something we have
+> Requires a Spotify **Premium** or active TIDAL account. This is not something we have
 > *any* interest in working around, so please do not ask!
 
 **New developer? Agent? (ugh)**: Read [docs/README.md](docs/README.md) and [AGENTS.md](AGENTS.md) before
@@ -19,12 +19,17 @@ changing code.
 ## How is this different from Echo?
 
 
-vandam rocks. Basically, this has a few extra features, less album art and doesn't require the Spotify app to be installed.
+vandam rocks. Basically, this works with TIDAL or Spotify, has a few extra features, less album art and doesn't require the Spotify app to be installed if you go the Spotify route.
 
 
 # Setup (read this please!)
 
-The app uses **dual authentication**:
+## Tidal
+
+Setup for Tidal is simple. Just log in!
+
+## Spotify
+The app uses **dual authentication** for Spotify:
 
 1. **Step 1 — Playback (librespot):** WebView login with Spotify's first-party Keymaster
    client for audio streaming. No developer dashboard setup needed for this step.
@@ -54,9 +59,17 @@ The app uses **dual authentication**:
 The setup page runs entirely in your browser; it's just a static page. The QR
 code encodes your client secret in plain text, so be careful sharing it :)
 
-**PLEASE NOTE:** Credentials may expire around 6 months depending on 
+**PLEASE NOTE:** Credentials will expire around 6 months depending on 
 Spotify dev app restrictions. Just rotate the secret and redo steps 2-3!
 
+
+
+## LEGAL
+- Spotify and TIDAL "offline" playback is simply an extra large streaming cache, not an actual raw file downloader. If you haven't been online in 30 days, all downloaded playlists and albums will be wiped to protect Spotify and TIDAL's TOS. 
+- A premium subscription to TIDAL or Spotify is required for ***any*** part of Phono to work.
+
+
+# boring architecture descriptions below. literally no point in reading any further unless you wanna make a pr
 
 ## Repository layout
 
