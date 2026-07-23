@@ -8,14 +8,8 @@ Thanks to **[Vandam Dinh](https://github.com/vandamd)** — especially
 [Echo](https://github.com/vandamd/echo) — for the Light Phone UI
 patterns and product direction this client builds on.
 
-An independent, minimal music client for LightOS. Pick **Spotify** or **TIDAL** at
-first launch (one backend per install; logout returns to the service picker). Shared
-UI for library, search, queue, and offline downloads.
+An independent, minimal music client for LightOS. Pick **Spotify** or **TIDAL** and uh maybe more coming soon idk?
 
-| Backend | Playback | Metadata | Account |
-|---------|----------|----------|---------|
-| **Spotify** | Patched librespot (Rust) | Web API + native spclient | Premium required |
-| **TIDAL** | Media3 / ExoPlayer (clear BTS/DASH) | TIDAL REST API | Subscription that can serve clear streams (no Widevine path) |
 
 > Requires a Spotify **Premium** or active TIDAL account. This is not something we have
 > *any* interest in working around, so please do not ask!
@@ -25,14 +19,10 @@ before changing Spotify/librespot code.
 
 ## How is this different from Echo?
 
-vandam rocks. Basically: backend choice (Spotify or TIDAL), offline pins, less album
-art, and Spotify does not require the official Spotify app.
 
 vandam rocks. Basically, this works with TIDAL or Spotify, has a few extra features, less album art and doesn't require the Spotify app to be installed if you go the Spotify route.
 
 # Setup
-
-On first launch, choose **Spotify** or **TIDAL**. Setup differs by backend.
 
 ## Tidal
 
