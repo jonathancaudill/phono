@@ -1,6 +1,6 @@
 # Phono — Spotify & TIDAL Client for Light Phone III
 
-<img width="480" height="580" alt="1000000482" src="https://github.com/user-attachments/assets/783e74e2-c3a2-4014-a990-ffedd4189a9d" />
+<img width="2572" height="1048" alt="phono-readme-mockup" src="https://github.com/user-attachments/assets/0fde28e8-b041-4c93-b457-217fd87fe06f" />
 
 Thanks to **[Vandam Dinh](https://github.com/vandamd)** — especially
 [Echo](https://github.com/vandamd/echo) — for the Light Phone UI
