@@ -26,6 +26,8 @@ data class DownloadedTrackEntity(
     val state: Int,
     val bytes: Long,
     val updated_at: Long,
+    /** Track length in ms when known (0 if unknown / legacy rows). */
+    val duration_ms: Long = 0L,
 )
 
 @Dao

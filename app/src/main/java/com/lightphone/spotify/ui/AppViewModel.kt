@@ -237,6 +237,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val downloadsSupported: Boolean = controller.capabilities.downloads
     val capabilities: BackendCapabilities = controller.capabilities
 
+    /** Completed offline pin URIs for gray-out / availability checks. */
+    val completedDownloadUris: StateFlow<Set<String>> =
+        downloads
+            .map { rows ->
+                rows.asSequence()
+                    .filter { it.state == DownloadStates.COMPLETED }
+                    .map { it.uri }
+                    .toSet()
+            }
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptySet())
+
+    fun isTrackDownloaded(uri: String): Boolean =
+        downloadsSupported && uri in completedDownloadUris.value
+
+    fun isNetworkOnline(): Boolean = playback.value.networkOnline
+
     fun observeDownloadCollectionTracks(
         collectionUri: String,
     ): StateFlow<List<com.lightphone.spotify.data.local.DownloadedTrackEntity>> {
@@ -494,6 +510,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 .collect { uri -> onCurrentTrackChanged(uri) }
         }
         viewModelScope.launch {
+            playback
+                .map { it.networkOnline }
+                .distinctUntilChanged()
+                .collect { online ->
+                    if (!online) clearLibrarySyncErrorsForOffline()
+                }
+        }
+        viewModelScope.launch {
             controller.sessionEvents.collect { event ->
                 when (event) {
                     SessionEvent.SigningOut -> cancelPlaylistLibraryJobs()
@@ -502,6 +526,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         controller.onSessionRestored = { onPlaybackSessionRestored() }
+    }
+
+    /** Drop sync banners when offline — navbar already shows Device offline. */
+    private fun clearLibrarySyncErrorsForOffline() {
+        _likedTracks.update { it.copy(error = null, refreshing = false, initialLoading = false) }
+        _savedAlbums.update { it.copy(error = null, refreshing = false, initialLoading = false) }
+        _playlists.update { it.copy(error = null, refreshing = false, initialLoading = false) }
+        _search.update { it.copy(error = null, refreshError = null, refreshing = false, initialLoading = false) }
     }
 
     private fun cancelPlaylistLibraryJobs() {
@@ -702,6 +734,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             pendingLikedRefresh = true
             return
         }
+        if (!isNetworkOnline()) {
+            _likedTracks.update {
+                it.copy(error = null, refreshing = false, initialLoading = false)
+            }
+            return
+        }
         likedFillJob?.cancel()
         likedFillJob = null
         likedFillRetryJob?.cancel()
@@ -722,7 +760,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { controller.refreshLikedTracks() }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
-                    if (gen == sessionGeneration) {
+                    if (gen == sessionGeneration && isNetworkOnline()) {
                         _likedTracks.update { it.copy(error = e.message ?: "Could not load liked songs") }
                     }
                 }
@@ -832,6 +870,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             pendingSavedRefresh = true
             return
         }
+        if (!isNetworkOnline()) {
+            _savedAlbums.update {
+                it.copy(error = null, refreshing = false, initialLoading = false)
+            }
+            return
+        }
         savedFillJob?.cancel()
         savedFillJob = null
         savedFillRetryJob?.cancel()
@@ -850,7 +894,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { controller.refreshSavedAlbums() }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
-                    if (gen == sessionGeneration) {
+                    if (gen == sessionGeneration && isNetworkOnline()) {
                         _savedAlbums.update { it.copy(error = e.message ?: "Could not load albums") }
                     }
                 }
@@ -977,6 +1021,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             pendingPlaylistsRefresh = true
             return
         }
+        if (!isNetworkOnline()) {
+            _playlists.update {
+                it.copy(error = null, refreshing = false, initialLoading = false)
+            }
+            return
+        }
         playlistsFillJob?.cancel()
         playlistsFillJob = null
         playlistsFillRetryJob?.cancel()
@@ -995,7 +1045,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { controller.refreshPlaylists() }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
-                    if (gen == sessionGeneration) {
+                    if (gen == sessionGeneration && isNetworkOnline()) {
                         _playlists.update { it.copy(error = e.message ?: "Could not load playlists") }
                     }
                 }
@@ -1572,6 +1622,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun submitSearch(query: String) {
         if (query.isBlank()) return
         val trimmed = query.trim()
+        if (!isNetworkOnline()) {
+            _search.update {
+                it.copy(
+                    query = trimmed,
+                    error = null,
+                    refreshError = null,
+                    initialLoading = false,
+                    refreshing = false,
+                )
+            }
+            return
+        }
         val requestId = ++searchRequestId
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
@@ -1605,6 +1667,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 throw e
             } catch (e: Throwable) {
                 if (requestId != searchRequestId) return@launch
+                if (!isNetworkOnline()) {
+                    _search.update {
+                        it.copy(error = null, refreshError = null, initialLoading = false, refreshing = false)
+                    }
+                    return@launch
+                }
                 val message = when (e) {
                     is TimeoutCancellationException -> "Search timed out — try again."
                     else -> e.message ?: "Search failed"

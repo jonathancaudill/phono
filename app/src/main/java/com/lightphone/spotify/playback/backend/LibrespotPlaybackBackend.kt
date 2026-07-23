@@ -103,6 +103,7 @@ class LibrespotPlaybackBackend(
     override fun isSessionConnected(): Boolean = engine.isSessionConnected()
     override fun ensurePlaybackReady() { engine.ensurePlaybackReady() }
     override fun setAppForeground(foreground: Boolean) = engine.setAppForeground(foreground)
+    override fun setNetworkOnline(online: Boolean) = engine.setNetworkOnline(online)
     override fun forceReconnectCheck() = engine.forceReconnectCheck()
     override fun recreateAudioSink() = engine.recreateAudioSink()
 

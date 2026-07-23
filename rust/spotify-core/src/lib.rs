@@ -119,15 +119,17 @@ type SharedListener = Arc<Mutex<Option<Box<dyn PlayerEventListener>>>>;
 
 use queue::QueueState;
 
-/// A live, connected session and everything bound to its lifetime. A new
-/// `Active` is built on every (re)connect because librespot sessions cannot be
-/// reused once invalidated.
+/// A live session and everything bound to its lifetime. A new `Active` is built
+/// on every (re)connect because librespot sessions cannot be reused once
+/// invalidated. `offline` Active skips AP `connect` and can only play local pins.
 struct Active {
     session: Session,
     player: Arc<Player>,
     mixer: Arc<SoftMixer>,
     queue: Arc<Mutex<QueueState>>,
     event_task: tokio::task::JoinHandle<()>,
+    /// Built without AP connect — pin-only playback for airplane mode.
+    offline: bool,
 }
 
 impl Drop for Active {
@@ -238,6 +240,9 @@ struct EngineShared {
     /// App visible on screen (`ProcessLifecycleOwner` ON_START). With `playing`,
     /// gates whether the reconnect monitor rebuilds a dead paused session.
     app_foreground: AtomicBool,
+    /// Mirrors Kotlin connectivity. When false, prefer offline Active over
+    /// spamming AP reconnect errors; when true, upgrade offline → connected.
+    network_online: AtomicBool,
 }
 
 /// Debug counters for playback stability field testing (logcat / settings).
@@ -438,13 +443,13 @@ impl LibrespotEngine {
         start_index: u32,
         context_label: Option<String>,
     ) -> Result<(), SpotifyError> {
-        EngineShared::ensure_playback_ready(&self.shared)?;
+        EngineShared::ensure_playback_ready_for_play(&self.shared, &uris, start_index)?;
         self.shared.play_uris(uris, start_index, context_label)
     }
 
     /// Convenience: play a single URI.
     pub fn play_uri(&self, uri: String) -> Result<(), SpotifyError> {
-        EngineShared::ensure_playback_ready(&self.shared)?;
+        EngineShared::ensure_playback_ready_for_play(&self.shared, &[uri.clone()], 0)?;
         self.shared.play_uris(vec![uri], 0, None)
     }
 
@@ -665,6 +670,11 @@ impl LibrespotEngine {
         self.shared.set_app_foreground(foreground);
     }
 
+    /// Called from Kotlin when device connectivity changes.
+    pub fn set_network_online(&self, online: bool) {
+        self.shared.set_network_online(online);
+    }
+
     /// Recreate the native audio output sink (e.g. after Bluetooth route change).
     pub fn recreate_audio_sink(&self) {
         self.shared.recreate_audio_sink();
@@ -815,6 +825,7 @@ impl EngineShared {
             recovery_inflight: AtomicBool::new(false),
             last_checkpoint_save: Mutex::new(None),
             app_foreground: AtomicBool::new(false),
+            network_online: AtomicBool::new(true),
         }))
     }
 
@@ -823,17 +834,25 @@ impl EngineShared {
             .store(foreground, Ordering::SeqCst);
     }
 
+    fn set_network_online(self: &Arc<Self>, online: bool) {
+        let was = self.network_online.swap(online, Ordering::SeqCst);
+        if online && !was {
+            // Upgrade pin-only Active to a live AP session when connectivity returns.
+            if self.is_offline_active()
+                && (self.app_foreground.load(Ordering::SeqCst)
+                    || self.playing.load(Ordering::SeqCst))
+            {
+                EngineShared::force_reconnect_check(self);
+            }
+        }
+    }
+
     fn cache_base_dir(&self) -> &Path {
         self.cred_dir.parent().unwrap_or(&self.cred_dir)
     }
 
     fn is_session_connected(&self) -> bool {
-        self.active
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|a| !a.session.is_invalid())
-            .unwrap_or(false)
+        self.has_connected_active()
     }
 
     fn recreate_audio_sink(&self) {
@@ -1172,28 +1191,78 @@ impl EngineShared {
     }
 
     fn is_reconnecting(&self) -> bool {
-        self.pending_queue.lock().unwrap().is_some()
-            && !self
-                .active
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|a| !a.session.is_invalid())
-                .unwrap_or(false)
+        self.pending_queue.lock().unwrap().is_some() && !self.has_connected_active()
     }
 
     fn is_logged_in(&self) -> bool {
         self.has_credentials()
     }
 
+    /// Live AP session that can stream from CDN.
+    fn has_connected_active(&self) -> bool {
+        self.active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|a| !a.offline && !a.session.is_invalid())
+            .unwrap_or(false)
+    }
+
+    /// Player that can load local pins (offline Active) or a live AP session.
+    fn has_playable_active(&self) -> bool {
+        let guard = self.active.lock().unwrap();
+        let Some(a) = guard.as_ref() else {
+            return false;
+        };
+        if a.offline {
+            true
+        } else {
+            !a.session.is_invalid()
+        }
+    }
+
+    fn is_offline_active(&self) -> bool {
+        self.active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|a| a.offline)
+            .unwrap_or(false)
+    }
+
+    fn has_valid_active(&self) -> bool {
+        self.has_playable_active()
+    }
+
+    fn ensure_playback_ready_for_play(
+        shared: &Arc<Self>,
+        uris: &[String],
+        start_index: u32,
+    ) -> Result<(), SpotifyError> {
+        Self::ensure_playback_ready(shared)?;
+        if shared.is_offline_active() {
+            let idx = start_index as usize;
+            let Some(uri) = uris.get(idx) else {
+                return Err(SpotifyError::InvalidUri {
+                    uri: format!("index {start_index} out of range"),
+                });
+            };
+            if !downloads::is_downloaded(&shared.downloads_dir, uri) {
+                return Err(SpotifyError::Network {
+                    msg: "not available offline".into(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn ensure_playback_ready(shared: &Arc<Self>) -> Result<(), SpotifyError> {
-        if shared.has_valid_active() {
+        if shared.has_connected_active() {
             return Ok(());
         }
-        let creds = shared
-            .cache
-            .credentials()
-            .ok_or(SpotifyError::NotLoggedIn)?;
+
+        let network_online = shared.network_online.load(Ordering::SeqCst);
+        let creds = shared.cache.credentials();
         let resume = shared
             .pending_queue
             .lock()
@@ -1201,30 +1270,60 @@ impl EngineShared {
             .clone()
             .or_else(|| shared.snapshot_resume_with_position());
         let handle = shared.runtime.handle().clone();
-        match handle.block_on(shared.clone().orchestrate_rebuild(creds, resume)) {
-            Ok(()) => {}
-            Err(SpotifyError::StaleRebuild) => {
-                if !shared.has_valid_active() {
+
+        if network_online {
+            let Some(creds) = creds.clone() else {
+                // No credentials: still allow pin-only Active if we can build one.
+                if shared.has_playable_active() {
+                    return Ok(());
+                }
+                return Err(SpotifyError::NotLoggedIn);
+            };
+            match handle.block_on(shared.clone().orchestrate_rebuild(creds, resume.clone())) {
+                Ok(()) => {
+                    shared.notify_connection_restored_if_ready();
+                    return Ok(());
+                }
+                Err(SpotifyError::StaleRebuild) => {
+                    if shared.has_connected_active() || shared.has_playable_active() {
+                        return Ok(());
+                    }
                     return Err(SpotifyError::StaleRebuild);
                 }
+                Err(SpotifyError::Network { .. }) => {
+                    // Fall through to offline Active.
+                }
+                Err(e) => {
+                    if shared.has_playable_active() {
+                        return Ok(());
+                    }
+                    // Prefer offline pins over surfacing auth/connect noise when
+                    // a pin-capable player can still be built.
+                    log::warn!("ensure_playback_ready connect failed ({e}); trying offline Active");
+                }
             }
-            Err(e) => return Err(e),
+        } else if shared.has_playable_active() {
+            return Ok(());
         }
-        shared.notify_connection_restored_if_ready();
-        Ok(())
-    }
 
-    fn has_valid_active(&self) -> bool {
-        self.active
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|a| !a.session.is_invalid())
-            .unwrap_or(false)
+        if shared.has_playable_active() {
+            return Ok(());
+        }
+
+        // Offline / connect-failed: pin-only player (credentials optional for
+        // construction, but login normally leaves them on disk).
+        if creds.is_none() && !shared.has_credentials() {
+            return Err(SpotifyError::NotLoggedIn);
+        }
+        match handle.block_on(shared.clone().orchestrate_offline_rebuild(resume)) {
+            Ok(()) => Ok(()),
+            Err(SpotifyError::StaleRebuild) if shared.has_playable_active() => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     fn notify_connection_restored_if_ready(&self) {
-        if self.has_valid_active() {
+        if self.has_connected_active() {
             notify(&self.listener, |l| l.on_connection_restored());
         }
     }
@@ -1326,14 +1425,14 @@ impl EngineShared {
     }
 
     pub(crate) fn session_or_err(self: &Arc<Self>) -> Result<Session, SpotifyError> {
-        if !self.has_valid_active() {
+        if !self.has_connected_active() {
             Self::ensure_playback_ready(self)?;
         }
         self.active
             .lock()
             .unwrap()
             .as_ref()
-            .filter(|a| !a.session.is_invalid())
+            .filter(|a| !a.offline && !a.session.is_invalid())
             .map(|a| a.session.clone())
             .ok_or(SpotifyError::NotLoggedIn)
     }
@@ -1519,9 +1618,16 @@ impl EngineShared {
     /// to call on every mutation.
     fn refresh_next_preload(&self) {
         self.with_active(|a| {
-            if let Some(uri) = a.queue.lock().unwrap().next_preload_uri() {
-                a.player.preload(uri);
+            let Some(uri) = a.queue.lock().unwrap().next_preload_uri() else {
+                return;
+            };
+            if a.offline {
+                let uri_str = uri.to_uri().unwrap_or_default();
+                if !downloads::is_downloaded(&self.downloads_dir, &uri_str) {
+                    return;
+                }
             }
+            a.player.preload(uri);
         });
     }
 
@@ -1671,8 +1777,9 @@ impl EngineShared {
         let _inflight = self.rebuild_inflight.lock().await;
 
         // Another rebuild may have completed while we waited for the guard. If the
-        // session is already healthy, coalesce: don't build a redundant one.
-        if self.has_valid_active() {
+        // AP session is already healthy, coalesce. Do NOT coalesce on offline
+        // Active — callers want to upgrade to a connected session.
+        if self.has_connected_active() {
             self.metrics_rebuild_coalesced.fetch_add(1, Ordering::Relaxed);
             return Ok(());
         }
@@ -1816,6 +1923,7 @@ impl EngineShared {
                 mixer,
                 queue,
                 event_task,
+                offline: false,
             });
             *self.pending_queue.lock().unwrap() = None;
         }
@@ -1844,6 +1952,162 @@ impl EngineShared {
         Ok(())
     }
 
+    /// Pin-only Active when AP connect is impossible (airplane mode).
+    async fn orchestrate_offline_rebuild(
+        self: Arc<Self>,
+        resume: Option<QueueState>,
+    ) -> Result<(), SpotifyError> {
+        let _inflight = self.rebuild_inflight.lock().await;
+
+        if self.has_playable_active() {
+            self.metrics_rebuild_coalesced.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
+        }
+
+        let previous = self.active.lock().unwrap().take();
+        if let Some(active) = previous {
+            active.session.shutdown();
+            drop(active);
+        }
+
+        let gen = {
+            let _guard = self.rebuild_mutex.lock().unwrap();
+            self.rebuild_generation.fetch_add(1, Ordering::SeqCst) + 1
+        };
+        Arc::clone(&self).build_offline_active_impl(resume, gen).await
+    }
+
+    async fn build_offline_active_impl(
+        self: Arc<Self>,
+        resume: Option<QueueState>,
+        generation: u64,
+    ) -> Result<(), SpotifyError> {
+        let session_config = self.session_config.lock().unwrap().clone();
+        // Unconnected session: pin loads never touch AP/mercury. Stays !is_invalid
+        // until shutdown, so we skip spawn_monitor (nothing to reconnect).
+        let session = Session::new(session_config, Some(self.cache.clone()));
+
+        let mixer = Arc::new(
+            SoftMixer::open(MixerConfig::default())
+                .map_err(|e| SpotifyError::Internal { msg: e.to_string() })?,
+        );
+        let volume_getter = mixer.get_soft_volume();
+
+        let mut player_config = self.settings.get().player_config();
+        player_config.offline_pin_directory = Some(self.downloads_dir.clone());
+        let audio_format = AudioFormat::S16;
+
+        #[cfg(all(target_os = "android", feature = "audiotrack-sink"))]
+        let sink_factory: Arc<dyn Fn() -> Box<dyn audio_backend::Sink> + Send + Sync> = {
+            use android_audiotrack_sink::AndroidAudioTrackSink;
+            use librespot::playback::audio_backend::Open;
+            Arc::new(move || {
+                Box::new(AndroidAudioTrackSink::open(None, audio_format))
+                    as Box<dyn audio_backend::Sink>
+            })
+        };
+
+        #[cfg(not(all(target_os = "android", feature = "audiotrack-sink")))]
+        let sink_factory: Arc<dyn Fn() -> Box<dyn audio_backend::Sink> + Send + Sync> = {
+            let backend = audio_backend::find(None).ok_or(SpotifyError::Internal {
+                msg: "no audio backend compiled in (expected rodio)".into(),
+            })?;
+            Arc::new(move || backend(None, audio_format))
+        };
+
+        let player = Player::new(
+            player_config,
+            session.clone(),
+            volume_getter,
+            sink_factory,
+        );
+
+        let player_for_sink_cb = player.clone();
+        let playing_flag = self.playing.clone();
+        player.set_sink_event_callback(Some(Box::new(move |status| {
+            if status == SinkStatus::Running && playing_flag.load(Ordering::SeqCst) {
+                player_for_sink_cb.play();
+            }
+        })));
+
+        mixer.set_volume(u16::MAX);
+
+        let queue = Arc::new(Mutex::new(QueueState::default()));
+        if let Some(snap) = resume {
+            queue.lock().unwrap().restore_snapshot(snap);
+        }
+
+        let rx = player.get_player_event_channel();
+        let weak = Arc::downgrade(&self);
+        let event_task = self.runtime.spawn(forward_events(
+            rx,
+            player.clone(),
+            queue.clone(),
+            self.listener.clone(),
+            self.playing.clone(),
+            self.last_known_position_ms.clone(),
+            weak,
+        ));
+
+        let resume_load = {
+            let q = queue.lock().unwrap();
+            q.current_uri().map(|uri| {
+                let pos = q
+                    .position_ms()
+                    .max(self.last_known_position_ms.load(Ordering::SeqCst));
+                (uri, pos)
+            })
+        };
+        let resume_command_epoch = self.command_epoch.load(Ordering::SeqCst);
+
+        if self.rebuild_generation.load(Ordering::SeqCst) != generation {
+            session.shutdown();
+            return Err(SpotifyError::StaleRebuild);
+        }
+
+        let player_for_load = player.clone();
+        {
+            let _guard = self.rebuild_mutex.lock().unwrap();
+            if self.rebuild_generation.load(Ordering::SeqCst) != generation {
+                session.shutdown();
+                return Err(SpotifyError::StaleRebuild);
+            }
+            *self.active.lock().unwrap() = Some(Active {
+                session,
+                player,
+                mixer,
+                queue,
+                event_task,
+                offline: true,
+            });
+            *self.pending_queue.lock().unwrap() = None;
+        }
+
+        if let Some((uri, pos)) = resume_load {
+            let uri_str = uri.to_uri().unwrap_or_default();
+            let pinned = downloads::is_downloaded(&self.downloads_dir, &uri_str);
+            if pinned
+                && resume_load_still_valid(
+                    resume_command_epoch,
+                    self.command_epoch.load(Ordering::SeqCst),
+                )
+            {
+                let start_playing = self.playing.load(Ordering::SeqCst);
+                log::info!(
+                    "build_offline_active: uri={uri} pos={pos} start_playing={start_playing}"
+                );
+                player_for_load.load(uri, start_playing, pos);
+            } else if !pinned {
+                log::info!("build_offline_active: skip resume — track not pinned ({uri})");
+            } else {
+                self.stale_load_suppressed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        self.notify_queue_changed();
+        Ok(())
+    }
+
     fn snapshot_resume(&self) -> Option<QueueState> {
         self.active
             .lock()
@@ -1855,6 +2119,9 @@ impl EngineShared {
     fn prefetch_upcoming(self: &Arc<Self>, ahead: u32) {
         let ahead = ahead.min(3);
         if ahead == 0 {
+            return;
+        }
+        if self.is_offline_active() {
             return;
         }
         let (session, upcoming, bitrate, generation) = {
@@ -1913,19 +2180,18 @@ impl EngineShared {
             }
             *last = Some(now);
         }
-        if self.has_valid_active() {
-            if let Some(active) = self.active.lock().unwrap().as_ref() {
+        // Tear down connected or offline Active so ensure_playback_ready can
+        // rebuild (preferring a live AP session when network is online).
+        {
+            let mut guard = self.active.lock().unwrap();
+            if let Some(active) = guard.take() {
                 self.metrics_transport_reconnect
                     .fetch_add(1, Ordering::Relaxed);
                 active.session.shutdown();
+                drop(active);
             }
         }
-        // `shutdown()` marks the session invalid synchronously, but previously we
-        // stopped here and relied on `spawn_monitor`'s 5-second poll to notice and
-        // rebuild — playback looked dead for up to 5s after every network handoff.
-        // Fall through and rebuild immediately instead; `ensure_playback_ready` is
-        // a no-op if a valid session already exists (e.g. nothing was shut down
-        // above because `has_valid_active()` was already false).
+        // Fall through and rebuild immediately instead of waiting for the monitor.
         if self.app_foreground.load(Ordering::SeqCst) || self.playing.load(Ordering::SeqCst) {
             let _ = Self::ensure_playback_ready(self);
         }
@@ -1980,12 +2246,12 @@ fn spawn_monitor(
                 return;
             }
 
-            // Stale monitor: a newer valid session is already active.
+            // Stale monitor: a newer playable Active is already installed.
             {
                 let guard = shared.active.lock().unwrap();
                 if let Some(active) = guard.as_ref() {
-                    if !active.session.is_invalid() {
-                        log::debug!("monitor: newer active session valid, exiting");
+                    if active.offline || !active.session.is_invalid() {
+                        log::debug!("monitor: newer active playable, exiting");
                         return;
                     }
                 }
@@ -2018,16 +2284,27 @@ fn spawn_monitor(
                 if weak.upgrade().is_none() {
                     return;
                 }
+                let network_online = shared.network_online.load(Ordering::SeqCst);
                 if let Some(creds) = shared.cache.credentials() {
                     attempts += 1;
-                    match handle.block_on(shared.clone().orchestrate_rebuild(creds, resume.clone()))
-                    {
+                    let rebuild_result = if network_online {
+                        handle.block_on(
+                            shared
+                                .clone()
+                                .orchestrate_rebuild(creds, resume.clone()),
+                        )
+                    } else {
+                        handle.block_on(shared.clone().orchestrate_offline_rebuild(resume.clone()))
+                    };
+                    match rebuild_result {
                         Ok(()) => {
-                            if shared.has_valid_active() {
+                            if shared.has_connected_active() {
                                 if was_playing {
                                     notify(&shared.listener, |l| l.on_connection_restored());
                                 }
                                 let _ = shared.access_token();
+                            } else if shared.has_playable_active() {
+                                log::info!("monitor: offline Active ready for pin playback");
                             }
                             return;
                         }
@@ -2037,7 +2314,28 @@ fn spawn_monitor(
                         }
                         Err(e) => {
                             log::warn!("reconnect attempt failed: {e}");
-                            if attempts >= RECONNECT_ERROR_AFTER {
+                            // When offline (or connect is network-failing), fall back to
+                            // pin-only Active once instead of spamming the UI.
+                            if !network_online
+                                || matches!(e, SpotifyError::Network { .. })
+                            {
+                                match handle.block_on(
+                                    shared.clone().orchestrate_offline_rebuild(resume.clone()),
+                                ) {
+                                    Ok(()) | Err(SpotifyError::StaleRebuild)
+                                        if shared.has_playable_active() =>
+                                    {
+                                        log::info!(
+                                            "monitor: fell back to offline Active after reconnect failure"
+                                        );
+                                        return;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if attempts >= RECONNECT_ERROR_AFTER
+                                && shared.network_online.load(Ordering::SeqCst)
+                            {
                                 notify(
                                     &shared.listener,
                                     |l| l.on_error(format!("Playback reconnect failed: {e}")),
@@ -2047,10 +2345,12 @@ fn spawn_monitor(
                     }
                 } else {
                     log::warn!("reconnect: no cached credentials, giving up");
-                    notify(
-                        &shared.listener,
-                        |l| l.on_error("Playback reconnect failed: not signed in".into()),
-                    );
+                    if shared.network_online.load(Ordering::SeqCst) {
+                        notify(
+                            &shared.listener,
+                            |l| l.on_error("Playback reconnect failed: not signed in".into()),
+                        );
+                    }
                     return;
                 }
                 std::thread::sleep(Duration::from_secs(delay));

@@ -321,6 +321,7 @@ class PlaybackController private constructor(
                 _state.update {
                     recomputeStatusMessage(it.copy(networkOnline = true, sessionExpired = false))
                 }
+                runCatching { requireBackend().setNetworkOnline(true) }
                 val caps = connectivityManager.getNetworkCapabilities(network)
                 if (caps != null) {
                     streamingPolicy.onCapabilitiesChanged(caps)
@@ -338,6 +339,7 @@ class PlaybackController private constructor(
             networkLostGraceJob = scope.launch {
                 delay(NETWORK_HANDOFF_GRACE_MS)
                 _state.update { recomputeStatusMessage(it.copy(networkOnline = false)) }
+                runCatching { requireBackend().setNetworkOnline(false) }
                 streamingPolicy.onOffline()
             }
         }
@@ -501,6 +503,7 @@ class PlaybackController private constructor(
         }
         engineReady = true
         runCatching { requireBackend().setAppForeground(appForegroundRequested) }
+        runCatching { requireBackend().setNetworkOnline(_state.value.networkOnline) }
         val alreadyLoggedIn = backend.isLoggedIn()
         _state.update {
             recomputeStatusMessage(
@@ -929,7 +932,8 @@ class PlaybackController private constructor(
                     }
                     .onFailure { e ->
                         android.util.Log.e("Playback", "playUris failed", e)
-                        _state.update { it.copy(isPlaying = false, isLoading = false, error = e.message) }
+                        val msg = mapPlayFailure(e)
+                        _state.update { it.copy(isPlaying = false, isLoading = false, error = msg) }
                         onStateChanged?.invoke()
                     }
             }
@@ -977,8 +981,12 @@ class PlaybackController private constructor(
         }
     }
     fun seek(positionMs: Long) = launchTransportExclusive {
+        val target = positionMs.coerceAtLeast(0L)
+        lastPositionMs = target
+        _state.update { it.copy(positionMs = target) }
+        onStateChanged?.invoke()
         if (ensureEngineReady()) {
-            requireBackend().seek(positionMs.toUInt())
+            requireBackend().seek(target.toUInt())
         }
     }
     fun toggleShuffle() = scope.launch {
@@ -1658,11 +1666,13 @@ class PlaybackController private constructor(
         markPlaybackPulse()
         val normalized = normalizeUri(uri)
         val cached = trackMetadata[normalized]
+        lastPositionMs = 0L
         _state.update {
             it.copy(
                 currentUri = normalized,
                 isLoading = false,
                 error = null,
+                positionMs = 0L,
                 title = cached?.title ?: it.title,
                 artist = cached?.artists ?: it.artist,
                 artUrl = cached?.artUrl ?: it.artUrl,
@@ -1670,7 +1680,7 @@ class PlaybackController private constructor(
                 durationMs = if (cached != null && cached.durationMs > 0) {
                     cached.durationMs
                 } else {
-                    it.durationMs
+                    0L
                 },
             )
         }
@@ -1717,9 +1727,20 @@ class PlaybackController private constructor(
         _state.update { it.copy(positionMs = audiblePositionMs(positionMs), isBuffering = false) }
     }
 
-    /** Subtract AudioTrack + ring latency from stream position (ExoPlayer DelayMs). */
+    override fun onDurationMs(durationMs: Long) {
+        if (durationMs <= 0L) return
+        _state.update { state ->
+            if (state.durationMs == durationMs) state
+            else state.copy(durationMs = durationMs)
+        }
+        onStateChanged?.invoke()
+    }
+
+    /** Subtract AudioTrack HAL pending from Spotify Path C stream position only. */
     private fun audiblePositionMs(streamPositionMs: Long): Long {
-        if (!BuildConfig.USE_AUDIOTRACK_SINK) return streamPositionMs
+        if (backendChoice != BackendChoice.SPOTIFY || !BuildConfig.USE_AUDIOTRACK_SINK) {
+            return streamPositionMs
+        }
         val delayMs = runCatching { PhonoAudioTrackSink.getOutputDelayMs() }.getOrDefault(0)
         return (streamPositionMs - delayMs).coerceAtLeast(0L)
     }
@@ -1763,9 +1784,26 @@ class PlaybackController private constructor(
     }
 
     override fun onError(message: String) {
-        _state.update { it.copy(error = message, isPlaying = false) }
+        if (!_state.value.networkOnline && isOfflineNoiseError(message)) {
+            android.util.Log.w("Playback", "suppressing offline reconnect noise: $message")
+            return
+        }
+        val mapped = when {
+            !_state.value.networkOnline && (
+                message.contains("not available offline", ignoreCase = true) ||
+                    message.contains("not logged in", ignoreCase = true) ||
+                    message.contains("network", ignoreCase = true)
+                ) -> "Not available offline."
+            else -> message
+        }
+        _state.update { it.copy(error = mapped, isPlaying = false) }
         onStateChanged?.invoke()
     }
+
+    private fun isOfflineNoiseError(message: String): Boolean =
+        message.contains("Playback reconnect failed", ignoreCase = true) ||
+            (message.contains("reconnect", ignoreCase = true) &&
+                message.contains("failed", ignoreCase = true))
 
     override fun onQueueChanged() {
         refreshQueue()
@@ -1838,6 +1876,19 @@ class PlaybackController private constructor(
         return state.copy(statusMessage = message)
     }
 
+    private fun mapPlayFailure(e: Throwable): String {
+        val raw = e.message.orEmpty()
+        if (!_state.value.networkOnline) {
+            if (raw.contains("not available offline", ignoreCase = true) ||
+                raw.contains("not logged in", ignoreCase = true) ||
+                raw.contains("network", ignoreCase = true)
+            ) {
+                return "Not available offline."
+            }
+        }
+        return mapSpotifyError(e)
+    }
+
     private fun mapSpotifyError(e: Throwable): String {
         val httpMessage = e.message?.let { msg ->
             when {
@@ -1862,9 +1913,14 @@ class PlaybackController private constructor(
             is SpotifyException.Auth -> e.message?.takeIf { it.isNotBlank() }
                 ?: "Sign-in failed. Try again."
             is SpotifyException.Network ->
-                if (!_state.value.networkOnline) "No connection."
-                else "Can't reach Spotify right now. Try again."
-            is SpotifyException.NotLoggedIn -> "Not signed in."
+                when {
+                    e.message?.contains("not available offline", ignoreCase = true) == true ->
+                        "Not available offline."
+                    !_state.value.networkOnline -> "No connection."
+                    else -> "Can't reach Spotify right now. Try again."
+                }
+            is SpotifyException.NotLoggedIn ->
+                if (!_state.value.networkOnline) "Not available offline." else "Not signed in."
             else -> httpMessage ?: (e.message?.takeIf { it.isNotBlank() } ?: "Something went wrong. Try again.")
         }
         if (e is SpotifyException.Auth) {

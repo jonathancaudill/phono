@@ -168,19 +168,31 @@ class TidalPlaybackBackend(
         // (MediaSource.Factory.createMediaSource runs there during setMediaItems).
         resolveExecutor.execute {
             try {
-                runCatching { auth.ensureSessionMeta() }
                 // Resolve a window around the start index so long playlists don't
                 // block forever / burn expired CDN URLs for distant tracks.
                 val ahead = resolveAhead.get().coerceIn(0, 3)
                 val range = TidalPrefetchWindows.playStartResolveRange(start, uris.lastIndex, ahead)
+                val offlineByIndex = HashMap<Int, MediaItem>(range.count())
+                var needsNetwork = false
+                for (index in range) {
+                    val offline = TidalPlayableItems.tryOfflineMediaItem(appContext, uris[index])
+                    if (offline != null) {
+                        offlineByIndex[index] = offline
+                    } else {
+                        needsNetwork = true
+                    }
+                }
+                // Skip session meta when the start window is fully pinned.
+                if (needsNetwork) {
+                    runCatching { auth.ensureSessionMeta() }
+                }
                 val items = uris.mapIndexed { index, uri ->
-                    if (index in range) {
-                        TidalPlayableItems.fromCanonicalUri(
+                    when {
+                        index in offlineByIndex -> offlineByIndex.getValue(index)
+                        index in range -> TidalPlayableItems.fromCanonicalUri(
                             appContext, api, uri, tidalQuality, mpdCacheDir,
                         )
-                    } else {
-                        // Placeholder; replaced when approached (see onMediaItemTransition).
-                        MediaItem.Builder().setMediaId(uri).setUri(Uri.EMPTY).build()
+                        else -> MediaItem.Builder().setMediaId(uri).setUri(Uri.EMPTY).build()
                     }
                 }
                 mainHandler.post {
@@ -215,7 +227,14 @@ class TidalPlaybackBackend(
         }
         seekToResolvedIndex(prev)
     }
-    override fun seek(positionMs: UInt) = onPlayer { player.seekTo(positionMs.toLong()) }
+    override fun seek(positionMs: UInt) = onPlayer {
+        player.seekTo(positionMs.toLong())
+        listener?.onPositionChanged(player.currentPosition)
+        maybeReportDuration()
+        // Keep polling for a bit even if playWhenReady is false after seek settles.
+        mainHandler.removeCallbacks(positionPoller)
+        mainHandler.post(positionPoller)
+    }
 
     // --- queue --------------------------------------------------------------
 
@@ -225,9 +244,10 @@ class TidalPlaybackBackend(
         manualMediaIds.add(uri)
         resolveExecutor.execute {
             try {
-                val item = TidalPlayableItems.fromCanonicalUri(
-                    appContext, api, uri, tidalQuality, mpdCacheDir,
-                )
+                val item = TidalPlayableItems.tryOfflineMediaItem(appContext, uri)
+                    ?: TidalPlayableItems.fromCanonicalUri(
+                        appContext, api, uri, tidalQuality, mpdCacheDir,
+                    )
                 mainHandler.post {
                     val insertAt = insertionIndexForManual()
                     player.addMediaItem(insertAt, item)
@@ -401,9 +421,10 @@ class TidalPlaybackBackend(
         resolveExecutor.execute {
             for ((i, canonical) in pending) {
                 try {
-                    val playable = TidalPlayableItems.fromCanonicalUri(
-                        appContext, api, canonical, tidalQuality, mpdCacheDir,
-                    )
+                    val playable = TidalPlayableItems.tryOfflineMediaItem(appContext, canonical)
+                        ?: TidalPlayableItems.fromCanonicalUri(
+                            appContext, api, canonical, tidalQuality, mpdCacheDir,
+                        )
                     mainHandler.post {
                         if (i < player.mediaItemCount &&
                             player.getMediaItemAt(i).mediaId == canonical &&
@@ -431,9 +452,10 @@ class TidalPlaybackBackend(
         listener?.onLoading()
         resolveExecutor.execute {
             try {
-                val playable = TidalPlayableItems.fromCanonicalUri(
-                    appContext, api, canonical, tidalQuality, mpdCacheDir,
-                )
+                val playable = TidalPlayableItems.tryOfflineMediaItem(appContext, canonical)
+                    ?: TidalPlayableItems.fromCanonicalUri(
+                        appContext, api, canonical, tidalQuality, mpdCacheDir,
+                    )
                 mainHandler.post {
                     if (index < player.mediaItemCount &&
                         player.getMediaItemAt(index).mediaId == canonical
@@ -502,11 +524,17 @@ class TidalPlaybackBackend(
 
     private val positionPoller = object : Runnable {
         override fun run() {
-            if (player.isPlaying) {
-                listener?.onPositionChanged(player.currentPosition)
+            listener?.onPositionChanged(player.currentPosition)
+            maybeReportDuration()
+            if (player.isPlaying || player.playbackState == Player.STATE_BUFFERING) {
                 mainHandler.postDelayed(this, POSITION_POLL_MS)
             }
         }
+    }
+
+    private fun maybeReportDuration() {
+        val d = player.duration
+        if (d > 0L) listener?.onDurationMs(d)
     }
 
     private val playerListener = object : Player.Listener {
@@ -519,6 +547,7 @@ class TidalPlaybackBackend(
                     qualityApiValue = tidalQuality.apiValue,
                     durationMs = player.duration.takeIf { it > 0 } ?: 0L,
                 )
+                maybeReportDuration()
             }
             refreshQueue()
             ensureResolvedAround(player.currentMediaItemIndex, resolveAhead.get())
@@ -529,8 +558,14 @@ class TidalPlaybackBackend(
                 Player.STATE_BUFFERING -> {
                     listener?.onLoading()
                     listener?.onBuffering(true)
+                    mainHandler.removeCallbacks(positionPoller)
+                    mainHandler.post(positionPoller)
                 }
-                Player.STATE_READY -> listener?.onBuffering(false)
+                Player.STATE_READY -> {
+                    listener?.onBuffering(false)
+                    maybeReportDuration()
+                    listener?.onPositionChanged(player.currentPosition)
+                }
                 Player.STATE_ENDED -> {
                     playReporter.onTrackStopped()
                     listener?.onEndOfTrack()
@@ -543,10 +578,20 @@ class TidalPlaybackBackend(
             if (isPlaying) {
                 playReporter.onPlaying()
                 listener?.onPlaying(player.currentPosition)
+                maybeReportDuration()
+                mainHandler.removeCallbacks(positionPoller)
                 mainHandler.post(positionPoller)
             } else {
                 playReporter.onPaused()
                 listener?.onPaused(player.currentPosition)
+            }
+        }
+
+        override fun onEvents(player: Player, events: Player.Events) {
+            if (events.contains(Player.EVENT_TIMELINE_CHANGED) ||
+                events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION)
+            ) {
+                maybeReportDuration()
             }
         }
 
@@ -607,6 +652,12 @@ class TidalPlaybackBackend(
                 "This track is DRM-encrypted."
             raw.contains("cancelled", ignoreCase = true) ->
                 "Playback interrupted — try again."
+            raw.contains("Unable to resolve host", ignoreCase = true) ||
+                raw.contains("UnknownHost", ignoreCase = true) ||
+                raw.contains("failed to connect", ignoreCase = true) ||
+                raw.contains("Network is unreachable", ignoreCase = true) ||
+                raw.contains("not available offline", ignoreCase = true) ->
+                "Not available offline."
             raw.equals("Source error", ignoreCase = true) ->
                 "Couldn't open stream. Try another quality or re-login."
             else -> raw.take(160)

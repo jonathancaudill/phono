@@ -26,6 +26,7 @@ import com.lightphone.spotify.playback.download.DownloadStates
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
 import com.lightphone.spotify.ui.components.PhonoMediaListItem
+import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.PhonoScreenShell
 import com.thelightphone.sdk.ui.LightIcons
@@ -138,19 +139,32 @@ fun DownloadCollectionDetailScreen(
                         val track = remember(row.uri) { row.toTrackMetadata() }
                         val completed = row.state == DownloadStates.COMPLETED
                         Column {
-                            PhonoMediaListItem(
-                                primaryText = row.title,
-                                secondaryText = downloadTrackSubtitle(row),
-                                showImage = false,
-                                onEditDelete = if (editMode) {
-                                    { vm.removeDownload(track) }
-                                } else {
-                                    null
-                                },
-                                onClick = {
-                                    if (!editMode && completed) onPlayTrack(track)
-                                },
-                            )
+                            if (!editMode && completed) {
+                                PhonoSwipeToActionRow(
+                                    onSwipeAction = { vm.addTrackToQueue(track) },
+                                ) {
+                                    PhonoMediaListItem(
+                                        primaryText = row.title,
+                                        secondaryText = downloadTrackSubtitle(row),
+                                        showImage = false,
+                                        onClick = { onPlayTrack(track) },
+                                    )
+                                }
+                            } else {
+                                PhonoMediaListItem(
+                                    primaryText = row.title,
+                                    secondaryText = downloadTrackSubtitle(row),
+                                    showImage = false,
+                                    onEditDelete = if (editMode) {
+                                        { vm.removeDownload(track) }
+                                    } else {
+                                        null
+                                    },
+                                    onClick = {
+                                        if (!editMode && completed) onPlayTrack(track)
+                                    },
+                                )
+                            }
                             Spacer(Modifier.height(legacyNToGridDp(8)))
                         }
                     }
@@ -159,7 +173,7 @@ fun DownloadCollectionDetailScreen(
                             text = if (editMode) {
                                 "Tap Cancel to remove a track."
                             } else {
-                                "Tap a finished track to play."
+                                "Tap a finished track to play. Swipe right to queue."
                             },
                             variant = LightTextVariant.Micro,
                             color = colors.content.copy(alpha = 0.55f),
@@ -207,6 +221,6 @@ private fun DownloadedTrackEntity.toTrackMetadata() = TrackMetadata(
     title = title,
     artists = artists,
     album = album,
-    durationMs = 0L,
+    durationMs = duration_ms,
     artUrl = art_url,
 )

@@ -45,6 +45,9 @@ fun LikedSongsScreen(
     }
 
     val state by vm.likedTracks.collectAsState()
+    val playback by vm.playback.collectAsState()
+    val downloadedUris by vm.completedDownloadUris.collectAsState()
+    val networkOnline = playback.networkOnline
     val listState = rememberLazyListState()
     val dateIndex = remember(state.items) {
         buildLibraryDateIndex(state.items) { it.added_at }
@@ -66,6 +69,8 @@ fun LikedSongsScreen(
                 .fillMaxWidth(),
         ) {
             when {
+                !networkOnline && state.items.isEmpty() ->
+                    EmptyListMessage("You're offline.")
                 state.error != null && state.items.isEmpty() ->
                     EmptyListMessage(state.error!!)
                 state.initialLoading && state.items.isEmpty() ->
@@ -73,7 +78,7 @@ fun LikedSongsScreen(
                 state.isEmpty ->
                     EmptyListMessage("No saved tracks found.")
                 else -> Column(Modifier.fillMaxSize()) {
-                    if (state.error != null && state.items.isNotEmpty()) {
+                    if (state.error != null && state.items.isNotEmpty() && networkOnline) {
                         LibraryPartialSyncBanner(state.error!!)
                     }
                     LibraryInfiniteList(
@@ -95,20 +100,27 @@ fun LikedSongsScreen(
                             .weight(1f)
                             .fillMaxWidth(),
                     ) { index, track ->
+                        val availableOffline = track.uri in downloadedUris
+                        val disabled = !networkOnline && !availableOffline
                         PhonoSwipeToActionRow(
-                            onSwipeAction = { vm.addTrackToQueue(track.toTrackMetadata()) },
+                            onSwipeAction = {
+                                if (!disabled) vm.addTrackToQueue(track.toTrackMetadata())
+                            },
                         ) {
                             PhonoMediaListItem(
                                 primaryText = track.title,
                                 secondaryText = track.artists,
                                 showImage = false,
                                 placeholderIcon = Icons.Default.MusicNote,
-                                onClick = { onPlayTrack(index) },
+                                disabled = disabled,
+                                onClick = { if (!disabled) onPlayTrack(index) },
                                 onLongClick = {
-                                    vm.showTrackContextMenu(
-                                        track.uri,
-                                        trackIdFromUri(track.uri),
-                                    )
+                                    if (!disabled) {
+                                        vm.showTrackContextMenu(
+                                            track.uri,
+                                            trackIdFromUri(track.uri),
+                                        )
+                                    }
                                 },
                             )
                         }

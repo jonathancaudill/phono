@@ -16,6 +16,8 @@ interface PlaybackEventListener {
     fun onPlaying(positionMs: Long)
     fun onPaused(positionMs: Long)
     fun onPositionChanged(positionMs: Long)
+    /** Known media duration in ms (> 0). Optional; backends may omit. */
+    fun onDurationMs(durationMs: Long) {}
     fun onEndOfTrack()
     fun onUnavailable(uri: String)
     fun onConnectionLost()

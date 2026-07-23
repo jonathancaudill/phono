@@ -95,6 +95,7 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
                     state = DownloadStates.QUEUED,
                     bytes = 0,
                     updated_at = System.currentTimeMillis(),
+                    duration_ms = track.durationMs,
                 ),
             )
             kickService(app)
@@ -145,6 +146,7 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
                             state = DownloadStates.QUEUED,
                             bytes = 0,
                             updated_at = System.currentTimeMillis(),
+                            duration_ms = track.durationMs,
                         ),
                     )
                 }
@@ -280,6 +282,7 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
                             state = DownloadStates.COMPLETED,
                             bytes = info.bytes.toLong(),
                             updated_at = System.currentTimeMillis(),
+                            duration_ms = track.durationMs,
                         ),
                     )
                 },
@@ -334,6 +337,7 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
                 state = DownloadStates.FAILED,
                 bytes = bytes,
                 updated_at = System.currentTimeMillis(),
+                duration_ms = track.durationMs,
             ),
         )
     }
@@ -364,6 +368,7 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
                     state = DownloadStates.FAILED,
                     bytes = existing?.bytes ?: 0,
                     updated_at = now,
+                    duration_ms = track.durationMs.takeIf { it > 0 } ?: existing?.duration_ms ?: 0L,
                 ),
             )
         }

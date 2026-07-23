@@ -304,6 +304,7 @@ object TidalDownloadCenter {
                             state = Download.STATE_QUEUED,
                             bytes = 0,
                             updated_at = System.currentTimeMillis(),
+                            duration_ms = track.durationMs,
                         ),
                     )
                 }
@@ -387,6 +388,7 @@ object TidalDownloadCenter {
                         state = Download.STATE_QUEUED,
                         bytes = 0,
                         updated_at = System.currentTimeMillis(),
+                        duration_ms = track.durationMs,
                     ),
                 )
             }
@@ -412,6 +414,7 @@ object TidalDownloadCenter {
                         state = Download.STATE_FAILED,
                         bytes = 0,
                         updated_at = System.currentTimeMillis(),
+                        duration_ms = track.durationMs,
                     ),
                 )
                 return@withLock
@@ -429,6 +432,7 @@ object TidalDownloadCenter {
                     state = Download.STATE_QUEUED,
                     bytes = 0,
                     updated_at = System.currentTimeMillis(),
+                    duration_ms = track.durationMs,
                 ),
             )
 
@@ -448,6 +452,7 @@ object TidalDownloadCenter {
                         state = Download.STATE_FAILED,
                         bytes = 0,
                         updated_at = System.currentTimeMillis(),
+                        duration_ms = track.durationMs,
                     ),
                 )
                 return@withLock
@@ -472,6 +477,7 @@ object TidalDownloadCenter {
                         state = Download.STATE_FAILED,
                         bytes = 0,
                         updated_at = System.currentTimeMillis(),
+                        duration_ms = track.durationMs,
                     ),
                 )
             }
@@ -509,6 +515,7 @@ object TidalDownloadCenter {
                     state = Download.STATE_FAILED,
                     bytes = existing?.bytes ?: 0,
                     updated_at = now,
+                    duration_ms = track.durationMs.takeIf { it > 0 } ?: existing?.duration_ms ?: 0L,
                 ),
             )
         }

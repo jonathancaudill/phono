@@ -36,6 +36,8 @@ fun AlbumsScreen(
     }
 
     val state by vm.savedAlbums.collectAsState()
+    val playback by vm.playback.collectAsState()
+    val networkOnline = playback.networkOnline
     val listState = rememberLazyListState()
     val dateIndex = remember(state.items) {
         buildLibraryDateIndex(state.items) { it.added_at }
@@ -57,6 +59,8 @@ fun AlbumsScreen(
                 .fillMaxWidth(),
         ) {
             when {
+                !networkOnline && state.items.isEmpty() ->
+                    EmptyListMessage("You're offline.")
                 state.error != null && state.items.isEmpty() ->
                     EmptyListMessage(state.error!!)
                 state.initialLoading && state.items.isEmpty() ->
@@ -64,7 +68,7 @@ fun AlbumsScreen(
                 state.isEmpty ->
                     EmptyListMessage("No saved albums found.")
                 else -> Column(Modifier.fillMaxSize()) {
-                    if (state.error != null && state.items.isNotEmpty()) {
+                    if (state.error != null && state.items.isNotEmpty() && networkOnline) {
                         LibraryPartialSyncBanner(state.error!!)
                     }
                     LibraryInfiniteList(
@@ -86,23 +90,30 @@ fun AlbumsScreen(
                             .weight(1f)
                             .fillMaxWidth(),
                     ) { _, saved ->
+                        val collUri = saved.uri.ifBlank {
+                            com.lightphone.spotify.data.backend.collectionUri(
+                                vm.backendChoice,
+                                com.lightphone.spotify.data.backend.CollectionKind.Album,
+                                saved.album_id,
+                            )
+                        }
+                        val disabled = !networkOnline && !vm.isCollectionDownloaded(collUri)
                         PhonoMediaListItem(
                             primaryText = saved.name,
                             secondaryText = saved.artist_names,
                             showImage = false,
                             placeholderIcon = Icons.Default.Album,
-                            onClick = { onOpenAlbum(saved.album_id, saved.name) },
+                            disabled = disabled,
+                            onClick = {
+                                if (!disabled) onOpenAlbum(saved.album_id, saved.name)
+                            },
                             onLongClick = {
-                                vm.showAlbumContextMenu(
-                                    saved.album_id,
-                                    saved.uri.ifBlank {
-                                        com.lightphone.spotify.data.backend.collectionUri(
-                                            vm.backendChoice,
-                                            com.lightphone.spotify.data.backend.CollectionKind.Album,
-                                            saved.album_id,
-                                        )
-                                    },
-                                )
+                                if (!disabled) {
+                                    vm.showAlbumContextMenu(
+                                        saved.album_id,
+                                        collUri,
+                                    )
+                                }
                             },
                         )
                     }

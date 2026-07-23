@@ -25,7 +25,8 @@ import androidx.room.TypeConverters
     // active backend per install, so a destructive migration is correct here.
     // v6: adds the `downloaded_tracks` table for offline playback pins.
     // v7: downloaded albums/playlists + membership for the Downloads tab.
-    version = 7,
+    // v8: downloaded_tracks.duration_ms for progress-bar / Playing UI.
+    version = 8,
     exportSchema = false,
 )
 @TypeConverters(LibraryResourceConverter::class)

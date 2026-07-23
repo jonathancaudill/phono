@@ -48,6 +48,8 @@ fun PlaylistsScreen(
     }
 
     val state by vm.playlists.collectAsState()
+    val playback by vm.playback.collectAsState()
+    val networkOnline = playback.networkOnline
     val displayItems = state.displayItems
     val listState = rememberLazyListState()
 
@@ -57,8 +59,8 @@ fun PlaylistsScreen(
 
     PhonoScreenShell(
         hideBackButton = true,
-        leftIcon = Icons.Default.Add,
-        onLeftIconClick = onCreatePlaylist,
+        leftIcon = if (networkOnline) Icons.Default.Add else null,
+        onLeftIconClick = if (networkOnline) onCreatePlaylist else null,
         rightLightIcon = LightIcons.AUDIO_MESSAGE,
         onRightIconClick = onOpenPlaying,
         horizontalPadding = legacyNToGridDp(20),
@@ -78,6 +80,8 @@ fun PlaylistsScreen(
                 .fillMaxWidth(),
         ) {
             when {
+                !networkOnline && displayItems.isEmpty() && state.items.isEmpty() ->
+                    EmptyListMessage("You're offline.")
                 state.error != null && displayItems.isEmpty() && state.items.isEmpty() ->
                     EmptyListMessage(state.error!!)
                 state.initialLoading && displayItems.isEmpty() ->
@@ -91,7 +95,7 @@ fun PlaylistsScreen(
                         },
                     )
                 else -> Column(Modifier.fillMaxSize()) {
-                    if (state.error != null && state.items.isNotEmpty()) {
+                    if (state.error != null && state.items.isNotEmpty() && networkOnline) {
                         LibraryPartialSyncBanner(state.error!!)
                     }
                     LibraryInfiniteList(
@@ -104,6 +108,14 @@ fun PlaylistsScreen(
                         itemKey = { it.playlist_id },
                         onEnsureBufferAhead = vm::ensurePlaylistsBufferAhead,
                     ) { _, playlist ->
+                        val collUri = playlist.uri.ifBlank {
+                            com.lightphone.spotify.data.backend.collectionUri(
+                                vm.backendChoice,
+                                com.lightphone.spotify.data.backend.CollectionKind.Playlist,
+                                playlist.playlist_id,
+                            )
+                        }
+                        val disabled = !networkOnline && !vm.isCollectionDownloaded(collUri)
                         PhonoMediaListItem(
                             primaryText = playlist.name,
                             secondaryText = playlistOwnerSecondary(
@@ -114,19 +126,18 @@ fun PlaylistsScreen(
                             ),
                             showImage = false,
                             placeholderIcon = Icons.AutoMirrored.Filled.PlaylistPlay,
-                            onClick = { onOpenPlaylist(playlist.playlist_id, playlist.name) },
+                            disabled = disabled,
+                            onClick = {
+                                if (!disabled) onOpenPlaylist(playlist.playlist_id, playlist.name)
+                            },
                             onLongClick = {
-                                vm.showPlaylistContextMenu(
-                                    playlistId = playlist.playlist_id,
-                                    uri = playlist.uri.ifBlank {
-                                        com.lightphone.spotify.data.backend.collectionUri(
-                                            vm.backendChoice,
-                                            com.lightphone.spotify.data.backend.CollectionKind.Playlist,
-                                            playlist.playlist_id,
-                                        )
-                                    },
-                                    ownerId = playlist.owner_id,
-                                )
+                                if (!disabled) {
+                                    vm.showPlaylistContextMenu(
+                                        playlistId = playlist.playlist_id,
+                                        uri = collUri,
+                                        ownerId = playlist.owner_id,
+                                    )
+                                }
                             },
                         )
                     }

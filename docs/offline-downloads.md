@@ -41,6 +41,22 @@ If Phono has not seen a usable network for 30+ days, [`OfflinePinHygiene`](../ap
 
 `MainActivity` calls `offlineDownloads.resumeDownloads()` for whichever backend is active.
 
+## Airplane mode
+
+True offline (no AP / no CDN) is supported for **completed pins**:
+
+- **Spotify:** If AP `session.connect` fails or the device is offline, the engine builds an
+  **offline Active** (`Session::new` without connect) so [`load_pinned_track`](../rust/librespot-playback-patched/src/player.rs)
+  can play clear Ogg pins. Kotlin calls `setNetworkOnline` from the connectivity callback so
+  reconnect spam is suppressed offline and a live session is rebuilt when network returns.
+- **TIDAL:** `playUris` resolves the start window from completed Media3 downloads first and
+  skips `ensureSessionMeta` when every track in that window is pinned.
+- **Library UI:** Cached Liked/Albums/Playlists stay visible; non-downloaded rows are grayed out;
+  sync error banners are suppressed (navbar already shows “Device offline”). Downloads tab stays
+  fully interactive, including swipe-to-queue on completed tracks.
+
+Unpinned tracks remain unavailable offline (“Not available offline.”).
+
 ## Future
 
 App-level encryption and subscription checks for pins are intentionally deferred.

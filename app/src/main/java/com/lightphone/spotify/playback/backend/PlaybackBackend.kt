@@ -36,6 +36,8 @@ interface PlaybackBackend {
     /** Bring the session up (idempotent). Throws on failure. */
     fun ensurePlaybackReady()
     fun setAppForeground(foreground: Boolean)
+    /** Tell the backend whether the device currently has internet. */
+    fun setNetworkOnline(online: Boolean) {}
     fun forceReconnectCheck()
     fun recreateAudioSink()
 

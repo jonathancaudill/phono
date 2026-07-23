@@ -28,7 +28,7 @@ object TidalPlayableItems {
         quality: TidalAudioQuality,
         mpdCacheDir: File,
     ): MediaItem {
-        offlineMediaItem(context, canonicalUri)?.let { return it }
+        tryOfflineMediaItem(context, canonicalUri)?.let { return it }
 
         val id = TidalUri.rawId(canonicalUri)
         return when (val resolved = TidalStreamResolve.resolve(api, id, quality.apiValue)) {
@@ -50,6 +50,10 @@ object TidalPlayableItems {
             }
         }
     }
+
+    /** Completed Media3 download for [canonicalUri], or null if not pinned. */
+    fun tryOfflineMediaItem(context: Context, canonicalUri: String): MediaItem? =
+        offlineMediaItem(context, canonicalUri)
 
     /** Prefer a completed Media3 download so offline play needs no playbackinfo. */
     private fun offlineMediaItem(context: Context, canonicalUri: String): MediaItem? {
