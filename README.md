@@ -1,9 +1,8 @@
-### ⚠️ WARNING: THIS REPOSITORY IS RAPIDLY CHANGING AFTER THE DISCOVERY OF A FEW BUGS.
-### ⚠️ IT IS HIGHLY ADVISABLE YOU WAIT FOR V0.0.2 AT LEAST
+# Phono — Spotify & TIDAL Client for Light Phone III
 
-# Phono — Spotify / TIDAL Client for Light Phone III
+<img width="2572" height="1048" alt="phono-readme-mockup" src="https://github.com/user-attachments/assets/0fde28e8-b041-4c93-b457-217fd87fe06f" />
 
-<img width="480" height="580" alt="1000000482" src="https://github.com/user-attachments/assets/783e74e2-c3a2-4014-a990-ffedd4189a9d" />
+### This project currently has a couple bugs with regards to overly aggressive library loading. I'm gonna fix them tonight or tomorrow. Just know if you're seeing this to check again in a day or two for v0.1.1!
 
 Thanks to **[Vandam Dinh](https://github.com/vandamd)** — especially
 [Echo](https://github.com/vandamd/echo) — for the Light Phone UI
@@ -18,8 +17,8 @@ UI for library, search, queue, and offline downloads.
 | **Spotify** | Patched librespot (Rust) | Web API + native spclient | Premium required |
 | **TIDAL** | Media3 / ExoPlayer (clear BTS/DASH) | TIDAL REST API | Subscription that can serve clear streams (no Widevine path) |
 
-> Spotify **Premium** is required for the Spotify backend. TIDAL needs a plan that
-> can deliver clear AAC/FLAC. Please do not ask for free-tier workarounds.
+> Requires a Spotify **Premium** or active TIDAL account. This is not something we have
+> *any* interest in working around, so please do not ask!
 
 **New developer? Agent?** Read [docs/README.md](docs/README.md) and [AGENTS.md](AGENTS.md)
 before changing Spotify/librespot code.
@@ -29,13 +28,18 @@ before changing Spotify/librespot code.
 vandam rocks. Basically: backend choice (Spotify or TIDAL), offline pins, less album
 art, and Spotify does not require the official Spotify app.
 
----
+vandam rocks. Basically, this works with TIDAL or Spotify, has a few extra features, less album art and doesn't require the Spotify app to be installed if you go the Spotify route.
 
 # Setup
 
 On first launch, choose **Spotify** or **TIDAL**. Setup differs by backend.
 
-## Spotify (dual authentication)
+## Tidal
+
+Setup for Tidal is simple. Just log in!
+
+## Spotify
+The app uses **dual authentication** for Spotify:
 
 1. **Step 1 — Playback (librespot):** WebView login with Spotify’s first-party Keymaster
    client for audio streaming. No developer dashboard setup for this step.
@@ -67,15 +71,18 @@ On first launch, choose **Spotify** or **TIDAL**. Setup differs by backend.
 The setup page runs entirely in your browser; it's just a static page. The QR
 code encodes your client secret in plain text, so be careful sharing it :)
 
-**Note:** Credentials may expire around 6 months. Rotate the secret and redo steps 2–3.
-
-## TIDAL (single login)
-
-No developer dashboard. Open the in-app WebView, sign in with your TIDAL account
-(PKCE). Redirect is intercepted at `https://tidal.com/android/login/auth`. Tokens are
-stored in encrypted prefs. There is no Step 2.
+**PLEASE NOTE:** Credentials will expire around 6 months depending on 
+Spotify dev app restrictions. Just rotate the secret and redo steps 2-3!
 
 ---
+
+
+## LEGAL
+- Spotify and TIDAL "offline" playback is simply an extra large streaming cache, not an actual raw file downloader. If you haven't been online in 30 days, all downloaded playlists and albums will be wiped to protect Spotify and TIDAL's TOS. 
+- A premium subscription to TIDAL or Spotify is required for ***any*** part of Phono to work.
+
+
+# boring architecture descriptions below. literally no point in reading any further unless you wanna make a pr
 
 ## Repository layout
 
