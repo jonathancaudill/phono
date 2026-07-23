@@ -72,14 +72,14 @@ class SpotifyRepository(
     private val webApi: SpotifyWebApi,
     private val libraryRepository: LibraryRepository,
     private val detailCache: DetailCacheRepository,
-) {
+) : MusicRepository {
     /** Login5 spclient gateway (Step 1). Required for playlist/artist paths. */
     var nativeMetadata: NativeMetadataGateway? = null
 
     /** Live librespot session check from [PlaybackController]; used for dead-session error copy. */
     var playbackSessionConnected: (() -> Boolean)? = null
 
-    fun hasPlaybackCredsWithoutLiveSession(): Boolean =
+    override fun hasPlaybackCredsWithoutLiveSession(): Boolean =
         nativeMetadata?.isLoggedIn() == true && playbackSessionConnected?.invoke() == false
 
     private fun nativeGateway(): NativeMetadataGateway {
@@ -97,7 +97,7 @@ class SpotifyRepository(
     private var currentUserIdCache: String? = null
     private val ownerDisplayNameCache = ConcurrentHashMap<String, String>()
 
-    suspend fun albumDetail(albumId: String): AlbumDetailResult {
+    override suspend fun albumDetail(albumId: String): AlbumDetailResult {
         val now = System.currentTimeMillis()
         ephemeralAlbumCache[albumId]?.let { entry ->
             if (now - entry.at < CACHE_TTL_MS) {
@@ -123,7 +123,7 @@ class SpotifyRepository(
         return result
     }
 
-    fun artistDetail(artistId: String): ArtistDetailResult {
+    override fun artistDetail(artistId: String): ArtistDetailResult {
         val bundle = nativeGateway().artistDetail(
             artistId = artistId,
             albumLimit = 50,
@@ -132,7 +132,7 @@ class SpotifyRepository(
         return NativeMetadataAdapter.toArtistDetailResult(bundle)
     }
 
-    fun search(query: String, limitPerType: Int = 8): SearchResults {
+    override fun search(query: String, limitPerType: Int): SearchResults {
         val key = query.trim()
         if (key.isEmpty()) return SearchResults(query = "")
         val now = System.currentTimeMillis()
@@ -150,12 +150,12 @@ class SpotifyRepository(
         return items
     }
 
-    fun playlistTracks(playlistId: String, limit: Int = 100): List<TrackMetadata> {
+    override fun playlistTracks(playlistId: String, limit: Int): List<TrackMetadata> {
         val bundle = nativeGateway().playlistDetail(playlistId, limit.coerceIn(1, 500))
         return bundle.tracks.mapNotNull { it.track.toSpotifyTrack().toMetadata() }
     }
 
-    fun currentUserId(): String {
+    override fun currentUserId(): String {
         currentUserIdCache?.let { return it }
         val id = runCatching {
             nativeMetadata?.takeIf { it.isLoggedIn() }?.sessionUsername()
@@ -164,7 +164,7 @@ class SpotifyRepository(
         return id
     }
 
-    suspend fun playlistDetail(playlistId: String, trackLimit: Int = 500): PlaylistDetailResult {
+    override suspend fun playlistDetail(playlistId: String, trackLimit: Int): PlaylistDetailResult {
         val now = System.currentTimeMillis()
         ephemeralPlaylistCache[playlistId]?.let { entry ->
             if (now - entry.at < CACHE_TTL_MS) {
@@ -214,7 +214,7 @@ class SpotifyRepository(
         return result
     }
 
-    suspend fun playlistsContainingTrack(
+    override suspend fun playlistsContainingTrack(
         trackUri: String,
         playlistIds: List<String>,
     ): Set<String> {
@@ -236,7 +236,7 @@ class SpotifyRepository(
      * Snapshot-gated background index of editable playlist track URIs.
      * Only re-fetches playlists whose [PlaylistEntity.snapshot_id] differs from the last index.
      */
-    suspend fun syncPlaylistUriIndex() {
+    override suspend fun syncPlaylistUriIndex() {
         val userId = runCatching { currentUserIdSuspend() }.getOrNull() ?: return
         val editable = editablePlaylists(userId)
         for (playlist in editable) {
@@ -256,10 +256,10 @@ class SpotifyRepository(
         }
     }
 
-    suspend fun isSavedAlbumCached(albumId: String): Boolean =
+    override suspend fun isSavedAlbumCached(albumId: String): Boolean =
         detailCache.isSavedAlbumCached(albumId)
 
-    suspend fun createPlaylist(name: String, isPublic: Boolean): SpotifyPlaylistSimple {
+    override suspend fun createPlaylist(name: String, isPublic: Boolean): SpotifyPlaylistSimple {
         val created = nativeGateway().createPlaylist(name.trim(), isPublic)
         var simple = withResolvedOwner(NativeMetadataAdapter.toPlaylistSimple(created))
         if (simple.snapshotId.isNullOrBlank()) {
@@ -276,7 +276,7 @@ class SpotifyRepository(
         return simple
     }
 
-    suspend fun renamePlaylist(playlistId: String, name: String): SpotifyPlaylistDetail {
+    override suspend fun renamePlaylist(playlistId: String, name: String): SpotifyPlaylistDetail {
         val trimmed = name.trim()
         val revision = resolvePlaylistRevision(playlistId)
         val newRevision = nativeGateway().updatePlaylistMetadata(playlistId, revision, trimmed, null)
@@ -288,11 +288,11 @@ class SpotifyRepository(
         return detail
     }
 
-    suspend fun addTrackToPlaylist(
+    override suspend fun addTrackToPlaylist(
         playlistId: String,
         uri: String,
-        snapshotId: String? = null,
-        position: Int? = null,
+        snapshotId: String?,
+        position: Int?,
     ): String {
         val normalized = normalizeUri(uri)
         val resolvedSnapshot = resolvePlaylistRevision(playlistId, snapshotId)
@@ -310,7 +310,7 @@ class SpotifyRepository(
         return newSnapshot
     }
 
-    suspend fun removeTrackFromPlaylist(
+    override suspend fun removeTrackFromPlaylist(
         playlistId: String,
         uri: String,
         snapshotId: String?,
@@ -326,7 +326,7 @@ class SpotifyRepository(
         return newSnapshot
     }
 
-    suspend fun reorderPlaylistTrack(
+    override suspend fun reorderPlaylistTrack(
         playlistId: String,
         fromIndex: Int,
         toIndex: Int,
@@ -348,7 +348,7 @@ class SpotifyRepository(
         return newSnapshot
     }
 
-    suspend fun followPlaylist(playlistId: String) {
+    override suspend fun followPlaylist(playlistId: String) {
         val uri = "spotify:playlist:$playlistId"
         nativeGateway().followPlaylist(uri)
         val bundle = nativeGateway().playlistDetail(playlistId, trackLimit = 1)
@@ -359,20 +359,20 @@ class SpotifyRepository(
         }
     }
 
-    suspend fun unfollowPlaylist(playlistId: String) {
+    override suspend fun unfollowPlaylist(playlistId: String) {
         nativeGateway().unfollowPlaylist("spotify:playlist:$playlistId")
         libraryRepository.removePlaylist(playlistId)
         detailCache.clearPlaylistUriIndex(playlistId)
     }
 
-    suspend fun editablePlaylists(userId: String? = null): List<PlaylistEntity> {
+    override suspend fun editablePlaylists(userId: String?): List<PlaylistEntity> {
         val resolvedUserId = userId ?: currentUserIdSuspend()
         return libraryRepository.playlistsSnapshot().filter { playlist ->
             playlist.owner_id == resolvedUserId || playlist.is_collaborative
         }
     }
 
-    suspend fun currentUserIdSuspend(): String {
+    override suspend fun currentUserIdSuspend(): String {
         currentUserIdCache?.let { return it }
         val id = runCatching {
             nativeMetadata?.takeIf { it.isLoggedIn() }?.sessionUsername()
@@ -384,7 +384,7 @@ class SpotifyRepository(
     /**
      * Playlist library page: native rootlist when Step 1 is up, else Web API (Step 2).
      */
-    suspend fun playlistLibraryPage(
+    override suspend fun playlistLibraryPage(
         offset: Int,
         limit: Int,
     ): com.lightphone.spotify.data.webapi.LibraryPage<SpotifyPlaylistSimple> {
@@ -421,10 +421,10 @@ class SpotifyRepository(
         )
     }
 
-    fun isTrackSaved(uri: String): Boolean =
+    override fun isTrackSaved(uri: String): Boolean =
         webApi.libraryContains(listOf(normalizeUri(uri))).firstOrNull() ?: false
 
-    suspend fun saveTrack(uri: String) {
+    override suspend fun saveTrack(uri: String) {
         val normalized = normalizeUri(uri)
         webApi.saveLibrary(listOf(normalized))
         val meta = trackMetadataForUri(normalized)
@@ -432,13 +432,13 @@ class SpotifyRepository(
         libraryRepository.prependLikedTrack(meta)
     }
 
-    suspend fun removeTrack(uri: String) {
+    override suspend fun removeTrack(uri: String) {
         val normalized = normalizeUri(uri)
         webApi.removeLibrary(listOf(normalized))
         libraryRepository.removeLikedTrack(normalized)
     }
 
-    suspend fun saveAlbum(albumId: String) {
+    override suspend fun saveAlbum(albumId: String) {
         webApi.saveLibrary(listOf("spotify:album:$albumId"))
         val detail = webApi.album(albumId)
         libraryRepository.prependSavedAlbum(
@@ -456,17 +456,17 @@ class SpotifyRepository(
         onAlbumMutated(albumId, isSaved = true)
     }
 
-    suspend fun removeAlbum(albumId: String) {
+    override suspend fun removeAlbum(albumId: String) {
         webApi.removeLibrary(listOf("spotify:album:$albumId"))
         libraryRepository.removeSavedAlbum(albumId)
         onAlbumMutated(albumId, isSaved = false)
     }
 
-    fun albumTracks(albumId: String): List<TrackMetadata> =
+    override fun albumTracks(albumId: String): List<TrackMetadata> =
         webApi.album(albumId).tracks.items.map { it.toMetadata() }
 
     /** Single-track metadata from Web API (now-playing art, title, liked checks). */
-    fun trackMetadataForUri(uri: String): TrackMetadata? {
+    override fun trackMetadataForUri(uri: String): TrackMetadata? {
         val id = trackIdFromUri(uri)
         if (id.isBlank()) return null
         return runCatching { webApi.track(id).toMetadata() }.getOrNull()
@@ -476,7 +476,7 @@ class SpotifyRepository(
      * Daily Mix / Made-For-You playlists from the user's followed playlists
      * matching well-known editorial names.
      */
-    suspend fun dailyMixes(): List<SpotifyPlaylistSimple> {
+    override suspend fun dailyMixes(): List<SpotifyPlaylistSimple> {
         val now = System.currentTimeMillis()
         dailyMixesCache?.let { (at, items) ->
             if (now - at < CACHE_TTL_MS) return items
@@ -505,11 +505,11 @@ class SpotifyRepository(
         return items
     }
 
-    suspend fun clearLibraryCache() {
+    override suspend fun clearLibraryCache() {
         libraryRepository.clearAll()
     }
 
-    fun clearSessionCaches() {
+    override fun clearSessionCaches() {
         searchCache.clear()
         ephemeralAlbumCache.clear()
         ephemeralPlaylistCache.clear()

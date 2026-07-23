@@ -79,18 +79,19 @@ echo "==> Generating UniFFI Kotlin bindings"
 # `uniffi-bindgen --library` reads interface metadata embedded in the compiled
 # library. The release Android .so is stripped (profile.release strip = true),
 # which removes that metadata, so we generate from an UNstripped host build
-# instead (the metadata is target-independent).
+# instead (the metadata is target-independent). Prefer host --release with
+# strip disabled over debug: much less disk for the same UniFFI metadata.
 (
     cd "$CRATE_DIR"
-    cargo build
+    CARGO_PROFILE_RELEASE_STRIP=false cargo build --release
     TARGET_DIR="${CARGO_TARGET_DIR:-$CRATE_DIR/target}"
     HOST_LIB=""
     for ext in dylib so; do
-        cand="$TARGET_DIR/debug/libspotify_core.$ext"
+        cand="$TARGET_DIR/release/libspotify_core.$ext"
         [ -f "$cand" ] && HOST_LIB="$cand" && break
     done
-    [ -z "$HOST_LIB" ] && { echo "ERROR: host libspotify_core not found in $TARGET_DIR/debug"; exit 1; }
-    cargo run --bin uniffi-bindgen -- generate \
+    [ -z "$HOST_LIB" ] && { echo "ERROR: host libspotify_core not found in $TARGET_DIR/release"; exit 1; }
+    cargo run --release --bin uniffi-bindgen -- generate \
         --library "$HOST_LIB" \
         --language kotlin \
         --out-dir "$BINDINGS_DIR"

@@ -12,6 +12,7 @@ sealed class OverlayDestination {
     data class Playlist(val id: String, val title: String = "") : OverlayDestination()
     data object CreatePlaylist : OverlayDestination()
     data class PlaylistPicker(val trackUri: String) : OverlayDestination()
+    data class DownloadCollection(val collectionUri: String, val title: String = "") : OverlayDestination()
 
     fun toRoute(): String = when (this) {
         Playing -> Routes.Playing
@@ -23,6 +24,7 @@ sealed class OverlayDestination {
         is Playlist -> Routes.playlist(id, title)
         CreatePlaylist -> Routes.CreatePlaylist
         is PlaylistPicker -> Routes.playlistPicker(trackUri)
+        is DownloadCollection -> Routes.downloadCollection(collectionUri, title)
     }
 
     companion object {
@@ -44,6 +46,10 @@ sealed class OverlayDestination {
                 )
                 Routes.CreatePlaylist -> CreatePlaylist
                 "playlist_picker" -> PlaylistPicker(Uri.decode(arguments["trackUri"].orEmpty()))
+                "download_collection" -> DownloadCollection(
+                    collectionUri = Uri.decode(arguments["collectionUri"].orEmpty()),
+                    title = Uri.decode(arguments["title"].orEmpty()),
+                )
                 else -> null
             }
         }

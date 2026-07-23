@@ -35,6 +35,11 @@ enum class PhonoTab(
         label = "Search",
         icon = Icons.Filled.Search,
     ),
+    Downloads(
+        route = "downloads",
+        label = "Downloads",
+        lightIcon = LightIcons.DOWNLOAD_ARROW,
+    ),
     Settings(
         route = "settings",
         label = "Settings",
@@ -42,10 +47,14 @@ enum class PhonoTab(
     ),
 }
 
-val DefaultPhonoTabs = listOf(
-    PhonoTab.Liked,
-    PhonoTab.Albums,
-    PhonoTab.Playlists,
-    PhonoTab.Search,
-    PhonoTab.Settings,
-)
+/** Library tabs always present. [PhonoTab.Downloads] when offline downloads are supported. */
+fun phonoTabs(includeDownloads: Boolean): List<PhonoTab> = buildList {
+    add(PhonoTab.Liked)
+    add(PhonoTab.Albums)
+    add(PhonoTab.Playlists)
+    add(PhonoTab.Search)
+    if (includeDownloads) add(PhonoTab.Downloads)
+    add(PhonoTab.Settings)
+}
+
+val DefaultPhonoTabs = phonoTabs(includeDownloads = false)

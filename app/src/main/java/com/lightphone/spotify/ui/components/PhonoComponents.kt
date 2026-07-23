@@ -85,6 +85,32 @@ fun PhonoSquareCheckbox(
     }
 }
 
+/** Leading Cancel affordance matching playlist-edit track rows. */
+@Composable
+fun PhonoEditDeleteLeading(
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    contentDescription: String = "Remove",
+) {
+    val colors = LightThemeTokens.colors
+    Box(
+        modifier = modifier
+            .width(TrackListLeadingWidth)
+            .padding(end = legacyNToGridDp(8)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Default.Cancel,
+            contentDescription = contentDescription,
+            tint = if (enabled) colors.content else PhonoSemanticColors.DisabledIcon,
+            modifier = Modifier
+                .size(legacyNToGridDp(20))
+                .lightClickable(enabled = enabled, onClick = onDelete),
+        )
+    }
+}
+
 @Composable
 fun PhonoMediaListItem(
     primaryText: String,
@@ -95,18 +121,27 @@ fun PhonoMediaListItem(
     showImage: Boolean = true,
     disabled: Boolean = false,
     crossfadeImage: Boolean = true,
+    /** When set, shows playlist-edit Cancel leading and ignores row click. */
+    onEditDelete: (() -> Unit)? = null,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
 ) {
     val colors = LightThemeTokens.colors
     val textColor = if (disabled) PhonoSemanticColors.DisabledIcon else colors.content
+    val editing = onEditDelete != null
     Row(
         modifier = modifier
             .fillMaxWidth()
             .defaultMinSize(minHeight = legacyNToGridDp(54))
-            .tapWithLongPress(enabled = !disabled, onClick = onClick, onLongClick = onLongClick),
+            .then(
+                if (editing) Modifier
+                else Modifier.tapWithLongPress(enabled = !disabled, onClick = onClick, onLongClick = onLongClick),
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (onEditDelete != null) {
+            PhonoEditDeleteLeading(onDelete = onEditDelete)
+        }
         if (showImage) {
             PhonoFallbackImage(
                 imageUrl = imageUrl,
@@ -117,7 +152,7 @@ fun PhonoMediaListItem(
                 crossfade = crossfadeImage,
                 decodeSize = if (crossfadeImage) null else legacyNToGridDp(50),
             )
-            Spacer(Modifier.width(legacyNToGridDp(15)))
+            Spacer(modifier.width(legacyNToGridDp(15)))
         }
         Column(
             Modifier

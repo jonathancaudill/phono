@@ -107,7 +107,13 @@ fun ArtistDetailScreen(
                                     onLongClick = {
                                         vm.showAlbumContextMenu(
                                             album.id,
-                                            album.uri.ifBlank { "spotify:album:${album.id}" },
+                                            album.uri.ifBlank {
+                                                com.lightphone.spotify.data.backend.collectionUri(
+                                                    vm.backendChoice,
+                                                    com.lightphone.spotify.data.backend.CollectionKind.Album,
+                                                    album.id,
+                                                )
+                                            },
                                         )
                                     },
                                 )

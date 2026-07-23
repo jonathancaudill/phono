@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ui.AppViewModel
+import com.lightphone.spotify.ui.CollectionDownloadUi
 import com.lightphone.spotify.ui.components.CustomScrollView
 import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
 import com.lightphone.spotify.ui.components.PhonoTrackEditActions
@@ -33,6 +34,7 @@ import com.lightphone.spotify.ui.components.PhonoTrackListItem
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.PhonoScreenShell
 import com.lightphone.spotify.ui.phono.PhonoTextButton
+import com.thelightphone.sdk.ui.LightIcons
 import com.thelightphone.sdk.ui.LightThemeTokens
 
 @Composable
@@ -44,6 +46,7 @@ fun PlaylistDetailScreen(
     onPlayTrack: (Int) -> Unit,
 ) {
     val state by vm.playlistDetail.collectAsState()
+    val downloads by vm.downloads.collectAsState()
     val listState = rememberLazyListState()
     var renameDraft by remember { mutableStateOf<String?>(null) }
 
@@ -64,6 +67,10 @@ fun PlaylistDetailScreen(
     val detail = state.detail?.takeIf { it.id == playlistId }
     val title = detail?.name ?: fallbackTitle
     val tracks = if (state.requestedId == playlistId) state.tracks else emptyList()
+    val trackUris = remember(tracks) { tracks.map { it.track.uri } }
+    val downloadUi = remember(trackUris, downloads) { vm.collectionDownloadUi(trackUris) }
+    val showDownloadControl =
+        vm.downloadsSupported && tracks.isNotEmpty() && !state.editMode
 
     PhonoScreenShell(
         title = title,
@@ -83,6 +90,20 @@ fun PlaylistDetailScreen(
         },
         rightIconVisible = state.isEditable || detail != null,
         rightLoading = state.mutating || state.saving,
+        secondaryRightLightIcon = when {
+            !showDownloadControl || downloadUi == CollectionDownloadUi.Downloading -> null
+            downloadUi == CollectionDownloadUi.Complete -> LightIcons.DOWNLOADED_ARROW
+            else -> LightIcons.DOWNLOAD_ARROW
+        },
+        onSecondaryRightIconClick = if (showDownloadControl && downloadUi != CollectionDownloadUi.Downloading) {
+            {
+                if (downloadUi == CollectionDownloadUi.Complete) vm.removeCurrentPlaylistDownloads()
+                else vm.downloadCurrentPlaylist()
+            }
+        } else {
+            null
+        },
+        secondaryRightLoading = showDownloadControl && downloadUi == CollectionDownloadUi.Downloading,
         onTitleClick = if (state.editMode && state.isEditable) {
             { renameDraft = title }
         } else {
@@ -210,14 +231,16 @@ private fun RenamePlaylistOverlay(
             onValueChange = { name = it },
             textStyle = typography.copy.copy(color = colors.content),
             cursorBrush = SolidColor(colors.content),
+            singleLine = true,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = legacyNToGridDp(12)),
-            singleLine = true,
         )
+        Spacer(Modifier.weight(1f))
         PhonoTextButton(
             text = "Save",
             onClick = { onConfirm(name.trim()) },
+            modifier = Modifier.padding(bottom = legacyNToGridDp(20)),
         )
     }
 }

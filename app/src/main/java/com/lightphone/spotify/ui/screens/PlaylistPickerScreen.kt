@@ -20,6 +20,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
+import com.lightphone.spotify.data.backend.BackendChoice
+import com.lightphone.spotify.data.tidal.TidalPlaylistOwners
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
 import com.lightphone.spotify.ui.components.PhonoSquareCheckbox
@@ -108,7 +110,15 @@ fun PlaylistPickerScreen(
                                 playlist.playlist_id in state.selectedPlaylistIds
                             PlaylistPickerRow(
                                 name = playlist.name,
-                                ownerName = playlist.owner_name.ifBlank { playlist.owner_id },
+                                ownerName = if (vm.backendChoice == BackendChoice.TIDAL) {
+                                    TidalPlaylistOwners.displayForUi(
+                                        playlist.owner_id,
+                                        playlist.owner_name,
+                                        libraryPlaylists.currentUserId,
+                                    )
+                                } else {
+                                    playlist.owner_name.ifBlank { playlist.owner_id }
+                                },
                                 selected = selected,
                                 disabled = state.adding || alreadyContains,
                                 onToggle = { vm.togglePlaylistPickerSelection(playlist.playlist_id) },

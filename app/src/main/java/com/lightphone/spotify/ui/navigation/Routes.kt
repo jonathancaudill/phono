@@ -14,6 +14,7 @@ object Routes {
     const val Playlist = "playlist/{playlistId}?title={title}"
     const val CreatePlaylist = "create_playlist"
     const val PlaylistPicker = "playlist_picker/{trackUri}"
+    const val DownloadCollection = "download_collection/{collectionUri}?title={title}"
 
     fun searchInput(query: String = "") = "search_input?query=${Uri.encode(query)}"
     fun searchResults(query: String) = "search_results/${Uri.encode(query)}"
@@ -24,4 +25,6 @@ object Routes {
         "playlist/$playlistId?title=${Uri.encode(title)}"
     fun playlistPicker(trackUri: String) =
         "playlist_picker/${Uri.encode(trackUri)}"
+    fun downloadCollection(collectionUri: String, title: String = "") =
+        "download_collection/${Uri.encode(collectionUri)}?title=${Uri.encode(title)}"
 }

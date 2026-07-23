@@ -92,6 +92,16 @@ class WebApiAuth private constructor(
     private val lock = Any()
     private val refreshFlightLock = Any()
 
+    /**
+     * CSRF `state` handed out with the current authorize URL, checked against
+     * what the WebView's redirect reports before [exchangeCode] ever runs.
+     * Without this, a page the WebView is navigated to that can smuggle a
+     * `REDIRECT_URI?code=...` hit (e.g. an open redirect) could have its code
+     * exchanged as if it were the user's.
+     */
+    @Volatile
+    private var pendingOAuthState: String? = null
+
     @Volatile
     private var refreshInFlight: CompletableFuture<String?>? = null
 
@@ -127,6 +137,8 @@ class WebApiAuth private constructor(
         val clientId = getClientId()
             ?: throw IllegalStateException("Client ID not configured")
         val scope = SCOPES.joinToString(" ")
+        val state = generateState()
+        pendingOAuthState = state
         return buildString {
             append(AUTH_ENDPOINT)
             append("?client_id=").append(urlEncode(clientId))
@@ -134,11 +146,30 @@ class WebApiAuth private constructor(
             append("&redirect_uri=").append(urlEncode(REDIRECT_URI))
             append("&scope=").append(urlEncode(scope))
             append("&show_dialog=true")
+            append("&state=").append(urlEncode(state))
         }
     }
 
-    /** Exchange authorization code for tokens (Authorization Code + secret). */
-    fun exchangeCode(code: String): Result<Unit> {
+    private fun generateState(): String {
+        val bytes = ByteArray(16)
+        java.security.SecureRandom().nextBytes(bytes)
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Exchange authorization code for tokens (Authorization Code + secret).
+     * [state] must match the value handed out by [buildAuthorizeUrl]; on
+     * mismatch (or if no login is pending) the exchange is refused before any
+     * network call is made.
+     */
+    fun exchangeCode(code: String, state: String?): Result<Unit> {
+        val expected = pendingOAuthState
+        pendingOAuthState = null
+        if (expected == null || state == null || expected != state) {
+            return Result.failure(
+                WebApiAuthException("OAuth state mismatch — possible CSRF, aborting login"),
+            )
+        }
         val creds = synchronized(lock) {
             val clientId = getClientId() ?: return Result.failure(IllegalStateException("No client ID"))
             val secret = prefs.getString(KEY_CLIENT_SECRET, null)

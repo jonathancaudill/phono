@@ -47,6 +47,17 @@ Key lines:
 | P3 | Connection upgrades POOR → GOOD | Session warms proactively; next skip has no cold-rebuild delay |
 | P4 | Battery ≤14% or power-save on | Opportunistic banking backs off (no aggressive prefetch) |
 
+### TIDAL backend (current-first stream LRU)
+
+Logcat: `adb logcat -s TidalPlayback TidalBank TidalMedia`
+
+| ID | Scenario | Pass criteria |
+|----|----------|---------------|
+| T-P1 | Play on Wi‑Fi (LOSSLESS or Max), airplane mid-track after banking starts | **Remainder of current song finishes** from stream LRU (`TidalBank` logged banked) |
+| T-P2 | Weak cell, skip forward | Next track has no cold `playbackinfo` stall (resolve window); audio may still warm from CDN |
+| T-P4 | Battery ≤14% or power-save | No new `TidalBank` / aggressive resolve from `StreamingPolicy` |
+| T-Clear | Settings → Clear Cache while downloads exist | Stream cache cleared; offline pins still play |
+
 ## Failure triage
 
 - **Overlapping audio still heard** → check `sink_epoch_rejected_writes` (should

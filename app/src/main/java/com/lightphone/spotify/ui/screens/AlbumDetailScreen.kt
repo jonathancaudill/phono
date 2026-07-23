@@ -16,17 +16,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Remove
 import com.lightphone.spotify.data.SpotifyTrack
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ui.AppViewModel
+import com.lightphone.spotify.ui.CollectionDownloadUi
 import com.lightphone.spotify.ui.components.CustomScrollView
 import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
 import com.lightphone.spotify.ui.components.PhonoTrackListItem
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.PhonoScreenShell
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Remove
+import com.thelightphone.sdk.ui.LightIcons
 
 @Composable
 fun AlbumDetailScreen(
@@ -38,6 +40,7 @@ fun AlbumDetailScreen(
     onPlayTrack: (Int) -> Unit,
 ) {
     val state by vm.albumDetail.collectAsState()
+    val downloads by vm.downloads.collectAsState()
 
     LaunchedEffect(albumId) { vm.loadAlbumDetail(albumId) }
 
@@ -45,6 +48,8 @@ fun AlbumDetailScreen(
     val title = album?.name ?: fallbackTitle
     val tracks = album?.tracks?.items.orEmpty()
     val showSaveLoading = state.loading && !state.isSavedConfirmed
+    val trackUris = remember(tracks) { tracks.map { it.uri } }
+    val downloadUi = remember(trackUris, downloads) { vm.collectionDownloadUi(trackUris) }
 
     // Keep the last loaded track list visible until this screen leaves composition
     // so the layout (and scrollbar) do not collapse a frame before pop completes.
@@ -54,6 +59,7 @@ fun AlbumDetailScreen(
     }
     val displayTracks = if (tracks.isNotEmpty()) tracks else stableTracks
     val hasTrackContent = displayTracks.isNotEmpty()
+    val showDownloadControl = vm.downloadsSupported && hasTrackContent
 
     PhonoScreenShell(
         title = title,
@@ -62,6 +68,20 @@ fun AlbumDetailScreen(
         rightIcon = if (state.isSaved) Icons.Default.Remove else Icons.Default.Add,
         onRightIconClick = { vm.toggleAlbumSave(albumId) },
         rightLoading = state.saving || showSaveLoading,
+        secondaryRightLightIcon = when {
+            !showDownloadControl || downloadUi == CollectionDownloadUi.Downloading -> null
+            downloadUi == CollectionDownloadUi.Complete -> LightIcons.DOWNLOADED_ARROW
+            else -> LightIcons.DOWNLOAD_ARROW
+        },
+        onSecondaryRightIconClick = if (showDownloadControl && downloadUi != CollectionDownloadUi.Downloading) {
+            {
+                if (downloadUi == CollectionDownloadUi.Complete) vm.removeCurrentAlbumDownloads()
+                else vm.downloadCurrentAlbum()
+            }
+        } else {
+            null
+        },
+        secondaryRightLoading = showDownloadControl && downloadUi == CollectionDownloadUi.Downloading,
         onTitleClick = {
             album?.artists?.firstOrNull()?.id?.takeIf { it.isNotBlank() }?.let(onOpenArtist)
         },

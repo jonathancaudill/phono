@@ -1,6 +1,6 @@
 package com.lightphone.spotify.data.session
 
-import com.lightphone.spotify.data.SpotifyRepository
+import com.lightphone.spotify.data.MusicRepository
 import com.lightphone.spotify.data.local.LibraryRepository
 import com.lightphone.spotify.data.webapi.WebApiAuth
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -26,8 +26,9 @@ data class SignOutOptions(
  */
 class UserSessionCoordinator(
     private val libraryRepository: LibraryRepository,
-    private val spotifyRepository: SpotifyRepository,
-    private val webApiAuth: WebApiAuth,
+    private val musicRepository: MusicRepository,
+    /** Spotify Step-2 dev-app auth; null for backends (TIDAL) with a single auth. */
+    private val webApiAuth: WebApiAuth?,
     private val clearTrackMetadata: () -> Unit,
     private val clearImageMemoryCache: () -> Unit = {},
     private val rustLogout: () -> Unit,
@@ -38,19 +39,19 @@ class UserSessionCoordinator(
 
     suspend fun signOut(
         options: SignOutOptions = SignOutOptions(),
-        onCancelInFlight: () -> Unit = {},
+        onCancelInFlight: suspend () -> Unit = {},
     ) {
         logoutMutex.withLock {
             _events.emit(SessionEvent.SigningOut)
             onCancelInFlight()
             rustLogout()
             if (options.clearDevAppCredentials) {
-                webApiAuth.clearAll()
+                webApiAuth?.clearAll()
             } else if (options.clearWebApiTokens) {
-                webApiAuth.clearTokens()
+                webApiAuth?.clearTokens()
             }
             libraryRepository.clearAllUserData()
-            spotifyRepository.clearSessionCaches()
+            musicRepository.clearSessionCaches()
             clearTrackMetadata()
             clearImageMemoryCache()
             _events.emit(SessionEvent.SignedOut)

@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.style.TextAlign
+import com.lightphone.spotify.data.tidal.TidalAudioQuality
 import com.lightphone.spotify.ffi.NormalizationType
 import com.lightphone.spotify.ffi.StreamingQuality
 import com.lightphone.spotify.ui.AppViewModel
@@ -43,6 +44,7 @@ fun SettingsScreen(
 ) {
     val settings by vm.settings.collectAsState()
     var confirm by remember { mutableStateOf<ConfirmRequest?>(null) }
+    val caps = vm.capabilities
 
     confirm?.let { request ->
         PhonoConfirmScreen(
@@ -76,15 +78,37 @@ fun SettingsScreen(
                     Spacer(Modifier.height(legacyNToGridDp(8)))
                     NormalizationOptions(settings.normalizationType, vm::setNormalizationType)
                 }
+                if (caps.tidalStyleAudioQuality) {
+                    SettingsToggleRow(
+                        "Report plays",
+                        settings.tidalReportPlays,
+                        vm::setTidalReportPlays,
+                    )
+                }
 
                 SectionLabel("Audio quality")
-                StreamingQualityOptions(settings.streamingQuality, vm::setStreamingQuality)
+                if (caps.tidalStyleAudioQuality) {
+                    TidalAudioQualityOptions(settings.tidalAudioQuality, vm::setTidalAudioQuality)
+                } else if (caps.spotifyStreamingQuality) {
+                    StreamingQualityOptions(settings.streamingQuality, vm::setStreamingQuality)
+                }
+                if (caps.downloads) {
+                    SectionLabel("Download quality")
+                    if (caps.tidalStyleAudioQuality) {
+                        TidalAudioQualityOptions(
+                            settings.tidalDownloadQuality,
+                            vm::setTidalDownloadQuality,
+                        )
+                    } else if (caps.spotifyStreamingQuality) {
+                        StreamingQualityOptions(settings.downloadQuality, vm::setDownloadQuality)
+                    }
+                }
 
                 SectionLabel("Storage")
                 SettingsActionRow("Clear Cache") {
                     confirm = ConfirmRequest(
                         title = "Clear Cache",
-                        message = "Delete downloaded audio cache files? Credentials are kept.",
+                        message = "Delete temporary streaming cache? Offline downloads and credentials are kept.",
                         confirmText = "Clear",
                         onConfirm = { vm.clearAudioCache() },
                     )
@@ -104,7 +128,7 @@ fun SettingsScreen(
                 SettingsActionRow("Logout") {
                     confirm = ConfirmRequest(
                         title = "Logout",
-                        message = "Are you sure you want to logout?",
+                        message = "Sign out and return to service selection?",
                         confirmText = "Logout",
                         onConfirm = onLogout,
                     )
@@ -185,6 +209,20 @@ private fun StreamingQualityOptions(selected: StreamingQuality, onSelect: (Strea
     )
     options.forEach { (quality, label) ->
         SettingsActionRow(text = label, selected = quality == selected, onClick = { onSelect(quality) })
+    }
+}
+
+@Composable
+private fun TidalAudioQualityOptions(
+    selected: TidalAudioQuality,
+    onSelect: (TidalAudioQuality) -> Unit,
+) {
+    TidalAudioQuality.entries.forEach { quality ->
+        SettingsActionRow(
+            text = quality.label,
+            selected = quality == selected,
+            onClick = { onSelect(quality) },
+        )
     }
 }
 

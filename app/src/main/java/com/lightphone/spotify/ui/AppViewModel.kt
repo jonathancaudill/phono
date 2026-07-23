@@ -21,6 +21,10 @@ import com.lightphone.spotify.data.local.LikedTrackEntity
 import com.lightphone.spotify.data.local.PlaylistEntity
 import com.lightphone.spotify.data.local.SavedAlbumEntity
 import com.lightphone.spotify.data.session.SessionEvent
+import com.lightphone.spotify.data.backend.BackendCapabilities
+import com.lightphone.spotify.data.backend.BackendChoice
+import com.lightphone.spotify.data.backend.CollectionKind
+import com.lightphone.spotify.data.backend.collectionUri
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ffi.NormalizationType
 import com.lightphone.spotify.ffi.StreamingQuality
@@ -28,17 +32,23 @@ import com.lightphone.spotify.ui.components.PhonoContextMenuItem
 import com.lightphone.spotify.playback.PlaybackController
 import com.lightphone.spotify.playback.PlaybackUiState
 import com.lightphone.spotify.playback.SettingsSnapshot
+import com.lightphone.spotify.playback.download.DownloadStates
 import com.lightphone.spotify.ui.light.ThemePreferences
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
@@ -100,6 +110,12 @@ data class PlayingExtrasState(
 
 data class SettingsUiState(
     val streamingQuality: StreamingQuality = StreamingQuality.NORMAL,
+    val downloadQuality: StreamingQuality = StreamingQuality.HIGH,
+    val tidalAudioQuality: com.lightphone.spotify.data.tidal.TidalAudioQuality =
+        com.lightphone.spotify.data.tidal.TidalAudioQuality.DEFAULT,
+    val tidalDownloadQuality: com.lightphone.spotify.data.tidal.TidalAudioQuality =
+        com.lightphone.spotify.data.tidal.TidalAudioQuality.DEFAULT,
+    val tidalReportPlays: Boolean = true,
     val gaplessEnabled: Boolean = true,
     val normalizationEnabled: Boolean = false,
     val normalizationType: NormalizationType = NormalizationType.AUTO,
@@ -157,6 +173,15 @@ enum class ContextMenuAction {
     AddToPlaylists,
     RemoveFromLibrary,
     DeletePlaylist,
+    Download,
+    RemoveDownload,
+}
+
+/** Offline pin state for an album/playlist header icon. */
+enum class CollectionDownloadUi {
+    None,
+    Downloading,
+    Complete,
 }
 
 sealed interface ContextMenuTarget {
@@ -179,10 +204,237 @@ data class ContextMenuUiState(
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val controller: PlaybackController = (app as App).controller
+    private val controller: PlaybackController = (app as App).ensureController()
     private val themePreferences = ThemePreferences(app)
 
+    /** Active backend (Spotify vs TIDAL) — drives login/setup screen selection. */
+    val backendChoice = controller.backendChoice
+
     val playback: StateFlow<PlaybackUiState> = controller.state
+
+    /** Offline downloads (Room-backed). Empty when the backend does not support pins. */
+    val downloads: StateFlow<List<com.lightphone.spotify.data.local.DownloadedTrackEntity>> =
+        if (controller.capabilities.downloads) {
+            com.lightphone.spotify.data.local.PhonoDatabase.get(app)
+                .downloadedTrackDao()
+                .observeAll()
+                .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptyList())
+        } else {
+            MutableStateFlow(emptyList())
+        }
+
+    val downloadCollections: StateFlow<List<com.lightphone.spotify.data.local.DownloadedCollectionWithProgress>> =
+        if (controller.capabilities.downloads) {
+            com.lightphone.spotify.data.local.PhonoDatabase.get(app)
+                .downloadedCollectionDao()
+                .observeCollectionsWithProgress(
+                    completedState = DownloadStates.COMPLETED,
+                    queuedState = DownloadStates.QUEUED,
+                    downloadingState = DownloadStates.DOWNLOADING,
+                    restartingState = DownloadStates.RESTARTING,
+                    failedState = DownloadStates.FAILED,
+                )
+                .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptyList())
+        } else {
+            MutableStateFlow(emptyList())
+        }
+
+    val downloadsSupported: Boolean = controller.capabilities.downloads
+    val capabilities: BackendCapabilities = controller.capabilities
+
+    /** Completed offline pin URIs for gray-out / availability checks. */
+    val completedDownloadUris: StateFlow<Set<String>> =
+        downloads
+            .map { rows ->
+                rows.asSequence()
+                    .filter { it.state == DownloadStates.COMPLETED }
+                    .map { it.uri }
+                    .toSet()
+            }
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptySet())
+
+    fun isTrackDownloaded(uri: String): Boolean =
+        downloadsSupported && uri in completedDownloadUris.value
+
+    fun isNetworkOnline(): Boolean = playback.value.networkOnline
+
+    fun observeDownloadCollectionTracks(
+        collectionUri: String,
+    ): StateFlow<List<com.lightphone.spotify.data.local.DownloadedTrackEntity>> {
+        if (!downloadsSupported) return MutableStateFlow(emptyList())
+        return com.lightphone.spotify.data.local.PhonoDatabase.get(getApplication())
+            .downloadedCollectionDao()
+            .observeTracksForCollection(collectionUri)
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5_000), emptyList())
+    }
+
+    /** Pin a track for offline playback (uses download quality, not streaming). */
+    fun downloadTrack(track: TrackMetadata) {
+        if (!downloadsSupported) return
+        val quality = controller.downloadQualityApiValue()
+        controller.offlineDownloads.download(getApplication(), track, quality)
+    }
+
+    fun removeDownload(track: TrackMetadata) {
+        if (!downloadsSupported) return
+        val quality = downloads.value.firstOrNull { it.uri == track.uri }?.quality
+            ?: controller.downloadQualityApiValue()
+        controller.offlineDownloads.remove(getApplication(), track, quality)
+    }
+
+    fun removeDownloadCollection(collectionUri: String) {
+        if (!downloadsSupported) return
+        controller.offlineDownloads.removeCollection(getApplication(), collectionUri)
+    }
+
+    /** Download every track in the current album detail. */
+    fun downloadCurrentAlbum() {
+        if (!downloadsSupported) return
+        val album = _albumDetail.value.album ?: return
+        val tracks = album.tracks?.items.orEmpty().map { it.toMetadata() }
+        if (tracks.isEmpty()) return
+        val quality = controller.downloadQualityApiValue()
+        controller.offlineDownloads.downloadCollection(
+            context = getApplication(),
+            collectionUri = collectionUri(
+                backendChoice, CollectionKind.Album, album.id, album.uri,
+            ),
+            type = "album",
+            name = album.name,
+            artUrl = album.images.firstOrNull()?.url,
+            tracks = tracks,
+            quality = quality,
+        )
+    }
+
+    fun removeCurrentAlbumDownloads() {
+        if (!downloadsSupported) return
+        val album = _albumDetail.value.album ?: return
+        removeDownloadCollection(
+            collectionUri(backendChoice, CollectionKind.Album, album.id, album.uri),
+        )
+    }
+
+    /** Download every track in the current playlist detail. */
+    fun downloadCurrentPlaylist() {
+        if (!downloadsSupported) return
+        val detail = _playlistDetail.value.detail ?: return
+        val tracks = _playlistDetail.value.tracks.map { it.track.toMetadata() }
+        if (tracks.isEmpty()) return
+        val quality = controller.downloadQualityApiValue()
+        controller.offlineDownloads.downloadCollection(
+            context = getApplication(),
+            collectionUri = collectionUri(
+                backendChoice, CollectionKind.Playlist, detail.id, detail.uri,
+            ),
+            type = "playlist",
+            name = detail.name,
+            artUrl = detail.images?.firstOrNull()?.url,
+            tracks = tracks,
+            quality = quality,
+        )
+    }
+
+    fun removeCurrentPlaylistDownloads() {
+        if (!downloadsSupported) return
+        val detail = _playlistDetail.value.detail ?: return
+        removeDownloadCollection(
+            collectionUri(backendChoice, CollectionKind.Playlist, detail.id, detail.uri),
+        )
+    }
+
+    /** Aggregate download state for album/playlist header + menus. */
+    fun collectionDownloadUi(trackUris: List<String>): CollectionDownloadUi {
+        if (!downloadsSupported || trackUris.isEmpty()) return CollectionDownloadUi.None
+        val byUri = downloads.value.associateBy { it.uri }
+        var completed = 0
+        var inProgress = 0
+        for (uri in trackUris) {
+            when (byUri[uri]?.state) {
+                DownloadStates.COMPLETED -> completed++
+                DownloadStates.DOWNLOADING,
+                DownloadStates.QUEUED,
+                DownloadStates.RESTARTING,
+                -> inProgress++
+                else -> Unit
+            }
+        }
+        return when {
+            completed == trackUris.size -> CollectionDownloadUi.Complete
+            inProgress > 0 || (completed > 0 && completed < trackUris.size) ->
+                CollectionDownloadUi.Downloading
+            else -> CollectionDownloadUi.None
+        }
+    }
+
+    /** True if this collection URI is fully (or partially) present in offline pins. */
+    fun isCollectionDownloaded(collectionUri: String): Boolean {
+        if (!downloadsSupported) return false
+        val row = downloadCollections.value.firstOrNull { it.uri == collectionUri } ?: return false
+        return row.track_count > 0 && row.completed_count >= row.track_count
+    }
+
+    fun isCollectionDownloading(collectionUri: String): Boolean {
+        if (!downloadsSupported) return false
+        val row = downloadCollections.value.firstOrNull { it.uri == collectionUri } ?: return false
+        return row.in_progress_count > 0 ||
+            (row.completed_count in 1 until row.track_count)
+    }
+
+    fun downloadAlbumById(albumId: String, uri: String = "") {
+        if (!downloadsSupported) return
+        viewModelScope.launch {
+            runCatching {
+                val result = controller.albumDetail(albumId)
+                val album = result.album
+                val tracks = album.tracks?.items.orEmpty().map { it.toMetadata() }
+                if (tracks.isEmpty()) return@runCatching
+                val quality = controller.downloadQualityApiValue()
+                controller.offlineDownloads.downloadCollection(
+                    context = getApplication(),
+                    collectionUri = collectionUri(
+                        backendChoice, CollectionKind.Album, albumId, uri.ifBlank { album.uri },
+                    ),
+                    type = "album",
+                    name = album.name,
+                    artUrl = album.images.firstOrNull()?.url,
+                    tracks = tracks,
+                    quality = quality,
+                )
+            }.onFailure { e ->
+                android.util.Log.e("Downloads", "downloadAlbumById failed", e)
+            }
+        }
+    }
+
+    fun downloadPlaylistById(playlistId: String, uri: String = "") {
+        if (!downloadsSupported) return
+        viewModelScope.launch {
+            runCatching {
+                val result = controller.playlistDetail(playlistId)
+                val detail = result.detail
+                val tracks = result.tracks.mapNotNull { it.track?.toMetadata() }
+                if (tracks.isEmpty()) return@runCatching
+                val quality = controller.downloadQualityApiValue()
+                controller.offlineDownloads.downloadCollection(
+                    context = getApplication(),
+                    collectionUri = collectionUri(
+                        backendChoice,
+                        CollectionKind.Playlist,
+                        playlistId,
+                        uri.ifBlank { detail.uri },
+                    ),
+                    type = "playlist",
+                    name = detail.name,
+                    artUrl = detail.images?.firstOrNull()?.url,
+                    tracks = tracks,
+                    quality = quality,
+                )
+            }.onFailure { e ->
+                android.util.Log.e("Downloads", "downloadPlaylistById failed", e)
+            }
+        }
+    }
 
     private val _likedTracks = MutableStateFlow(LibraryListUiState<LikedTrackEntity>())
     val likedTracks: StateFlow<LibraryListUiState<LikedTrackEntity>> = _likedTracks.asStateFlow()
@@ -201,11 +453,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var savedAlbumsStarted = false
     private var playlistsStarted = false
     private var likedFillJob: Job? = null
+    private var likedRefreshJob: Job? = null
+    private var likedFillRetryJob: Job? = null
     private var likedLookaheadJob: Job? = null
     private var savedFillJob: Job? = null
+    private var savedRefreshJob: Job? = null
+    private var savedFillRetryJob: Job? = null
     private var savedLookaheadJob: Job? = null
     private var playlistsFillJob: Job? = null
     private var playlistsRefreshJob: Job? = null
+    private var playlistsFillRetryJob: Job? = null
     private var playlistsLookaheadJob: Job? = null
     private var likedFillRetries = 0
     private var savedFillRetries = 0
@@ -258,6 +515,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 .collect { uri -> onCurrentTrackChanged(uri) }
         }
         viewModelScope.launch {
+            playback
+                .map { it.networkOnline }
+                .distinctUntilChanged()
+                .collect { online ->
+                    if (!online) clearLibrarySyncErrorsForOffline()
+                }
+        }
+        viewModelScope.launch {
             controller.sessionEvents.collect { event ->
                 when (event) {
                     SessionEvent.SigningOut -> cancelPlaylistLibraryJobs()
@@ -268,9 +533,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         controller.onSessionRestored = { onPlaybackSessionRestored() }
     }
 
+    /** Drop sync banners when offline — navbar already shows Device offline. */
+    private fun clearLibrarySyncErrorsForOffline() {
+        _likedTracks.update { it.copy(error = null, refreshing = false, initialLoading = false) }
+        _savedAlbums.update { it.copy(error = null, refreshing = false, initialLoading = false) }
+        _playlists.update { it.copy(error = null, refreshing = false, initialLoading = false) }
+        _search.update { it.copy(error = null, refreshError = null, refreshing = false, initialLoading = false) }
+    }
+
     private fun cancelPlaylistLibraryJobs() {
         playlistsRefreshJob?.cancel()
         playlistsFillJob?.cancel()
+        playlistsFillRetryJob?.cancel()
         playlistsLookaheadJob?.cancel()
     }
 
@@ -306,8 +580,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         playlistsStarted = false
         onLoggedInCalled = false
         likedFillJob?.cancel()
+        likedRefreshJob?.cancel()
+        likedFillRetryJob?.cancel()
         savedFillJob?.cancel()
+        savedRefreshJob?.cancel()
+        savedFillRetryJob?.cancel()
         playlistsFillJob?.cancel()
+        playlistsRefreshJob?.cancel()
+        playlistsFillRetryJob?.cancel()
         likedLookaheadJob?.cancel()
         savedLookaheadJob?.cancel()
         playlistsLookaheadJob?.cancel()
@@ -321,7 +601,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         pendingSavedRefresh = false
         pendingPlaylistsRefresh = false
         loadedPlaylistId = null
-        playlistPickerLoadGen = 0
+        // Increment (never reset to 0) so a stale pre-reset load's captured
+        // generation can never collide with the next load's generation.
+        playlistPickerLoadGen++
         _libraryBootstrapping.value = false
         _likedTracks.value = LibraryListUiState()
         _savedAlbums.value = LibraryListUiState()
@@ -361,14 +643,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _settings.value = snap.toUiState(
                 showAdvanced = current.showAdvanced,
                 darkTheme = current.darkTheme,
+                downloadQuality = if (capabilities.spotifyStreamingQuality) {
+                    controller.getSpotifyDownloadQuality()
+                } else {
+                    current.downloadQuality
+                },
+                tidalAudioQuality = if (capabilities.tidalStyleAudioQuality) {
+                    controller.getTidalAudioQuality()
+                } else {
+                    current.tidalAudioQuality
+                },
+                tidalDownloadQuality = if (capabilities.tidalStyleAudioQuality) {
+                    controller.getTidalDownloadQuality()
+                } else {
+                    current.tidalDownloadQuality
+                },
+                tidalReportPlays = if (capabilities.tidalStyleAudioQuality) {
+                    controller.tidalReportPlaysEnabled()
+                } else {
+                    current.tidalReportPlays
+                },
             )
         }
     }
 
-    fun beginLogin(): String = controller.beginLogin()
+    suspend fun beginLogin(): String = controller.beginLogin()
 
-    fun completeLogin(code: String) {
-        controller.completeLogin(code) { result ->
+    fun clearLoginError() = controller.clearLoginError()
+
+    fun completeLogin(code: String, state: String? = null) {
+        controller.completeLogin(code, state) { result ->
             if (result.isSuccess) onLoggedIn()
         }
     }
@@ -379,11 +683,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun buildWebApiAuthorizeUrl(): String = controller.buildWebApiAuthorizeUrl()
 
-    fun completeWebApiAuth(code: String, onResult: (Result<Unit>) -> Unit) {
-        controller.completeWebApiAuth(code, onResult)
+    fun completeWebApiAuth(code: String, state: String?, onResult: (Result<Unit>) -> Unit) {
+        controller.completeWebApiAuth(code, state, onResult)
     }
 
     fun onLoggedIn() {
+        // Spotify Liked/Albums need the Step-2 Web API bearer. Calling this after
+        // playback-only login would start empty syncs, clear the splash, and leave
+        // Albums broken until a force-stop — LightOS can't recover from that.
+        if (backendChoice == BackendChoice.SPOTIFY && !playback.value.webApiReady) {
+            return
+        }
         if (onLoggedInCalled) {
             refreshLikedTracks()
             refreshSavedAlbums()
@@ -391,24 +701,46 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         onLoggedInCalled = true
-        if (_likedTracks.value.items.isEmpty()) {
+        val cacheEmpty =
+            _likedTracks.value.items.isEmpty() &&
+                _savedAlbums.value.items.isEmpty() &&
+                _playlists.value.items.isEmpty()
+        if (cacheEmpty) {
             _libraryBootstrapping.value = true
         }
         ensureLikedTracksLoaded()
         ensureSavedAlbumsLoaded()
         viewModelScope.launch {
-            withTimeoutOrNull(WARM_TIMEOUT_MS) {
-                controller.warmSpclientSession()
-            } ?: android.util.Log.w(
-                "AppViewModel",
-                "warmSpclientSession timed out after ${WARM_TIMEOUT_MS}ms; loading playlists anyway",
-            )
-            ensurePlaylistsLoaded()
-        }
-        if (_libraryBootstrapping.value) {
-            viewModelScope.launch {
-                likedTracks.first { !it.initialLoading }
-                _libraryBootstrapping.value = false
+            try {
+                withTimeoutOrNull(WARM_TIMEOUT_MS) {
+                    controller.warmSpclientSession()
+                } ?: android.util.Log.w(
+                    "AppViewModel",
+                    "warmSpclientSession timed out after ${WARM_TIMEOUT_MS}ms; loading playlists anyway",
+                )
+                ensurePlaylistsLoaded()
+                if (!_libraryBootstrapping.value) return@launch
+                // First launch: hold the splash until first pages land, then drain
+                // the rest of the library (even on cellular) so tabs open populated.
+                withTimeoutOrNull(LIBRARY_BOOTSTRAP_TIMEOUT_MS) {
+                    combine(likedTracks, savedAlbums, playlists) { liked, albums, lists ->
+                        !liked.initialLoading && !albums.initialLoading && !lists.initialLoading
+                    }.first { it }
+                    coroutineScope {
+                        listOf(
+                            async { awaitLikedTracksFilled() },
+                            async { awaitSavedAlbumsFilled() },
+                            async { awaitPlaylistsFilled() },
+                        ).awaitAll()
+                    }
+                } ?: android.util.Log.w(
+                    "AppViewModel",
+                    "library bootstrap timed out after ${LIBRARY_BOOTSTRAP_TIMEOUT_MS}ms; opening shell",
+                )
+            } finally {
+                if (_libraryBootstrapping.value) {
+                    _libraryBootstrapping.value = false
+                }
             }
         }
     }
@@ -433,11 +765,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             pendingLikedRefresh = true
             return
         }
+        if (!isNetworkOnline()) {
+            _likedTracks.update {
+                it.copy(error = null, refreshing = false, initialLoading = false)
+            }
+            return
+        }
         likedFillJob?.cancel()
         likedFillJob = null
+        likedFillRetryJob?.cancel()
+        likedFillRetryJob = null
         likedLookaheadJob?.cancel()
         likedLookaheadJob = null
-        viewModelScope.launch {
+        likedRefreshJob?.cancel()
+        likedRefreshJob = viewModelScope.launch {
+            val gen = sessionGeneration
             val hadItems = _likedTracks.value.items.isNotEmpty()
             _likedTracks.update {
                 it.copy(
@@ -448,8 +790,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             runCatching { controller.refreshLikedTracks() }
                 .onFailure { e ->
-                    _likedTracks.update { it.copy(error = e.message ?: "Could not load liked songs") }
+                    if (e is CancellationException) throw e
+                    if (gen == sessionGeneration && isNetworkOnline()) {
+                        _likedTracks.update { it.copy(error = e.message ?: "Could not load liked songs") }
+                    }
                 }
+            if (gen != sessionGeneration) return@launch
             _likedTracks.update { it.copy(refreshing = false, initialLoading = false) }
             if (controller.likedTracksNeedsFill()) {
                 startLikedTracksFill()
@@ -475,36 +821,57 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun startLikedTracksFill() {
+    private fun startLikedTracksFill(force: Boolean = false) {
         if (likedFillJob?.isActive == true) return
-        if (!controller.isUnmeteredNetwork()) return
+        if (!force && !controller.isUnmeteredNetwork()) return
         likedFillJob = viewModelScope.launch {
-            _likedTracks.update { it.copy(appending = true) }
-            try {
-                runCatching { controller.fillRemainingLikedTracks() }
-                    .onSuccess {
-                        if (!controller.likedTracksNeedsFill()) {
-                            likedFillRetries = 0
+            fillLikedTracksBlocking(force = force)
+        }
+    }
+
+    /** Drain remaining liked pages. [force] ignores the Wi‑Fi-only gate (first-login splash). */
+    private suspend fun fillLikedTracksBlocking(force: Boolean) {
+        if (!force && !controller.isUnmeteredNetwork()) return
+        if (!controller.likedTracksNeedsFill()) return
+        val gen = sessionGeneration
+        _likedTracks.update { it.copy(appending = true) }
+        try {
+            runCatching { controller.fillRemainingLikedTracks() }
+                .onSuccess {
+                    if (gen == sessionGeneration && !controller.likedTracksNeedsFill()) {
+                        likedFillRetries = 0
+                    }
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    android.util.Log.e("Library", "fill liked tracks failed", e)
+                    if (gen != sessionGeneration) return@onFailure
+                    _likedTracks.update {
+                        it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
+                    }
+                    if (!force && likedFillRetries < 3 && controller.likedTracksNeedsFill()) {
+                        likedFillRetries++
+                        likedFillRetryJob = viewModelScope.launch {
+                            delay(2000L * likedFillRetries)
+                            if (gen == sessionGeneration) startLikedTracksFill()
                         }
                     }
-                    .onFailure { e ->
-                        android.util.Log.e("Library", "fill liked tracks failed", e)
-                        _likedTracks.update {
-                            it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
-                        }
-                        if (likedFillRetries < 3 && controller.likedTracksNeedsFill()) {
-                            likedFillRetries++
-                            viewModelScope.launch {
-                                delay(2000L * likedFillRetries)
-                                startLikedTracksFill()
-                            }
-                        }
-                    }
-            } finally {
+                }
+        } finally {
+            if (gen == sessionGeneration) {
                 _likedTracks.update { it.copy(appending = false) }
                 runPendingLibraryRefresh()
             }
         }
+    }
+
+    /** Join an in-flight fill, or start a forced drain (bootstrap). */
+    private suspend fun awaitLikedTracksFilled() {
+        likedFillJob?.takeIf { it.isActive }?.join()
+        if (!controller.likedTracksNeedsFill()) return
+        val job = viewModelScope.launch { fillLikedTracksBlocking(force = true) }
+        likedFillJob = job
+        job.join()
     }
 
     fun resumeLikedTracksFillIfNeeded() {
@@ -551,11 +918,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             pendingSavedRefresh = true
             return
         }
+        if (!isNetworkOnline()) {
+            _savedAlbums.update {
+                it.copy(error = null, refreshing = false, initialLoading = false)
+            }
+            return
+        }
         savedFillJob?.cancel()
         savedFillJob = null
+        savedFillRetryJob?.cancel()
+        savedFillRetryJob = null
         savedLookaheadJob?.cancel()
         savedLookaheadJob = null
-        viewModelScope.launch {
+        savedRefreshJob?.cancel()
+        savedRefreshJob = viewModelScope.launch {
+            val gen = sessionGeneration
             val hadItems = _savedAlbums.value.items.isNotEmpty()
             if (!hadItems) {
                 _savedAlbums.update { it.copy(initialLoading = true, error = null) }
@@ -564,8 +941,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             runCatching { controller.refreshSavedAlbums() }
                 .onFailure { e ->
-                    _savedAlbums.update { it.copy(error = e.message ?: "Could not load albums") }
+                    if (e is CancellationException) throw e
+                    if (gen == sessionGeneration && isNetworkOnline()) {
+                        _savedAlbums.update { it.copy(error = e.message ?: "Could not load albums") }
+                    }
                 }
+            if (gen != sessionGeneration) return@launch
             _savedAlbums.update { it.copy(refreshing = false, initialLoading = false) }
             if (controller.savedAlbumsNeedsFill()) {
                 startSavedAlbumsFill()
@@ -611,36 +992,55 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         listState.scrollToItem(targetIndex)
     }
 
-    private fun startSavedAlbumsFill() {
+    private fun startSavedAlbumsFill(force: Boolean = false) {
         if (savedFillJob?.isActive == true) return
-        if (!controller.isUnmeteredNetwork()) return
+        if (!force && !controller.isUnmeteredNetwork()) return
         savedFillJob = viewModelScope.launch {
-            _savedAlbums.update { it.copy(appending = true) }
-            try {
-                runCatching { controller.fillRemainingSavedAlbums() }
-                    .onSuccess {
-                        if (!controller.savedAlbumsNeedsFill()) {
-                            savedFillRetries = 0
+            fillSavedAlbumsBlocking(force = force)
+        }
+    }
+
+    private suspend fun fillSavedAlbumsBlocking(force: Boolean) {
+        if (!force && !controller.isUnmeteredNetwork()) return
+        if (!controller.savedAlbumsNeedsFill()) return
+        val gen = sessionGeneration
+        _savedAlbums.update { it.copy(appending = true) }
+        try {
+            runCatching { controller.fillRemainingSavedAlbums() }
+                .onSuccess {
+                    if (gen == sessionGeneration && !controller.savedAlbumsNeedsFill()) {
+                        savedFillRetries = 0
+                    }
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    android.util.Log.e("Library", "fill saved albums failed", e)
+                    if (gen != sessionGeneration) return@onFailure
+                    _savedAlbums.update {
+                        it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
+                    }
+                    if (!force && savedFillRetries < 3 && controller.savedAlbumsNeedsFill()) {
+                        savedFillRetries++
+                        savedFillRetryJob = viewModelScope.launch {
+                            delay(2000L * savedFillRetries)
+                            if (gen == sessionGeneration) startSavedAlbumsFill()
                         }
                     }
-                    .onFailure { e ->
-                        android.util.Log.e("Library", "fill saved albums failed", e)
-                        _savedAlbums.update {
-                            it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
-                        }
-                        if (savedFillRetries < 3 && controller.savedAlbumsNeedsFill()) {
-                            savedFillRetries++
-                            viewModelScope.launch {
-                                delay(2000L * savedFillRetries)
-                                startSavedAlbumsFill()
-                            }
-                        }
-                    }
-            } finally {
+                }
+        } finally {
+            if (gen == sessionGeneration) {
                 _savedAlbums.update { it.copy(appending = false) }
                 runPendingLibraryRefresh()
             }
         }
+    }
+
+    private suspend fun awaitSavedAlbumsFilled() {
+        savedFillJob?.takeIf { it.isActive }?.join()
+        if (!controller.savedAlbumsNeedsFill()) return
+        val job = viewModelScope.launch { fillSavedAlbumsBlocking(force = true) }
+        savedFillJob = job
+        job.join()
     }
 
     fun resumeSavedAlbumsFillIfNeeded() {
@@ -684,12 +1084,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             pendingPlaylistsRefresh = true
             return
         }
+        if (!isNetworkOnline()) {
+            _playlists.update {
+                it.copy(error = null, refreshing = false, initialLoading = false)
+            }
+            return
+        }
         playlistsFillJob?.cancel()
         playlistsFillJob = null
+        playlistsFillRetryJob?.cancel()
+        playlistsFillRetryJob = null
         playlistsLookaheadJob?.cancel()
         playlistsLookaheadJob = null
         playlistsRefreshJob?.cancel()
         playlistsRefreshJob = viewModelScope.launch {
+            val gen = sessionGeneration
             val hadItems = _playlists.value.items.isNotEmpty()
             if (!hadItems) {
                 _playlists.update { it.copy(initialLoading = true, error = null) }
@@ -698,8 +1107,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             runCatching { controller.refreshPlaylists() }
                 .onFailure { e ->
-                    _playlists.update { it.copy(error = e.message ?: "Could not load playlists") }
+                    if (e is CancellationException) throw e
+                    if (gen == sessionGeneration && isNetworkOnline()) {
+                        _playlists.update { it.copy(error = e.message ?: "Could not load playlists") }
+                    }
                 }
+            if (gen != sessionGeneration) return@launch
             _playlists.update { it.copy(refreshing = false, initialLoading = false) }
             if (controller.playlistsNeedsFill()) {
                 startPlaylistsFill()
@@ -735,36 +1148,55 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         listState.scrollToItem(targetIndex)
     }
 
-    private fun startPlaylistsFill() {
+    private fun startPlaylistsFill(force: Boolean = false) {
         if (playlistsFillJob?.isActive == true) return
-        if (!controller.isUnmeteredNetwork()) return
+        if (!force && !controller.isUnmeteredNetwork()) return
         playlistsFillJob = viewModelScope.launch {
-            _playlists.update { it.copy(appending = true) }
-            try {
-                runCatching { controller.fillRemainingPlaylists() }
-                    .onSuccess {
-                        if (!controller.playlistsNeedsFill()) {
-                            playlistsFillRetries = 0
+            fillPlaylistsBlocking(force = force)
+        }
+    }
+
+    private suspend fun fillPlaylistsBlocking(force: Boolean) {
+        if (!force && !controller.isUnmeteredNetwork()) return
+        if (!controller.playlistsNeedsFill()) return
+        val gen = sessionGeneration
+        _playlists.update { it.copy(appending = true) }
+        try {
+            runCatching { controller.fillRemainingPlaylists() }
+                .onSuccess {
+                    if (gen == sessionGeneration && !controller.playlistsNeedsFill()) {
+                        playlistsFillRetries = 0
+                    }
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    android.util.Log.e("Library", "fill playlists failed", e)
+                    if (gen != sessionGeneration) return@onFailure
+                    _playlists.update {
+                        it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
+                    }
+                    if (!force && playlistsFillRetries < 3 && controller.playlistsNeedsFill()) {
+                        playlistsFillRetries++
+                        playlistsFillRetryJob = viewModelScope.launch {
+                            delay(2000L * playlistsFillRetries)
+                            if (gen == sessionGeneration) startPlaylistsFill()
                         }
                     }
-                    .onFailure { e ->
-                        android.util.Log.e("Library", "fill playlists failed", e)
-                        _playlists.update {
-                            it.copy(error = it.error ?: "Library sync incomplete — pull to retry")
-                        }
-                        if (playlistsFillRetries < 3 && controller.playlistsNeedsFill()) {
-                            playlistsFillRetries++
-                            viewModelScope.launch {
-                                delay(2000L * playlistsFillRetries)
-                                startPlaylistsFill()
-                            }
-                        }
-                    }
-            } finally {
+                }
+        } finally {
+            if (gen == sessionGeneration) {
                 _playlists.update { it.copy(appending = false) }
                 runPendingLibraryRefresh()
             }
         }
+    }
+
+    private suspend fun awaitPlaylistsFilled() {
+        playlistsFillJob?.takeIf { it.isActive }?.join()
+        if (!controller.playlistsNeedsFill()) return
+        val job = viewModelScope.launch { fillPlaylistsBlocking(force = true) }
+        playlistsFillJob = job
+        job.join()
     }
 
     fun resumePlaylistsFillIfNeeded() {
@@ -793,6 +1225,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             runCatching { controller.playlistDetail(playlistId) }
                 .onSuccess { result ->
+                    // Bail if the user has since navigated to a different playlist (or
+                    // signed out) while this request was in flight — otherwise a slow
+                    // response for playlist A can land on top of playlist B's screen.
+                    if (_playlistDetail.value.requestedId != playlistId) return@onSuccess
                     _playlistDetail.value = PlaylistDetailState(
                         requestedId = playlistId,
                         detail = result.detail,
@@ -811,6 +1247,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
                 .onFailure { e ->
+                    if (_playlistDetail.value.requestedId != playlistId) return@onFailure
                     _playlistDetail.value = PlaylistDetailState(
                         requestedId = playlistId,
                         error = e.message ?: "Could not load playlist",
@@ -1213,16 +1650,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleAlbumSave(albumId: String) {
         viewModelScope.launch {
             val current = _albumDetail.value
-            if (current.saving) return@launch
-            _albumDetail.value = current.copy(saving = true)
+            if (current.requestedId != albumId || current.saving) return@launch
+            _albumDetail.update { if (it.requestedId == albumId) it.copy(saving = true) else it }
             val result = runCatching {
                 if (current.isSaved) controller.removeAlbum(albumId) else controller.saveAlbum(albumId)
             }
-            _albumDetail.value = current.copy(
-                saving = false,
-                isSaved = if (result.isSuccess) !current.isSaved else current.isSaved,
-                error = result.exceptionOrNull()?.message,
-            )
+            // Re-read the latest state before writing: the user may have navigated to a
+            // different album while the save/remove call was in flight.
+            _albumDetail.update { latest ->
+                if (latest.requestedId != albumId) return@update latest
+                latest.copy(
+                    saving = false,
+                    isSaved = if (result.isSuccess) !current.isSaved else latest.isSaved,
+                    error = result.exceptionOrNull()?.message,
+                )
+            }
         }
     }
 
@@ -1258,6 +1700,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun submitSearch(query: String) {
         if (query.isBlank()) return
         val trimmed = query.trim()
+        if (!isNetworkOnline()) {
+            _search.update {
+                it.copy(
+                    query = trimmed,
+                    error = null,
+                    refreshError = null,
+                    initialLoading = false,
+                    refreshing = false,
+                )
+            }
+            return
+        }
         val requestId = ++searchRequestId
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
@@ -1291,6 +1745,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 throw e
             } catch (e: Throwable) {
                 if (requestId != searchRequestId) return@launch
+                if (!isNetworkOnline()) {
+                    _search.update {
+                        it.copy(error = null, refreshError = null, initialLoading = false, refreshing = false)
+                    }
+                    return@launch
+                }
                 val message = when (e) {
                     is TimeoutCancellationException -> "Search timed out — try again."
                     else -> e.message ?: "Search failed"
@@ -1418,6 +1878,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (current.savePending || current.isTrackSaved) return@launch
             _playingExtras.value = current.copy(savePending = true, saveError = null)
             val result = runCatching { controller.saveTrack(uri) }
+            // The user may have skipped to a different track while the save request
+            // was in flight — onCurrentTrackChanged already reset _playingExtras for
+            // it, so applying this result now would show the save state on the wrong
+            // track.
+            if (playback.value.currentUri != uri) return@launch
             _playingExtras.value = PlayingExtrasState(
                 isTrackSaved = result.isSuccess,
                 savePending = false,
@@ -1439,6 +1904,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val result = runCatching {
                 if (wasSaved) controller.removeTrack(uri) else controller.saveTrack(uri)
             }
+            if (playback.value.currentUri != uri) return@launch
             _playingExtras.value = PlayingExtrasState(
                 isTrackSaved = if (result.isSuccess) !wasSaved else wasSaved,
                 savePending = false,
@@ -1467,14 +1933,46 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun moveContextItemDown(index: Int) = controller.moveContextItemDown(index)
     fun clearManualQueue() = controller.clearManualQueue()
     fun refreshQueue() = controller.refreshQueue()
-    fun logout() {
+    /**
+     * Sign out, clear the backend binding, and invoke [onReadyForPicker] on the
+     * main thread so the host can recreate into [com.lightphone.spotify.ui.screens.BackendPickerScreen].
+     */
+    fun logout(onReadyForPicker: (() -> Unit)? = null) {
         resetSessionUiState()
-        controller.logout()
+        controller.logout {
+            com.lightphone.spotify.data.backend.BackendPreferences(getApplication()).clear()
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                (getApplication() as App).clearController()
+                onReadyForPicker?.invoke()
+            }
+        }
     }
 
     fun setStreamingQuality(quality: StreamingQuality) {
         _settings.value = _settings.value.copy(streamingQuality = quality)
         controller.setStreamingQuality(quality)
+    }
+
+    fun setDownloadQuality(quality: StreamingQuality) {
+        // Future-only: never requeues or rewrites existing pins.
+        _settings.value = _settings.value.copy(downloadQuality = quality)
+        controller.setSpotifyDownloadQuality(quality)
+    }
+
+    fun setTidalAudioQuality(quality: com.lightphone.spotify.data.tidal.TidalAudioQuality) {
+        _settings.value = _settings.value.copy(tidalAudioQuality = quality)
+        controller.setTidalAudioQuality(quality)
+    }
+
+    fun setTidalDownloadQuality(quality: com.lightphone.spotify.data.tidal.TidalAudioQuality) {
+        // Future-only: never requeues or rewrites existing pins.
+        _settings.value = _settings.value.copy(tidalDownloadQuality = quality)
+        controller.setTidalDownloadQuality(quality)
+    }
+
+    fun setTidalReportPlays(enabled: Boolean) {
+        _settings.value = _settings.value.copy(tidalReportPlays = enabled)
+        controller.setTidalReportPlaysEnabled(enabled)
     }
 
     fun setGaplessEnabled(enabled: Boolean) {
@@ -1548,14 +2046,34 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 PhonoContextMenuItem("Add To Playlists", ContextMenuAction.AddToPlaylists),
                 PhonoContextMenuItem("Remove From Library", ContextMenuAction.RemoveFromLibrary),
             )
-            is ContextMenuTarget.Album -> listOf(
-                PhonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink),
-                PhonoContextMenuItem("Remove From Library", ContextMenuAction.RemoveFromLibrary),
-            )
+            is ContextMenuTarget.Album -> buildList {
+                add(PhonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink))
+                add(PhonoContextMenuItem("Remove From Library", ContextMenuAction.RemoveFromLibrary))
+                if (downloadsSupported) {
+                    val collUri = collectionUri(
+                        backendChoice, CollectionKind.Album, target.albumId, target.uri,
+                    )
+                    if (isCollectionDownloaded(collUri) || isCollectionDownloading(collUri)) {
+                        add(PhonoContextMenuItem("Remove download", ContextMenuAction.RemoveDownload))
+                    } else {
+                        add(PhonoContextMenuItem("Download", ContextMenuAction.Download))
+                    }
+                }
+            }
             is ContextMenuTarget.Playlist -> buildList {
                 add(PhonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink))
                 if (currentUserId != null && target.ownerId == currentUserId) {
                     add(PhonoContextMenuItem("Delete Playlist", ContextMenuAction.DeletePlaylist))
+                }
+                if (downloadsSupported) {
+                    val collUri = collectionUri(
+                        backendChoice, CollectionKind.Playlist, target.playlistId, target.uri,
+                    )
+                    if (isCollectionDownloaded(collUri) || isCollectionDownloading(collUri)) {
+                        add(PhonoContextMenuItem("Remove download", ContextMenuAction.RemoveDownload))
+                    } else {
+                        add(PhonoContextMenuItem("Download", ContextMenuAction.Download))
+                    }
                 }
             }
         }
@@ -1581,6 +2099,34 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 dismissContextMenu()
                 _contextMenu.update {
                     it.copy(deleteConfirm = DeletePlaylistConfirm(target.playlistId, ""))
+                }
+            }
+            ContextMenuAction.Download -> {
+                dismissContextMenu()
+                when (target) {
+                    is ContextMenuTarget.Album ->
+                        downloadAlbumById(target.albumId, target.uri)
+                    is ContextMenuTarget.Playlist ->
+                        downloadPlaylistById(target.playlistId, target.uri)
+                    is ContextMenuTarget.Track -> Unit
+                }
+            }
+            ContextMenuAction.RemoveDownload -> {
+                dismissContextMenu()
+                when (target) {
+                    is ContextMenuTarget.Album ->
+                        removeDownloadCollection(
+                            collectionUri(
+                                backendChoice, CollectionKind.Album, target.albumId, target.uri,
+                            ),
+                        )
+                    is ContextMenuTarget.Playlist ->
+                        removeDownloadCollection(
+                            collectionUri(
+                                backendChoice, CollectionKind.Playlist, target.playlistId, target.uri,
+                            ),
+                        )
+                    is ContextMenuTarget.Track -> Unit
                 }
             }
         }
@@ -1629,6 +2175,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val SEARCH_TIMEOUT_MS = 30_000L
         private const val WARM_TIMEOUT_MS = 15_000L
+        /** First-login splash: first pages + full library drain (Wi‑Fi or cellular). */
+        private const val LIBRARY_BOOTSTRAP_TIMEOUT_MS = 45_000L
         private const val LOOKAHEAD_ROWS = 150
     }
 }
@@ -1636,8 +2184,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 private fun SettingsSnapshot.toUiState(
     showAdvanced: Boolean,
     darkTheme: Boolean,
+    downloadQuality: StreamingQuality = StreamingQuality.HIGH,
+    tidalAudioQuality: com.lightphone.spotify.data.tidal.TidalAudioQuality =
+        com.lightphone.spotify.data.tidal.TidalAudioQuality.DEFAULT,
+    tidalDownloadQuality: com.lightphone.spotify.data.tidal.TidalAudioQuality =
+        com.lightphone.spotify.data.tidal.TidalAudioQuality.DEFAULT,
+    tidalReportPlays: Boolean = true,
 ) = SettingsUiState(
     streamingQuality = streamingQuality,
+    downloadQuality = downloadQuality,
+    tidalAudioQuality = tidalAudioQuality,
+    tidalDownloadQuality = tidalDownloadQuality,
+    tidalReportPlays = tidalReportPlays,
     gaplessEnabled = gaplessEnabled,
     normalizationEnabled = normalizationEnabled,
     normalizationType = normalizationType,

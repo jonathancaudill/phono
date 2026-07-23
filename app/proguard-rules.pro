@@ -15,6 +15,13 @@
 # Media3
 -keep class androidx.media3.** { *; }
 
+# Keep OAuth / login diagnosis Log.e strings reachable in release.
+-keepclassmembers class com.lightphone.spotify.ui.OAuthWebViewKt { *; }
+-keepclassmembers class com.lightphone.spotify.playback.PlaybackController {
+    *** completeLogin(...);
+    *** mapSpotifyError(...);
+}
+
 # CameraX + ML Kit (QR scanner on Web API setup)
 -keep class androidx.camera.** { *; }
 -keep class com.google.mlkit.** { *; }

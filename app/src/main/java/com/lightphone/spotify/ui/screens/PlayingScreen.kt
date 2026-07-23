@@ -204,33 +204,52 @@ private fun ProgressBar(playback: PlaybackUiState, onSeek: (Long) -> Unit) {
     if (playback.durationMs > 0L) {
         lastDurationMs = playback.durationMs
     }
-    val duration = (if (playback.durationMs > 0L) playback.durationMs else lastDurationMs).coerceAtLeast(1)
+    val duration = if (playback.durationMs > 0L) playback.durationMs else lastDurationMs
+    val durationKnown = duration > 0L
 
     var scrubPositionMs by remember(playback.currentUri) { mutableLongStateOf(-1L) }
+    // Hold scrub thumb until backend position catches the seek target (or URI changes).
+    LaunchedEffect(playback.currentUri, playback.positionMs, scrubPositionMs) {
+        val scrub = scrubPositionMs
+        if (scrub < 0L) return@LaunchedEffect
+        if (kotlin.math.abs(playback.positionMs - scrub) <= SEEK_SETTLE_MS) {
+            scrubPositionMs = -1L
+        }
+    }
     val displayPositionMs = if (scrubPositionMs >= 0L) scrubPositionMs else playback.positionMs
-    val displayProgress = (displayPositionMs.toFloat() / duration).coerceIn(0f, 1f)
+    val displayProgress = if (durationKnown) {
+        (displayPositionMs.toFloat() / duration).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
 
     BoxWithConstraints(
         Modifier
             .fillMaxWidth(0.9f)
             .defaultMinSize(minHeight = legacyNToGridDp(40))
-            .pointerInput(duration) {
-                awaitEachGesture {
-                    val down = awaitFirstDown()
-                    down.consume()
-                    fun seekAt(x: Float) {
-                        val fraction = (x / size.width).coerceIn(0f, 1f)
-                        scrubPositionMs = (duration * fraction).toLong()
+            .then(
+                if (durationKnown) {
+                    Modifier.pointerInput(duration) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown()
+                            down.consume()
+                            fun seekAt(x: Float) {
+                                val fraction = (x / size.width).coerceIn(0f, 1f)
+                                scrubPositionMs = (duration * fraction).toLong()
+                            }
+                            seekAt(down.position.x)
+                            drag(down.id) { change ->
+                                change.consume()
+                                seekAt(change.position.x)
+                            }
+                            onSeek(scrubPositionMs.coerceAtLeast(0L))
+                            // Keep scrubPositionMs until playback.positionMs settles.
+                        }
                     }
-                    seekAt(down.position.x)
-                    drag(down.id) { change ->
-                        change.consume()
-                        seekAt(change.position.x)
-                    }
-                    onSeek(scrubPositionMs.coerceAtLeast(0L))
-                    scrubPositionMs = -1L
-                }
-            },
+                } else {
+                    Modifier
+                },
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Box(
@@ -249,6 +268,8 @@ private fun ProgressBar(playback: PlaybackUiState, onSeek: (Long) -> Unit) {
         )
     }
 }
+
+private const val SEEK_SETTLE_MS = 750L
 
 @Composable
 private fun TransportControls(playback: PlaybackUiState, vm: AppViewModel) {

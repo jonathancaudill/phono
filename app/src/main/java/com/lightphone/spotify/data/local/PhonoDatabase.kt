@@ -17,8 +17,16 @@ import androidx.room.TypeConverters
         PlaylistDetailEntity::class,
         PlaylistTrackUriEntity::class,
         PlaylistUriIndexEntity::class,
+        DownloadedTrackEntity::class,
+        DownloadedCollectionEntity::class,
+        DownloadedCollectionTrackEntity::class,
     ],
-    version = 4,
+    // v5: entity ids are now backend-namespaced URIs (`spotify:`/`tidal:`); single
+    // active backend per install, so a destructive migration is correct here.
+    // v6: adds the `downloaded_tracks` table for offline playback pins.
+    // v7: downloaded albums/playlists + membership for the Downloads tab.
+    // v8: downloaded_tracks.duration_ms for progress-bar / Playing UI.
+    version = 8,
     exportSchema = false,
 )
 @TypeConverters(LibraryResourceConverter::class)
@@ -31,6 +39,8 @@ abstract class PhonoDatabase : RoomDatabase() {
     abstract fun playlistDetailDao(): PlaylistDetailDao
     abstract fun playlistTrackUriDao(): PlaylistTrackUriDao
     abstract fun playlistUriIndexDao(): PlaylistUriIndexDao
+    abstract fun downloadedTrackDao(): DownloadedTrackDao
+    abstract fun downloadedCollectionDao(): DownloadedCollectionDao
 
     companion object {
         @Volatile

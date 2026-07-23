@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -14,21 +15,22 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.lightphone.spotify.ui.light.lightIconFor
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.consumeScrimTouches
 import com.thelightphone.sdk.ui.LightBarButton
-import com.thelightphone.sdk.ui.LightIconConfiguration
+import com.thelightphone.sdk.ui.LightBarButtonDefaults
 import com.thelightphone.sdk.ui.LightIcon
+import com.thelightphone.sdk.ui.LightIconConfiguration
 import com.thelightphone.sdk.ui.LightIcons
 import com.thelightphone.sdk.ui.LightThemeTokens
 import com.thelightphone.sdk.ui.LightTopBar
 import com.thelightphone.sdk.ui.LightTopBarCenter
 import com.thelightphone.sdk.ui.gridUnitsAsDp
 import com.thelightphone.sdk.ui.lightClickable
-import androidx.compose.ui.graphics.vector.rememberVectorPainter
 
 @Composable
 fun PhonoScreenShell(
@@ -43,6 +45,10 @@ fun PhonoScreenShell(
     onRightIconClick: (() -> Unit)? = null,
     rightIconVisible: Boolean = true,
     rightLoading: Boolean = false,
+    /** Shown to the left of the primary right control (e.g. download beside Add/Remove). */
+    secondaryRightLightIcon: LightIconConfiguration? = null,
+    onSecondaryRightIconClick: (() -> Unit)? = null,
+    secondaryRightLoading: Boolean = false,
     onTitleClick: (() -> Unit)? = null,
     titleContent: @Composable (() -> Unit)? = null,
     horizontalPadding: Dp = legacyNToGridDp(20),
@@ -51,6 +57,9 @@ fun PhonoScreenShell(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val colors = LightThemeTokens.colors
+    val showSecondaryRight =
+        secondaryRightLoading ||
+            (secondaryRightLightIcon != null && onSecondaryRightIconClick != null)
     Box(
         modifier
             .fillMaxSize()
@@ -63,7 +72,13 @@ fun PhonoScreenShell(
             leftIcon != null && onLeftIconClick != null -> {
                 val lightIcon = lightIconFor(leftIcon)
                 if (lightIcon != null) {
-                    LightBarButton.LightIcon(lightIcon, onClick = onLeftIconClick)
+                    LightBarButton.LightIcon(
+                        icon = lightIcon,
+                        onClick = onLeftIconClick,
+                        // Pencil vector fills its viewport more than Add/Back; shrink so it
+                        // matches other top-bar icons visually.
+                        sizeUnits = barIconSizeUnits(lightIcon),
+                    )
                 } else {
                     LightBarButton.Icon(
                         painter = rememberVectorPainter(leftIcon),
@@ -74,14 +89,25 @@ fun PhonoScreenShell(
             else -> null
         }
 
+        // When a secondary right control is present, LightTopBar's single right slot is
+        // left empty and both icons are drawn in the overlay row below.
         val rightButton = when {
+            showSecondaryRight -> null
             rightLoading -> null
             rightIconVisible && rightLightIcon != null && onRightIconClick != null ->
-                LightBarButton.LightIcon(rightLightIcon, onClick = onRightIconClick)
+                LightBarButton.LightIcon(
+                    icon = rightLightIcon,
+                    onClick = onRightIconClick,
+                    sizeUnits = barIconSizeUnits(rightLightIcon),
+                )
             rightIconVisible && rightIcon != null && onRightIconClick != null -> {
                 val lightIcon = lightIconFor(rightIcon)
                 if (lightIcon != null) {
-                    LightBarButton.LightIcon(lightIcon, onClick = onRightIconClick)
+                    LightBarButton.LightIcon(
+                        icon = lightIcon,
+                        onClick = onRightIconClick,
+                        sizeUnits = barIconSizeUnits(lightIcon),
+                    )
                 } else {
                     LightBarButton.Icon(
                         painter = rememberVectorPainter(rightIcon),
@@ -118,18 +144,68 @@ fun PhonoScreenShell(
                     titleContent()
                 }
             }
-            if (rightLoading) {
-                Box(
+            if (showSecondaryRight || rightLoading) {
+                Row(
                     Modifier
                         .align(Alignment.CenterEnd)
                         .padding(end = 1f.gridUnitsAsDp()),
-                    contentAlignment = Alignment.Center,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(legacyNToGridDp(20)),
-                        color = colors.content,
-                        strokeWidth = 2.dp,
-                    )
+                    if (secondaryRightLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier
+                                .padding(end = SecondaryRightGap)
+                                .size(legacyNToGridDp(20)),
+                            color = colors.content,
+                            strokeWidth = 2.dp,
+                        )
+                    } else if (secondaryRightLightIcon != null && onSecondaryRightIconClick != null) {
+                        LightIcon(
+                            icon = secondaryRightLightIcon,
+                            size = barIconSizeUnits(secondaryRightLightIcon),
+                            modifier = Modifier
+                                .padding(end = SecondaryRightGap)
+                                .lightClickable(onClick = onSecondaryRightIconClick),
+                            contentDescription = null,
+                        )
+                    }
+                    when {
+                        rightLoading -> {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(legacyNToGridDp(20)),
+                                color = colors.content,
+                                strokeWidth = 2.dp,
+                            )
+                        }
+                        rightIconVisible && rightLightIcon != null && onRightIconClick != null -> {
+                            LightIcon(
+                                icon = rightLightIcon,
+                                size = barIconSizeUnits(rightLightIcon),
+                                modifier = Modifier.lightClickable(onClick = onRightIconClick),
+                                contentDescription = null,
+                            )
+                        }
+                        rightIconVisible && rightIcon != null && onRightIconClick != null -> {
+                            val lightIcon = lightIconFor(rightIcon)
+                            if (lightIcon != null) {
+                                LightIcon(
+                                    icon = lightIcon,
+                                    size = barIconSizeUnits(lightIcon),
+                                    modifier = Modifier.lightClickable(onClick = onRightIconClick),
+                                    contentDescription = null,
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = rightIcon,
+                                    contentDescription = null,
+                                    tint = colors.content,
+                                    modifier = Modifier
+                                        .size(legacyNToGridDp(24))
+                                        .lightClickable(onClick = onRightIconClick),
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -174,8 +250,9 @@ fun PhonoHeaderIcon(
     val lightIcon = lightIconFor(icon)
     val colors = LightThemeTokens.colors
     if (lightIcon != null) {
-        com.thelightphone.sdk.ui.LightIcon(
+        LightIcon(
             icon = lightIcon,
+            size = barIconSizeUnits(lightIcon),
             modifier = modifier.lightClickable(onClick = onClick),
             contentDescription = contentDescription,
         )
@@ -188,3 +265,16 @@ fun PhonoHeaderIcon(
         )
     }
 }
+
+/** Gap between download (secondary) and Add/Remove (primary) so hit targets don't overlap. */
+private val SecondaryRightGap @Composable get() = legacyNToGridDp(18)
+
+/**
+ * Pencil fills its 40dp viewport more tightly than Add (~30dp); render slightly smaller
+ * so top-bar chrome stays visually consistent.
+ */
+private fun barIconSizeUnits(icon: LightIconConfiguration): Float =
+    when (icon) {
+        LightIcons.PENCIL -> 1.55f
+        else -> LightBarButtonDefaults.ICON_SIZE_UNITS
+    }

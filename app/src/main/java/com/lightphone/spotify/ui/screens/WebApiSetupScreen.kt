@@ -1,8 +1,6 @@
 package com.lightphone.spotify.ui.screens
 
-import android.webkit.WebResourceRequest
 import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,6 +8,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
@@ -28,6 +27,7 @@ import com.lightphone.spotify.data.webapi.WebApiAuth
 import com.lightphone.spotify.data.webapi.WebApiSessionState
 import com.lightphone.spotify.data.webapi.parseWebApiQrPayload
 import com.lightphone.spotify.ui.AppViewModel
+import com.lightphone.spotify.ui.configureOAuthWebView
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.PhonoScreenShell
@@ -60,7 +60,11 @@ fun WebApiSetupScreen(vm: AppViewModel) {
             .onSuccess { payload ->
                 clientId = payload.clientId
                 clientSecret = payload.clientSecret
-                qrScanMessage = "Credentials filled from QR. Tap Connect Web API when ready."
+                // A QR code only proves it was scannable, not that it's really the
+                // user's own dev app — show the Client ID prominently so the user has
+                // a chance to notice a substituted one before authorizing against it.
+                qrScanMessage = "Scanned Client ID: ${payload.clientId}\n" +
+                    "Confirm this is your app, then tap Connect Web API."
                 qrScanIsError = false
             }
             .onFailure { error ->
@@ -81,29 +85,14 @@ fun WebApiSetupScreen(vm: AppViewModel) {
     }
 
     if (showWebView && authUrl != null) {
-        Box(Modifier.fillMaxSize().background(colors.background)) {
+        Box(Modifier.fillMaxSize().background(colors.background).imePadding()) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { context ->
                     WebView(context).apply {
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        webViewClient = object : WebViewClient() {
-                            override fun shouldOverrideUrlLoading(
-                                view: WebView?,
-                                request: WebResourceRequest?,
-                            ): Boolean {
-                                val url = request?.url?.toString() ?: return false
-                                if (url.startsWith(WebApiAuth.REDIRECT_URI)) {
-                                    val code = request.url.getQueryParameter("code")
-                                    if (code != null) {
-                                        vm.completeWebApiAuth(code) { result ->
-                                            if (result.isSuccess) showWebView = false
-                                        }
-                                    }
-                                    return true
-                                }
-                                return false
+                        configureOAuthWebView(WebApiAuth.REDIRECT_URI) { code, state ->
+                            vm.completeWebApiAuth(code, state) { result ->
+                                if (result.isSuccess) showWebView = false
                             }
                         }
                         loadUrl(authUrl!!)

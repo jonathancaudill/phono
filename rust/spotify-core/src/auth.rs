@@ -74,13 +74,18 @@ pub struct Pkce {
 impl Pkce {
     pub fn generate() -> Self {
         let verifier = random_verifier();
-        let digest = Sha256::digest(verifier.as_bytes());
-        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
+        let challenge = challenge_from_verifier(&verifier);
         Self {
             verifier,
             challenge,
         }
     }
+}
+
+/// S256 challenge for an existing verifier (reuse in-flight authorize URL).
+pub fn challenge_from_verifier(verifier: &str) -> String {
+    let digest = Sha256::digest(verifier.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
 }
 
 fn random_verifier() -> String {
