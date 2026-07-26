@@ -109,12 +109,14 @@ fun PlayingScreen(
                 ) {
                     if (hasTrack) {
                         if (showArtwork && !playback.artUrl.isNullOrBlank()) {
+                            // Keep the cover compact so the transport controls
+                            // (play + skip) always stay on-screen on the LP3.
                             PhonoFallbackImage(
                                 imageUrl = playback.artUrl,
                                 modifier = Modifier
-                                    .fillMaxWidth(0.7f)
+                                    .fillMaxWidth(0.4f)
                                     .aspectRatio(1f)
-                                    .padding(bottom = legacyNToGridDp(24)),
+                                    .padding(bottom = legacyNToGridDp(12)),
                             )
                         }
                         LightText(

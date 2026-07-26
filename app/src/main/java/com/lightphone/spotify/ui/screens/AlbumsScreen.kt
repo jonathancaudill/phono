@@ -101,7 +101,7 @@ fun AlbumsScreen(
                         PhonoMediaListItem(
                             primaryText = saved.name,
                             secondaryText = saved.artist_names,
-                            showImage = false,
+                            imageUrl = saved.art_url,
                             placeholderIcon = Icons.Default.Album,
                             disabled = disabled,
                             onClick = {
