@@ -297,6 +297,12 @@ fun PhonoShell(
                     vm.loadPlaylistPicker(uri)
                     overlayNav.navigate(OverlayDestination.PlaylistPicker(uri))
                 },
+                onNavigateToAlbum = { id ->
+                    overlayNav.navigate(OverlayDestination.Album(id))
+                },
+                onNavigateToArtist = { id ->
+                    overlayNav.navigate(OverlayDestination.Artist(id))
+                },
             )
         }
     }

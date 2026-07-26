@@ -14,6 +14,8 @@ import com.lightphone.spotify.ui.AppViewModel
 fun ContextMenuHost(
     vm: AppViewModel,
     onNavigateToPlaylistPicker: (String) -> Unit,
+    onNavigateToAlbum: (String) -> Unit,
+    onNavigateToArtist: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val state by vm.contextMenu.collectAsState()
@@ -24,6 +26,18 @@ fun ContextMenuHost(
         val uri = state.navigateToPlaylistPickerUri ?: return@LaunchedEffect
         onNavigateToPlaylistPicker(uri)
         vm.consumeNavigateToPlaylistPicker()
+    }
+
+    LaunchedEffect(state.navigateToAlbumId) {
+        val id = state.navigateToAlbumId ?: return@LaunchedEffect
+        onNavigateToAlbum(id)
+        vm.consumeNavigateToAlbum()
+    }
+
+    LaunchedEffect(state.navigateToArtistId) {
+        val id = state.navigateToArtistId ?: return@LaunchedEffect
+        onNavigateToArtist(id)
+        vm.consumeNavigateToArtist()
     }
 
     val overlayModifier = modifier
