@@ -102,7 +102,10 @@ fun PhonoShell(
         ),
     )
     val currentTab by shellVm.currentTab.collectAsState()
-    val tabs = remember(vm.downloadsSupported) { phonoTabs(includeDownloads = vm.downloadsSupported) }
+    val navOrder by NavBarPreferences.order.collectAsState()
+    val tabs = remember(navOrder, vm.downloadsSupported) {
+        NavBarPreferences.visibleTabs(phonoTabs(includeDownloads = vm.downloadsSupported))
+    }
 
     LaunchedEffect(shellPlayback.loggedIn) {
         if (!shellPlayback.loggedIn) {
@@ -111,7 +114,7 @@ fun PhonoShell(
     }
 
     LaunchedEffect(tabs, currentTab) {
-        if (currentTab !in tabs) shellVm.selectTab(PhonoTab.Liked)
+        if (currentTab !in tabs) tabs.firstOrNull()?.let(shellVm::selectTab)
     }
 
     val showOverlayLayer = visibleOverlayEntries.any { entry ->
