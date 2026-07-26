@@ -124,7 +124,7 @@ fun PlaylistsScreen(
                                 ownerName = playlist.owner_name,
                                 me = state.currentUserId,
                             ),
-                            showImage = false,
+                            imageUrl = playlist.art_url,
                             placeholderIcon = Icons.AutoMirrored.Filled.PlaylistPlay,
                             disabled = disabled,
                             onClick = {

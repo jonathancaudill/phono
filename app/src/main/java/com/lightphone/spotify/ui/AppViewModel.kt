@@ -170,7 +170,10 @@ data class PlaylistPickerState(
 
 enum class ContextMenuAction {
     CopyLink,
+    AddToQueue,
     AddToPlaylists,
+    GoToAlbum,
+    GoToArtist,
     RemoveFromLibrary,
     DeletePlaylist,
     Download,
@@ -200,6 +203,8 @@ data class ContextMenuUiState(
     val showCopied: Boolean = false,
     val deleteConfirm: DeletePlaylistConfirm? = null,
     val navigateToPlaylistPickerUri: String? = null,
+    val navigateToAlbumId: String? = null,
+    val navigateToArtistId: String? = null,
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -2039,11 +2044,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _contextMenu.update { it.copy(navigateToPlaylistPickerUri = null) }
     }
 
+    fun consumeNavigateToAlbum() {
+        _contextMenu.update { it.copy(navigateToAlbumId = null) }
+    }
+
+    fun consumeNavigateToArtist() {
+        _contextMenu.update { it.copy(navigateToArtistId = null) }
+    }
+
     fun contextMenuItemsFor(target: ContextMenuTarget, currentUserId: String?): List<PhonoContextMenuItem> =
         when (target) {
             is ContextMenuTarget.Track -> listOf(
                 PhonoContextMenuItem("Copy Link", ContextMenuAction.CopyLink),
+                PhonoContextMenuItem("Add To Queue", ContextMenuAction.AddToQueue),
                 PhonoContextMenuItem("Add To Playlists", ContextMenuAction.AddToPlaylists),
+                PhonoContextMenuItem("Go To Album", ContextMenuAction.GoToAlbum),
+                PhonoContextMenuItem("Go To Artist", ContextMenuAction.GoToArtist),
                 PhonoContextMenuItem("Remove From Library", ContextMenuAction.RemoveFromLibrary),
             )
             is ContextMenuTarget.Album -> buildList {
@@ -2085,10 +2101,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 dismissContextMenu()
                 copyContextMenuLink(target)
             }
+            ContextMenuAction.AddToQueue -> {
+                if (target !is ContextMenuTarget.Track) return
+                dismissContextMenu()
+                viewModelScope.launch {
+                    val meta = controller.trackMetadataForUri(target.uri) ?: return@launch
+                    addTrackToQueue(meta)
+                }
+            }
             ContextMenuAction.AddToPlaylists -> {
                 if (target !is ContextMenuTarget.Track) return
                 dismissContextMenu()
                 _contextMenu.update { it.copy(navigateToPlaylistPickerUri = target.uri) }
+            }
+            ContextMenuAction.GoToAlbum -> {
+                if (target !is ContextMenuTarget.Track) return
+                dismissContextMenu()
+                viewModelScope.launch {
+                    val albumId = controller.trackMetadataForUri(target.uri)?.albumId ?: return@launch
+                    _contextMenu.update { it.copy(navigateToAlbumId = albumId) }
+                }
+            }
+            ContextMenuAction.GoToArtist -> {
+                if (target !is ContextMenuTarget.Track) return
+                dismissContextMenu()
+                viewModelScope.launch {
+                    val artistId = controller.trackMetadataForUri(target.uri)
+                        ?.artistIds?.firstOrNull() ?: return@launch
+                    _contextMenu.update { it.copy(navigateToArtistId = artistId) }
+                }
             }
             ContextMenuAction.RemoveFromLibrary -> {
                 dismissContextMenu()
