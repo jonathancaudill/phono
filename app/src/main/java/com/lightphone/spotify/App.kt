@@ -5,6 +5,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import com.lightphone.spotify.data.backend.BackendPreferences
 import com.lightphone.spotify.playback.PlaybackController
 import com.lightphone.spotify.playback.download.OfflinePinHygiene
+import com.lightphone.spotify.ui.light.ArtworkPreferences
 import com.lightphone.spotify.ui.light.ThemePreferences
 import com.lightphone.spotify.ui.navigation.NavBarPreferences
 
@@ -22,6 +23,8 @@ class App : Application() {
         ThemePreferences(this).applyToController()
         // Prime the persisted navigation-bar order so the shell has it on first frame.
         NavBarPreferences(this)
+        // Prime the persisted artwork-visibility prefs so lists/now-playing have them on first frame.
+        ArtworkPreferences(this)
         if (BackendPreferences(this).isChosen()) {
             ensureController()
         }

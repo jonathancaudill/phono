@@ -28,6 +28,7 @@ import com.lightphone.spotify.data.tidal.TidalAudioQuality
 import com.lightphone.spotify.ffi.NormalizationType
 import com.lightphone.spotify.ffi.StreamingQuality
 import com.lightphone.spotify.ui.AppViewModel
+import com.lightphone.spotify.ui.light.ArtworkPreferences
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.navigation.NavBarPreferences
@@ -78,6 +79,9 @@ fun SettingsScreen(
 
                 SectionLabel("Navigation bar")
                 NavBarOptions()
+
+                SectionLabel("Artwork")
+                ArtworkOptions()
 
                 SectionLabel("Playback")
                 SettingsToggleRow("Gapless playback", settings.gaplessEnabled, vm::setGaplessEnabled)
@@ -297,6 +301,20 @@ private fun NavBarEditorRow(
             LightIcon(icon = LightIcons.DOWN, size = 1.6f, contentDescription = "Move down")
         }
     }
+}
+
+/**
+ * Show/hide toggles for cover art: list-row thumbnails and the now-playing
+ * screen. UI-only and backend-agnostic; persisted via [ArtworkPreferences].
+ */
+@Composable
+private fun ArtworkOptions() {
+    val context = LocalContext.current
+    val prefs = remember(context) { ArtworkPreferences(context) }
+    val listThumbnails by ArtworkPreferences.listThumbnails.collectAsState()
+    val nowPlayingArtwork by ArtworkPreferences.nowPlayingArtwork.collectAsState()
+    SettingsToggleRow("List thumbnails", listThumbnails, prefs::setListThumbnails)
+    SettingsToggleRow("Now playing artwork", nowPlayingArtwork, prefs::setNowPlayingArtwork)
 }
 
 @Composable
