@@ -33,6 +33,7 @@ app/src/main/java/com/lightphone/spotify/ffi/
 *.jks
 *.p12
 *.pem
+keystore.properties
 .env
 .env.*
 !.env.example

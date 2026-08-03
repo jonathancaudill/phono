@@ -10,8 +10,10 @@ plugins {
 
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties()
-if (keystorePropertiesFile.exists()) {
-    keystoreProperties.load(keystorePropertiesFile.inputStream())
+val hasReleaseKeystore = keystorePropertiesFile.exists().also { exists ->
+    if (exists) {
+        keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
+    }
 }
 
 android {
@@ -19,12 +21,21 @@ android {
     compileSdk = 36
 
     signingConfigs {
-        create("release") {
-            if (keystorePropertiesFile.exists()) {
-                keyAlias = keystoreProperties["keyAlias"] as String
-                keyPassword = keystoreProperties["keyPassword"] as String
-                storeFile = rootProject.file(keystoreProperties["storeFile"] as String)
-                storePassword = keystoreProperties["storePassword"] as String
+        if (hasReleaseKeystore) {
+            create("release") {
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                    ?: error("keystore.properties missing keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                    ?: error("keystore.properties missing keyPassword")
+                storeFile = rootProject.file(
+                    keystoreProperties.getProperty("storeFile")
+                        ?: error("keystore.properties missing storeFile"),
+                )
+                storePassword = keystoreProperties.getProperty("storePassword")
+                    ?: error("keystore.properties missing storePassword")
+                check(storeFile!!.isFile) {
+                    "Release keystore not found: ${storeFile!!.absolutePath}"
+                }
             }
         }
     }
@@ -33,8 +44,8 @@ android {
         applicationId = "com.lightphone.spotify"
         minSdk = 33
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
 
         // Path C: native AudioTrack sink (set false to fall back to rodio/cpal).
         buildConfigField("boolean", "USE_AUDIOTRACK_SINK", "true")
@@ -54,11 +65,12 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            if (keystorePropertiesFile.exists()) {
-                signingConfig = signingConfigs.getByName("release")
-            } else {
-                signingConfig = signingConfigs.getByName("debug")
+            // Never silently fall back to the debug keystore for release artifacts.
+            check(hasReleaseKeystore) {
+                "Release builds require keystore.properties + a release .jks " +
+                    "(see README). Refusing to sign with the debug key."
             }
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
