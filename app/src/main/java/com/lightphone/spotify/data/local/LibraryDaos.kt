@@ -37,6 +37,12 @@ interface LikedTrackDao {
     )
     suspend fun shiftSortIndicesForPrepend()
 
+    @Query("UPDATE liked_tracks SET sort_index = sort_index + :delta")
+    suspend fun shiftSortIndicesBy(delta: Int)
+
+    @Query("SELECT * FROM liked_tracks ORDER BY sort_index ASC LIMIT 1")
+    suspend fun headRow(): LikedTrackEntity?
+
     @Query("SELECT MIN(sort_index) FROM liked_tracks")
     suspend fun minSortIndex(): Int?
 }
@@ -75,6 +81,12 @@ interface SavedAlbumDao {
     )
     suspend fun shiftSortIndicesForPrepend()
 
+    @Query("UPDATE saved_albums SET sort_index = sort_index + :delta")
+    suspend fun shiftSortIndicesBy(delta: Int)
+
+    @Query("SELECT * FROM saved_albums ORDER BY sort_index ASC LIMIT 1")
+    suspend fun headRow(): SavedAlbumEntity?
+
     @Query("SELECT MIN(sort_index) FROM saved_albums")
     suspend fun minSortIndex(): Int?
 }
@@ -98,6 +110,12 @@ interface PlaylistDao {
 
     @Query("UPDATE playlists SET sort_index = sort_index + 1")
     suspend fun shiftSortIndicesForPrepend()
+
+    @Query("UPDATE playlists SET sort_index = sort_index + :delta")
+    suspend fun shiftSortIndicesBy(delta: Int)
+
+    @Query("SELECT * FROM playlists ORDER BY sort_index ASC LIMIT 1")
+    suspend fun headRow(): PlaylistEntity?
 
     @Query("SELECT MIN(sort_index) FROM playlists")
     suspend fun minSortIndex(): Int?

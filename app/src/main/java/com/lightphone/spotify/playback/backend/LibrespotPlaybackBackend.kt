@@ -157,12 +157,28 @@ class LibrespotPlaybackBackend(
     override fun bufferCurrentToEnd() = engine.bufferCurrentToEnd()
     override fun prefetchUpcoming(ahead: UInt) = engine.prefetchUpcoming(ahead)
 
+    override fun awaitBankIdle(timeoutMs: Long): Boolean {
+        if (engine.isCurrentFullyBuffered()) return true
+        val deadline = System.nanoTime() + timeoutMs.coerceAtLeast(0L) * 1_000_000L
+        while (System.nanoTime() < deadline) {
+            if (engine.isCurrentFullyBuffered()) return true
+            try {
+                Thread.sleep(150L)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return engine.isCurrentFullyBuffered()
+            }
+        }
+        return engine.isCurrentFullyBuffered()
+    }
+
     // --- FFI PlayerEventListener -> neutral PlaybackEventListener ------------
     override fun onTrackChanged(uri: String) { listener?.onTrackChanged(uri) }
     override fun onLoading() { listener?.onLoading() }
     override fun onPlaying(positionMs: Long) { listener?.onPlaying(positionMs) }
     override fun onPaused(positionMs: Long) { listener?.onPaused(positionMs) }
     override fun onPositionChanged(positionMs: Long) { listener?.onPositionChanged(positionMs) }
+    override fun onDurationMs(durationMs: Long) { listener?.onDurationMs(durationMs) }
     override fun onEndOfTrack() { listener?.onEndOfTrack() }
     override fun onUnavailable(uri: String) { listener?.onUnavailable(uri) }
     override fun onConnectionLost() { listener?.onConnectionLost() }

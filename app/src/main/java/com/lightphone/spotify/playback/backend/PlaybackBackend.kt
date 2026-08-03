@@ -89,4 +89,17 @@ interface PlaybackBackend {
     fun clearAudioCache()
     fun bufferCurrentToEnd()
     fun prefetchUpcoming(ahead: UInt)
+
+    /**
+     * Block until current-track banking finishes (or [timeoutMs]). Used by
+     * [com.lightphone.spotify.playback.StreamingPolicy] so look-ahead does not
+     * race the current track on cellular. Default: already idle.
+     */
+    fun awaitBankIdle(timeoutMs: Long): Boolean = true
+
+    /**
+     * Hint for resolve-time quality ceilings ([com.lightphone.spotify.playback.media3.QualityPolicy]).
+     * Media3 backends apply this; librespot ignores until Media3 cutover.
+     */
+    fun setNetworkTierHint(tier: com.lightphone.spotify.playback.NetworkTier) {}
 }

@@ -216,7 +216,7 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
             title = next.title,
             artists = next.artists,
             album = next.album,
-            durationMs = 0L,
+            durationMs = next.duration_ms,
             artUrl = next.art_url,
         )
         enqueueTrack(
@@ -282,7 +282,9 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
                             state = DownloadStates.COMPLETED,
                             bytes = info.bytes.toLong(),
                             updated_at = System.currentTimeMillis(),
-                            duration_ms = track.durationMs,
+                            duration_ms = track.durationMs.takeIf { it > 0 }
+                                ?: existing?.duration_ms
+                                ?: 0L,
                         ),
                     )
                 },

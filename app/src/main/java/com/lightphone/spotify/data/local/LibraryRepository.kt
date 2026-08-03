@@ -13,7 +13,6 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
-import java.time.Instant
 
 /**
  * Backend-neutral local library cache. The three library lists (liked tracks,
@@ -82,6 +81,17 @@ class LibraryRepository(
             val hasMore = sync?.let { it.next_offset < it.remote_total } ?: false
             Triple(items, total, hasMore)
         }
+
+    /**
+     * True when Room already holds any library rows or sync cursors.
+     * Used to distinguish first-login bootstrap from cold-start head-checks.
+     */
+    suspend fun hasCachedLibrary(): Boolean {
+        if (trackDao.count() > 0 || albumDao.count() > 0 || playlistDao.count() > 0) return true
+        return syncDao.get(LibraryResource.LIKED_TRACKS) != null ||
+            syncDao.get(LibraryResource.SAVED_ALBUMS) != null ||
+            syncDao.get(LibraryResource.USER_PLAYLISTS) != null
+    }
 
     suspend fun refreshLikedTracks(): Boolean = mapWebApi {
         likedTracksSync.refresh()
@@ -165,11 +175,13 @@ class LibraryRepository(
         database.withTransaction {
             trackDao.shiftSortIndicesForPrepend()
             val sortIndex = trackDao.minSortIndex()?.minus(1) ?: 0
+            // Leave added_at null — Instant.now() is not Spotify's added_at format and
+            // would poison the head-check into a full reload on the next relaunch.
             trackDao.insertAll(
                 listOf(
                     metadata.toLikedTrackEntity(
                         sortIndex = sortIndex,
-                        addedAt = Instant.now().toString(),
+                        addedAt = null,
                     ),
                 ),
             )
@@ -178,8 +190,9 @@ class LibraryRepository(
                 syncDao.upsert(
                     sync.copy(
                         remote_total = sync.remote_total + 1,
-                        head_added_at = Instant.now().toString(),
+                        head_added_at = null,
                         head_id = metadata.uri,
+                        next_offset = sync.next_offset + 1,
                         last_synced_at = System.currentTimeMillis(),
                     ),
                 )
@@ -189,12 +202,17 @@ class LibraryRepository(
 
     suspend fun removeLikedTrack(uri: String) {
         database.withTransaction {
-            trackDao.deleteByUri(uri)
             val sync = syncDao.get(LibraryResource.LIKED_TRACKS)
+            trackDao.deleteByUri(uri)
             if (sync != null && sync.remote_total > 0) {
+                val removedHead = sync.head_id == uri
+                val newHead = if (removedHead) trackDao.headRow() else null
                 syncDao.upsert(
                     sync.copy(
                         remote_total = sync.remote_total - 1,
+                        next_offset = (sync.next_offset - 1).coerceAtLeast(0),
+                        head_id = if (removedHead) newHead?.uri else sync.head_id,
+                        head_added_at = if (removedHead) newHead?.added_at else sync.head_added_at,
                         last_synced_at = System.currentTimeMillis(),
                     ),
                 )
@@ -212,8 +230,11 @@ class LibraryRepository(
                 syncDao.upsert(
                     sync.copy(
                         remote_total = sync.remote_total + 1,
-                        head_added_at = album.addedAt ?: Instant.now().toString(),
+                        // Prefer API addedAt when present; otherwise null so head-check
+                        // matches on id only until the next network refresh.
+                        head_added_at = album.addedAt,
                         head_id = album.album!!.id,
+                        next_offset = sync.next_offset + 1,
                         last_synced_at = System.currentTimeMillis(),
                     ),
                 )
@@ -223,12 +244,17 @@ class LibraryRepository(
 
     suspend fun removeSavedAlbum(albumId: String) {
         database.withTransaction {
-            albumDao.deleteByAlbumId(albumId)
             val sync = syncDao.get(LibraryResource.SAVED_ALBUMS)
+            albumDao.deleteByAlbumId(albumId)
             if (sync != null && sync.remote_total > 0) {
+                val removedHead = sync.head_id == albumId
+                val newHead = if (removedHead) albumDao.headRow() else null
                 syncDao.upsert(
                     sync.copy(
                         remote_total = sync.remote_total - 1,
+                        next_offset = (sync.next_offset - 1).coerceAtLeast(0),
+                        head_id = if (removedHead) newHead?.album_id else sync.head_id,
+                        head_added_at = if (removedHead) newHead?.added_at else sync.head_added_at,
                         last_synced_at = System.currentTimeMillis(),
                     ),
                 )
@@ -248,6 +274,7 @@ class LibraryRepository(
                         remote_total = sync.remote_total + 1,
                         head_added_at = playlist.snapshotId,
                         head_id = playlist.id,
+                        next_offset = sync.next_offset + 1,
                         last_synced_at = System.currentTimeMillis(),
                     ),
                 )
@@ -262,12 +289,17 @@ class LibraryRepository(
 
     suspend fun removePlaylist(playlistId: String) {
         database.withTransaction {
-            playlistDao.deleteByPlaylistId(playlistId)
             val sync = syncDao.get(LibraryResource.USER_PLAYLISTS)
+            playlistDao.deleteByPlaylistId(playlistId)
             if (sync != null && sync.remote_total > 0) {
+                val removedHead = sync.head_id == playlistId
+                val newHead = if (removedHead) playlistDao.headRow() else null
                 syncDao.upsert(
                     sync.copy(
                         remote_total = sync.remote_total - 1,
+                        next_offset = (sync.next_offset - 1).coerceAtLeast(0),
+                        head_id = if (removedHead) newHead?.playlist_id else sync.head_id,
+                        head_added_at = if (removedHead) newHead?.snapshot_id else sync.head_added_at,
                         last_synced_at = System.currentTimeMillis(),
                     ),
                 )

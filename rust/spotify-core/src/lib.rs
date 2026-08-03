@@ -105,6 +105,8 @@ pub trait PlayerEventListener: Send + Sync {
     fn on_playing(&self, position_ms: i64);
     fn on_paused(&self, position_ms: i64);
     fn on_position_changed(&self, position_ms: i64);
+    /// Known media duration from the player (> 0). Optional for older clients.
+    fn on_duration_ms(&self, duration_ms: i64);
     fn on_end_of_track(&self);
     fn on_unavailable(&self, uri: String);
     fn on_connection_lost(&self);
@@ -1721,6 +1723,8 @@ impl EngineShared {
     fn toggle_repeat(&self) -> RepeatMode {
         let mut out = RepeatMode::Off;
         self.with_active_queue_mut(|q| out = q.toggle_repeat());
+        self.notify_queue_changed();
+        self.refresh_next_preload();
         out
     }
 
@@ -2419,7 +2423,9 @@ async fn forward_events(
                 playing.store(true, Ordering::SeqCst);
                 notify(&listener, |l| l.on_buffering(false));
                 notify(&listener, |l| l.on_playing(position_ms as i64));
-                notify(&listener, |l| l.on_track_changed(uri_to_string(&track_id)));
+                // Do not re-emit on_track_changed here — Loading / TrackChanged
+                // already notified the URI. Re-emitting zeros Kotlin position on resume.
+                let _ = track_id;
             }
             PlayerEvent::Paused { position_ms, .. } => {
                 sync_queue_position(&queue, position_ms, &last_known_position_ms);
@@ -2431,6 +2437,18 @@ async fn forward_events(
             | PlayerEvent::Seeked { position_ms, .. } => {
                 sync_queue_position(&queue, position_ms, &last_known_position_ms);
                 notify(&listener, |l| l.on_position_changed(position_ms as i64));
+            }
+            PlayerEvent::TrackChanged { audio_item } => {
+                notify(
+                    &listener,
+                    |l| l.on_track_changed(audio_item.uri.clone()),
+                );
+                if audio_item.duration_ms > 0 {
+                    notify(
+                        &listener,
+                        |l| l.on_duration_ms(audio_item.duration_ms as i64),
+                    );
+                }
             }
             PlayerEvent::Unavailable { track_id, .. } => {
                 let is_current = queue

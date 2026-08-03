@@ -87,8 +87,9 @@ fun QueueScreen(
                                 Column {
                                     ReorderableQueueRow(
                                         item = item,
-                                        index = index,
-                                        total = queue.nextInQueue.size,
+                                        canMoveUp = index > 0,
+                                        // Last item can demote into context.
+                                        canMoveDown = true,
                                         onMoveUp = { vm.moveQueueItemUp(index) },
                                         onMoveDown = { vm.moveQueueItemDown(index) },
                                     )
@@ -108,8 +109,9 @@ fun QueueScreen(
                                 Column {
                                     ReorderableQueueRow(
                                         item = item,
-                                        index = index,
-                                        total = queue.nextFromContext.size,
+                                        // First item can promote into the manual queue.
+                                        canMoveUp = true,
+                                        canMoveDown = index < queue.nextFromContext.size - 1,
                                         onMoveUp = { vm.moveContextItemUp(index) },
                                         onMoveDown = { vm.moveContextItemDown(index) },
                                     )
@@ -174,8 +176,8 @@ private fun QueueTrackRow(item: QueueUiItem) {
 @Composable
 private fun ReorderableQueueRow(
     item: QueueUiItem,
-    index: Int,
-    total: Int,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
 ) {
@@ -210,19 +212,19 @@ private fun ReorderableQueueRow(
             Icon(
                 Icons.Default.KeyboardArrowUp,
                 contentDescription = "Move up",
-                tint = if (index > 0) colors.content else PhonoSemanticColors.Placeholder,
+                tint = if (canMoveUp) colors.content else PhonoSemanticColors.Placeholder,
                 modifier = Modifier
                     .size(legacyNToGridDp(44))
-                    .lightClickable(enabled = index > 0, onClick = onMoveUp),
+                    .lightClickable(enabled = canMoveUp, onClick = onMoveUp),
             )
             Spacer(Modifier.width(legacyNToGridDp(24)))
             Icon(
                 Icons.Default.KeyboardArrowDown,
                 contentDescription = "Move down",
-                tint = if (index < total - 1) colors.content else PhonoSemanticColors.Placeholder,
+                tint = if (canMoveDown) colors.content else PhonoSemanticColors.Placeholder,
                 modifier = Modifier
                     .size(legacyNToGridDp(44))
-                    .lightClickable(enabled = index < total - 1, onClick = onMoveDown),
+                    .lightClickable(enabled = canMoveDown, onClick = onMoveDown),
             )
         }
     }

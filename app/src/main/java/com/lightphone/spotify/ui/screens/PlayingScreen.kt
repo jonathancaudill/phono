@@ -208,13 +208,18 @@ private fun ProgressBar(playback: PlaybackUiState, onSeek: (Long) -> Unit) {
     val durationKnown = duration > 0L
 
     var scrubPositionMs by remember(playback.currentUri) { mutableLongStateOf(-1L) }
-    // Hold scrub thumb until backend position catches the seek target (or URI changes).
+    // Hold scrub thumb until backend position catches the seek target (or timeout).
     LaunchedEffect(playback.currentUri, playback.positionMs, scrubPositionMs) {
         val scrub = scrubPositionMs
         if (scrub < 0L) return@LaunchedEffect
         if (kotlin.math.abs(playback.positionMs - scrub) <= SEEK_SETTLE_MS) {
             scrubPositionMs = -1L
         }
+    }
+    LaunchedEffect(playback.currentUri, scrubPositionMs) {
+        if (scrubPositionMs < 0L) return@LaunchedEffect
+        kotlinx.coroutines.delay(SEEK_SCRUB_TIMEOUT_MS)
+        if (scrubPositionMs >= 0L) scrubPositionMs = -1L
     }
     val displayPositionMs = if (scrubPositionMs >= 0L) scrubPositionMs else playback.positionMs
     val displayProgress = if (durationKnown) {
@@ -270,6 +275,7 @@ private fun ProgressBar(playback: PlaybackUiState, onSeek: (Long) -> Unit) {
 }
 
 private const val SEEK_SETTLE_MS = 750L
+private const val SEEK_SCRUB_TIMEOUT_MS = 1_500L
 
 @Composable
 private fun TransportControls(playback: PlaybackUiState, vm: AppViewModel) {
@@ -339,7 +345,12 @@ private fun SecondaryControls(
                 else -> Icons.Default.Repeat
             },
             active = playback.repeatMode != RepeatMode.OFF,
-            contentDescription = "Repeat",
+            showRepeatOneBadge = playback.repeatMode == RepeatMode.TRACK,
+            contentDescription = when (playback.repeatMode) {
+                RepeatMode.TRACK -> "Repeat one"
+                RepeatMode.CONTEXT -> "Repeat all"
+                else -> "Repeat"
+            },
             onClick = onToggleRepeat,
         )
     }
@@ -385,17 +396,29 @@ private fun PlaybackModeIcon(
     active: Boolean,
     contentDescription: String,
     onClick: () -> Unit,
+    showRepeatOneBadge: Boolean = false,
 ) {
     val colors = LightThemeTokens.colors
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        PhonoHeaderIcon(
-            icon = icon,
-            onClick = onClick,
-            modifier = Modifier.size(legacyNToGridDp(30)),
-            contentDescription = contentDescription,
-        )
+        Box(contentAlignment = Alignment.Center) {
+            PhonoHeaderIcon(
+                icon = icon,
+                onClick = onClick,
+                modifier = Modifier.size(legacyNToGridDp(30)),
+                contentDescription = contentDescription,
+            )
+            if (showRepeatOneBadge) {
+                LightText(
+                    text = "1",
+                    variant = LightTextVariant.Micro,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = legacyNToGridDp(2), bottom = legacyNToGridDp(2)),
+                )
+            }
+        }
         Spacer(Modifier.height(legacyNToGridDp(4)))
         if (active) {
             Box(

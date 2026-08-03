@@ -30,9 +30,6 @@ import com.lightphone.spotify.ui.components.PhonoSwipeToActionRow
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.PhonoScreenShell
 import com.thelightphone.sdk.ui.LightIcons
-import com.thelightphone.sdk.ui.LightText
-import com.thelightphone.sdk.ui.LightTextVariant
-import com.thelightphone.sdk.ui.LightThemeTokens
 
 @Composable
 fun DownloadsScreen(
@@ -43,7 +40,6 @@ fun DownloadsScreen(
     val collections by vm.downloadCollections.collectAsState()
     val listState = rememberLazyListState()
     var editMode by remember { mutableStateOf(false) }
-    val colors = LightThemeTokens.colors
 
     PhonoScreenShell(
         title = "Downloads",
@@ -84,16 +80,6 @@ fun DownloadsScreen(
                             Spacer(Modifier.height(legacyNToGridDp(8)))
                         }
                     }
-                    if (editMode) {
-                        item {
-                            LightText(
-                                text = "Tap Cancel to remove a download.",
-                                variant = LightTextVariant.Micro,
-                                color = colors.content.copy(alpha = 0.55f),
-                                modifier = Modifier.padding(top = legacyNToGridDp(12)),
-                            )
-                        }
-                    }
                 }
             }
         }
@@ -112,7 +98,6 @@ fun DownloadCollectionDetailScreen(
     val tracks by tracksFlow.collectAsState()
     val listState = rememberLazyListState()
     var editMode by remember { mutableStateOf(false) }
-    val colors = LightThemeTokens.colors
 
     PhonoScreenShell(
         title = title,
@@ -167,18 +152,6 @@ fun DownloadCollectionDetailScreen(
                             }
                             Spacer(Modifier.height(legacyNToGridDp(8)))
                         }
-                    }
-                    item {
-                        LightText(
-                            text = if (editMode) {
-                                "Tap Cancel to remove a track."
-                            } else {
-                                "Tap a finished track to play. Swipe right to queue."
-                            },
-                            variant = LightTextVariant.Micro,
-                            color = colors.content.copy(alpha = 0.55f),
-                            modifier = Modifier.padding(top = legacyNToGridDp(12)),
-                        )
                     }
                 }
             }

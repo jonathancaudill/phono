@@ -148,7 +148,11 @@ object PhonoAudioTrackSink {
     fun flush() {
         lock.withLock {
             writePending = ByteArray(0)
-            positionTracker.resetWrittenFrames()
+            // Rebase written frames to the current playhead. Zeroing alone while
+            // PLAYING leaves pending = 0 - head → uint32 wrap → huge delay →
+            // audible position clamped to 0 after every seek.
+            track?.let { positionTracker.rebaseWrittenToPlayhead(it) }
+                ?: positionTracker.resetWrittenFrames()
             runCatching { track?.flush() }
         }
     }
@@ -250,9 +254,11 @@ object PhonoAudioTrackSink {
     @JvmStatic
     fun getRingOccupancyMs(): Int = 0
 
-    /** Audible position adjustment for MediaSession (DelayMs). */
+    /** Audible position adjustment for MediaSession (DelayMs). Capped to avoid seek desync. */
     @JvmStatic
-    fun getOutputDelayMs(): Int = getPendingOutputMs()
+    fun getOutputDelayMs(): Int = getPendingOutputMs().coerceAtMost(MAX_OUTPUT_DELAY_MS)
+
+    private const val MAX_OUTPUT_DELAY_MS = 2_000
 
     private fun createAndPlayLocked(): Boolean {
         ensureInitialized()
@@ -479,6 +485,13 @@ private class PhonoAudioPositionTracker {
 
     fun resetWrittenFrames() {
         totalFramesWritten = 0L
+    }
+
+    /** After a flush while playing, treat the current head as the written baseline. */
+    fun rebaseWrittenToPlayhead(track: AudioTrack) {
+        totalFramesWritten = track.playbackHeadPosition.toLong() and 0xFFFF_FFFFL
+        lastPlayedFrames = totalFramesWritten
+        stallStartedAtMs = 0L
     }
 
     fun onTrackCreated(track: AudioTrack) {

@@ -16,7 +16,6 @@ import com.lightphone.spotify.data.webapi.SpotifyWebApi
 import com.lightphone.spotify.data.webapi.WebApiAuthException
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ffi.TrackInfo
-import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -443,7 +442,7 @@ class SpotifyRepository(
         val detail = webApi.album(albumId)
         libraryRepository.prependSavedAlbum(
             SpotifySavedAlbum(
-                addedAt = Instant.now().toString(),
+                addedAt = null,
                 album = SpotifyAlbumSimple(
                     id = detail.id,
                     name = detail.name,

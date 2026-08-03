@@ -1,7 +1,7 @@
 package com.lightphone.spotify.playback.backend
 
 /**
- * Backend-neutral playback event contract. Mirrors the 12 callbacks of the
+ * Backend-neutral playback event contract. Mirrors the callbacks of the
  * UniFFI `PlayerEventListener` so that [PlaybackController] can consume events
  * from either the librespot (Spotify) engine or the Media3-based TIDAL engine
  * without depending on the generated FFI type directly.

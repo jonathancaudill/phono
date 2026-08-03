@@ -22,6 +22,7 @@ import com.lightphone.spotify.ui.phono.consumeScrimTouches
 import com.thelightphone.sdk.ui.LightText
 import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
+import com.thelightphone.sdk.ui.gridUnitsAsDp
 import com.thelightphone.sdk.ui.lightClickable
 import kotlinx.coroutines.delay
 
@@ -57,8 +58,10 @@ fun PhonoContextMenuOverlay(
             items.forEach { item ->
                 LightText(
                     text = item.label,
-                    variant = LightTextVariant.Button,
-                    modifier = Modifier.lightClickable { onItemClick(item) },
+                    variant = LightTextVariant.Copy,
+                    modifier = Modifier
+                        .lightClickable { onItemClick(item) }
+                        .padding(vertical = 0.75f.gridUnitsAsDp()),
                 )
             }
         }
@@ -99,7 +102,7 @@ fun PhonoCopiedOverlay(
     ) {
         LightText(
             text = "copied",
-            variant = LightTextVariant.Button,
+            variant = LightTextVariant.Copy,
             align = TextAlign.Center,
         )
     }

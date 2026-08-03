@@ -650,6 +650,23 @@ class PlaybackController private constructor(
         runCatching { requireBackend().prefetchUpcoming(ahead.toUInt()) }
     }
 
+    /**
+     * Wait for opportunistic banking to finish before look-ahead.
+     * Media3 backends block on [StreamBanker]; Spotify polls fully-buffered.
+     */
+    fun awaitBankIdle(timeoutMs: Long): Boolean {
+        if (!engineReady) return true
+        return runCatching { requireBackend().awaitBankIdle(timeoutMs) }.getOrDefault(true)
+    }
+
+    /** Network tier for resolve-time quality ceilings (Media3 QualityPolicy). */
+    fun currentNetworkTier(): NetworkTier = streamingPolicy.currentTier()
+
+    fun publishNetworkTierHint() {
+        if (!engineReady) return
+        runCatching { requireBackend().setNetworkTierHint(streamingPolicy.currentTier()) }
+    }
+
     private fun handleAudioRouteChange() {
         if (!engineReady) return
         if (BuildConfig.USE_AUDIOTRACK_SINK) {
@@ -1249,6 +1266,12 @@ class PlaybackController private constructor(
     fun savedAlbumsUiFlow(): Flow<Triple<List<SavedAlbumEntity>, Int, Boolean>> =
         libraryRepository.savedAlbumsUiFlow()
 
+    /** Room already has library rows/cursors — skip first-login bootstrap splash. */
+    suspend fun hasCachedLibrary(): Boolean =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            libraryRepository.hasCachedLibrary()
+        }
+
     suspend fun refreshLikedTracks(): Boolean =
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             libraryRepository.refreshLikedTracks()
@@ -1665,22 +1688,26 @@ class PlaybackController private constructor(
     override fun onTrackChanged(uri: String) {
         markPlaybackPulse()
         val normalized = normalizeUri(uri)
+        val sameUri = normalizeUri(_state.value.currentUri.orEmpty()) == normalized
         val cached = trackMetadata[normalized]
-        lastPositionMs = 0L
+        if (!sameUri) {
+            lastPositionMs = 0L
+        }
         _state.update {
             it.copy(
                 currentUri = normalized,
                 isLoading = false,
                 error = null,
-                positionMs = 0L,
+                // Same-URI Playing→TrackChanged must not snap the bar to 0 (resume).
+                positionMs = if (sameUri) it.positionMs else 0L,
                 title = cached?.title ?: it.title,
                 artist = cached?.artists ?: it.artist,
                 artUrl = cached?.artUrl ?: it.artUrl,
                 albumId = cached?.albumId ?: it.albumId,
-                durationMs = if (cached != null && cached.durationMs > 0) {
-                    cached.durationMs
-                } else {
-                    0L
+                durationMs = when {
+                    cached != null && cached.durationMs > 0 -> cached.durationMs
+                    sameUri && it.durationMs > 0 -> it.durationMs
+                    else -> 0L
                 },
             )
         }
@@ -1741,7 +1768,9 @@ class PlaybackController private constructor(
         if (backendChoice != BackendChoice.SPOTIFY || !BuildConfig.USE_AUDIOTRACK_SINK) {
             return streamPositionMs
         }
-        val delayMs = runCatching { PhonoAudioTrackSink.getOutputDelayMs() }.getOrDefault(0)
+        val delayMs = runCatching { PhonoAudioTrackSink.getOutputDelayMs() }
+            .getOrDefault(0)
+            .coerceIn(0, 2_000)
         return (streamPositionMs - delayMs).coerceAtLeast(0L)
     }
 

@@ -701,16 +701,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         onLoggedInCalled = true
-        val cacheEmpty =
-            _likedTracks.value.items.isEmpty() &&
-                _savedAlbums.value.items.isEmpty() &&
-                _playlists.value.items.isEmpty()
-        if (cacheEmpty) {
-            _libraryBootstrapping.value = true
-        }
-        ensureLikedTracksLoaded()
-        ensureSavedAlbumsLoaded()
         viewModelScope.launch {
+            // Ask Room, not empty UI StateFlows — cold start always has empty UI
+            // even when the library cache is complete.
+            val needsBootstrap = !controller.hasCachedLibrary()
+            if (needsBootstrap) {
+                _libraryBootstrapping.value = true
+            }
+            ensureLikedTracksLoaded()
+            ensureSavedAlbumsLoaded()
             try {
                 withTimeoutOrNull(WARM_TIMEOUT_MS) {
                     controller.warmSpclientSession()
@@ -720,7 +719,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 )
                 ensurePlaylistsLoaded()
                 if (!_libraryBootstrapping.value) return@launch
-                // First launch: hold the splash until first pages land, then drain
+                // First launch only: hold the splash until first pages land, then drain
                 // the rest of the library (even on cellular) so tabs open populated.
                 withTimeoutOrNull(LIBRARY_BOOTSTRAP_TIMEOUT_MS) {
                     combine(likedTracks, savedAlbums, playlists) { liked, albums, lists ->
@@ -749,14 +748,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (likedTracksStarted) return
         likedTracksStarted = true
         val gen = sessionGeneration
-        _likedTracks.value = _likedTracks.value.copy(initialLoading = true)
         viewModelScope.launch {
+            // Seed from Room before the head-check so a cold start with a warm
+            // cache does not flash initialLoading / look like a first sync.
+            val seed = runCatching { controller.likedTracksUiFlow().first() }.getOrNull()
+            if (gen != sessionGeneration) return@launch
+            if (seed != null && seed.first.isNotEmpty()) {
+                _likedTracks.update {
+                    it.copy(
+                        items = seed.first,
+                        remoteTotal = seed.second,
+                        hasMore = seed.third,
+                        initialLoading = false,
+                    )
+                }
+            } else {
+                _likedTracks.update { it.copy(initialLoading = true) }
+            }
+            refreshLikedTracks()
             controller.likedTracksUiFlow().collect { (items, remoteTotal, hasMore) ->
                 if (gen != sessionGeneration) return@collect
                 _likedTracks.update { it.copy(items = items, remoteTotal = remoteTotal, hasMore = hasMore) }
             }
         }
-        refreshLikedTracks()
     }
 
     fun refreshLikedTracks() {
@@ -902,14 +916,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (savedAlbumsStarted) return
         savedAlbumsStarted = true
         val gen = sessionGeneration
-        _savedAlbums.value = _savedAlbums.value.copy(initialLoading = true)
         viewModelScope.launch {
+            val seed = runCatching { controller.savedAlbumsUiFlow().first() }.getOrNull()
+            if (gen != sessionGeneration) return@launch
+            if (seed != null && seed.first.isNotEmpty()) {
+                _savedAlbums.update {
+                    it.copy(
+                        items = seed.first,
+                        remoteTotal = seed.second,
+                        hasMore = seed.third,
+                        initialLoading = false,
+                    )
+                }
+            } else {
+                _savedAlbums.update { it.copy(initialLoading = true) }
+            }
+            refreshSavedAlbums()
             controller.savedAlbumsUiFlow().collect { (items, remoteTotal, hasMore) ->
                 if (gen != sessionGeneration) return@collect
                 _savedAlbums.update { it.copy(items = items, remoteTotal = remoteTotal, hasMore = hasMore) }
             }
         }
-        refreshSavedAlbums()
     }
 
     fun refreshSavedAlbums() {
@@ -1058,8 +1085,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (playlistsStarted) return
         playlistsStarted = true
         val gen = sessionGeneration
-        _playlists.value = _playlists.value.copy(initialLoading = true)
         viewModelScope.launch {
+            val seed = runCatching { controller.playlistsUiFlow().first() }.getOrNull()
+            if (gen != sessionGeneration) return@launch
+            if (seed != null && seed.first.isNotEmpty()) {
+                _playlists.update {
+                    it.copy(
+                        items = seed.first,
+                        remoteTotal = seed.second,
+                        hasMore = seed.third,
+                        initialLoading = false,
+                    )
+                }
+            } else {
+                _playlists.update { it.copy(initialLoading = true) }
+            }
+            refreshPlaylists()
             controller.playlistsUiFlow().collect { (items, remoteTotal, hasMore) ->
                 if (gen != sessionGeneration) return@collect
                 _playlists.update {
@@ -1071,7 +1112,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { controller.currentUserId() }
                 .onSuccess { userId -> _playlists.update { it.copy(currentUserId = userId) } }
         }
-        refreshPlaylists()
     }
 
     fun setPlaylistsFilter(filter: PlaylistFilter) {

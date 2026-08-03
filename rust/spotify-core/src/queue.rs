@@ -381,37 +381,52 @@ impl QueueState {
 
     pub fn clear_manual_queue(&mut self) {
         self.manual_queue.clear();
+        let current_was_manual =
+            matches!(self.play_order.get(self.play_index), Some(QueueEntry::Manual(_)));
         self.play_order
             .retain(|entry| !matches!(entry, QueueEntry::Manual(_)));
-        if self.play_index >= self.play_order.len() {
+        if current_was_manual {
+            // Current track was manual and was removed — clamp to nearest remaining.
+            self.play_index = self.play_index.min(self.play_order.len().saturating_sub(1));
+        } else if self.play_index >= self.play_order.len() {
             self.play_index = self.play_order.len().saturating_sub(1);
         }
     }
 
     /// Reorder the manual queue. `index` is into [QueueSnapshot::next_in_queue].
     pub fn move_manual_up(&mut self, index: usize) -> Result<(), ()> {
-        if index == 0 || index >= self.manual_queue.len() {
+        let slots = self.upcoming_manual_play_indices();
+        if index == 0 || index >= slots.len() {
             return Err(());
         }
-        self.manual_queue.swap(index, index - 1);
-        self.sync_manual_play_order();
+        self.play_order.swap(slots[index], slots[index - 1]);
+        self.resync_manual_queue_from_play_order();
         Ok(())
     }
 
     pub fn move_manual_down(&mut self, index: usize) -> Result<(), ()> {
-        if index + 1 >= self.manual_queue.len() {
+        let slots = self.upcoming_manual_play_indices();
+        if index >= slots.len() {
             return Err(());
         }
-        self.manual_queue.swap(index, index + 1);
-        self.sync_manual_play_order();
+        // Last upcoming manual → demote into front of context ("down out of queue").
+        if index + 1 >= slots.len() {
+            return self.demote_manual_at_play_pos(slots[index]);
+        }
+        self.play_order.swap(slots[index], slots[index + 1]);
+        self.resync_manual_queue_from_play_order();
         Ok(())
     }
 
     /// Reorder upcoming context tracks. `index` is into [QueueSnapshot::next_from_context].
     pub fn move_context_up(&mut self, index: usize) -> Result<(), ()> {
         let slots = self.upcoming_context_play_indices();
-        if index == 0 || index >= slots.len() {
+        if index >= slots.len() {
             return Err(());
+        }
+        // First upcoming context → promote into end of manual queue ("up into queue").
+        if index == 0 {
+            return self.promote_context_at_play_pos(slots[0]);
         }
         self.play_order.swap(slots[index], slots[index - 1]);
         Ok(())
@@ -424,6 +439,21 @@ impl QueueState {
         }
         self.play_order.swap(slots[index], slots[index + 1]);
         Ok(())
+    }
+
+    fn upcoming_manual_play_indices(&self) -> Vec<usize> {
+        self.play_order
+            .iter()
+            .enumerate()
+            .skip(self.play_index + 1)
+            .filter_map(|(pos, entry)| {
+                if matches!(entry, QueueEntry::Manual(_)) {
+                    Some(pos)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn upcoming_context_play_indices(&self) -> Vec<usize> {
@@ -441,6 +471,50 @@ impl QueueState {
             .collect()
     }
 
+    fn promote_context_at_play_pos(&mut self, play_pos: usize) -> Result<(), ()> {
+        let QueueEntry::Context(ctx_idx) = self.play_order.get(play_pos).cloned().ok_or(())? else {
+            return Err(());
+        };
+        let uri = self.context_uris.get(ctx_idx).cloned().ok_or(())?;
+        self.play_order.remove(play_pos);
+        let mut insert_at = self.play_index + 1;
+        while insert_at < self.play_order.len()
+            && matches!(self.play_order[insert_at], QueueEntry::Manual(_))
+        {
+            insert_at += 1;
+        }
+        self.play_order
+            .insert(insert_at, QueueEntry::Manual(uri));
+        self.resync_manual_queue_from_play_order();
+        Ok(())
+    }
+
+    fn demote_manual_at_play_pos(&mut self, play_pos: usize) -> Result<(), ()> {
+        let QueueEntry::Manual(uri) = self.play_order.get(play_pos).cloned().ok_or(())? else {
+            return Err(());
+        };
+        self.play_order.remove(play_pos);
+        let uri_str = uri.to_uri().unwrap_or_default();
+        let ctx_idx = self
+            .context_uris
+            .iter()
+            .position(|u| u.to_uri().ok().as_deref() == Some(uri_str.as_str()))
+            .unwrap_or_else(|| {
+                self.context_uris.push(uri);
+                self.context_uris.len() - 1
+            });
+        let mut insert_at = self.play_index + 1;
+        while insert_at < self.play_order.len()
+            && matches!(self.play_order[insert_at], QueueEntry::Manual(_))
+        {
+            insert_at += 1;
+        }
+        self.play_order
+            .insert(insert_at, QueueEntry::Context(ctx_idx));
+        self.resync_manual_queue_from_play_order();
+        Ok(())
+    }
+
     fn advance_to_next(&mut self) -> Option<SpotifyUri> {
         if self.play_index + 1 < self.play_order.len() {
             self.play_index += 1;
@@ -448,6 +522,7 @@ impl QueueState {
             if let Some(QueueEntry::Context(idx)) = self.play_order.get(self.play_index) {
                 self.context_index = *idx;
             }
+            self.resync_manual_queue_from_play_order();
             return self.current_uri();
         }
         if self.repeat_context {
@@ -456,6 +531,7 @@ impl QueueState {
             if let Some(QueueEntry::Context(idx)) = self.play_order.first() {
                 self.context_index = *idx;
             }
+            self.resync_manual_queue_from_play_order();
             return self.current_uri();
         }
         None
@@ -483,6 +559,16 @@ impl QueueState {
 
     fn rebuild_play_order_preserve_position(&mut self) {
         let current = self.current_uri();
+        let mut manuals: Vec<SpotifyUri> = Vec::new();
+        if let Some(QueueEntry::Manual(uri)) = self.play_order.get(self.play_index) {
+            manuals.push(uri.clone());
+        }
+        for entry in self.play_order.iter().skip(self.play_index + 1) {
+            if let QueueEntry::Manual(uri) = entry {
+                manuals.push(uri.clone());
+            }
+        }
+        self.manual_queue = manuals;
         self.rebuild_play_order();
         if let Some(uri) = current {
             if let Some(idx) = self
@@ -496,8 +582,26 @@ impl QueueState {
     }
 
     fn append_remaining_context(&mut self) {
-        let mut remaining: Vec<usize> =
-            (self.context_index + 1..self.context_uris.len()).collect();
+        let already: std::collections::HashSet<usize> = self
+            .play_order
+            .iter()
+            .filter_map(|e| match e {
+                QueueEntry::Context(idx) => Some(*idx),
+                _ => None,
+            })
+            .collect();
+
+        let mut remaining: Vec<usize> = if self.shuffle {
+            // Full context minus anything already in play_order (current + any leftovers).
+            (0..self.context_uris.len())
+                .filter(|i| !already.contains(i))
+                .collect()
+        } else {
+            // Linear "play from here": only tracks after the context bookmark.
+            (self.context_index + 1..self.context_uris.len())
+                .filter(|i| !already.contains(i))
+                .collect()
+        };
         if self.shuffle && remaining.len() > 1 {
             remaining.shuffle(&mut rand::thread_rng());
         }
@@ -506,24 +610,17 @@ impl QueueState {
         }
     }
 
-    fn sync_manual_play_order(&mut self) {
-        let current = self.current_uri();
-        self.play_order
-            .retain(|entry| !matches!(entry, QueueEntry::Manual(_)));
-        let mut insert_at = self.play_index + 1;
-        for uri in &self.manual_queue {
-            self.play_order.insert(insert_at, QueueEntry::Manual(uri.clone()));
-            insert_at += 1;
-        }
-        if let Some(uri) = current {
-            if let Some(idx) = self
-                .play_order
-                .iter()
-                .position(|entry| self.entry_uri(entry).as_ref() == Some(&uri))
-            {
-                self.play_index = idx;
-            }
-        }
+    /// Rebuild `manual_queue` from Manual entries at/after play_index (current + upcoming).
+    fn resync_manual_queue_from_play_order(&mut self) {
+        self.manual_queue = self
+            .play_order
+            .iter()
+            .skip(self.play_index)
+            .filter_map(|e| match e {
+                QueueEntry::Manual(uri) => Some(uri.clone()),
+                _ => None,
+            })
+            .collect();
     }
 }
 
@@ -782,5 +879,94 @@ mod tests {
         // A user-initiated skip breaks out of repeat-track to the next song.
         let after_skip = q.skip_next(true).unwrap();
         assert_ne!(uri_string(&after_skip), held);
+    }
+
+    #[test]
+    fn shuffle_from_mid_album_pools_all_other_context() {
+        let uris = album(8);
+        let mut q = QueueState::default();
+        q.set_queue(uris.clone(), 5, Some("Album".into()));
+        assert!(q.toggle_shuffle());
+        let snap = q.queue_snapshot();
+        assert_eq!(snap.now_playing_uri.as_deref(), Some(uri_string(&uris[5]).as_str()));
+        assert!(snap.next_in_queue.is_empty());
+        assert_eq!(snap.next_from_context.len(), 7);
+        let upcoming: std::collections::HashSet<_> =
+            snap.next_from_context.iter().cloned().collect();
+        for (i, u) in uris.iter().enumerate() {
+            if i == 5 {
+                assert!(!upcoming.contains(&uri_string(u)));
+            } else {
+                assert!(upcoming.contains(&uri_string(u)));
+            }
+        }
+    }
+
+    #[test]
+    fn shuffle_preserves_manual_queue_order() {
+        let uris = album(5);
+        let mut q = QueueState::default();
+        q.set_queue(uris, 0, None);
+        let a = track_uri("5ChkMS8OtdzJeqyybCc9R5");
+        let b = track_uri("0VjIjW4GlUZAMYd2vXMi3b");
+        q.add_to_queue(a.clone());
+        q.add_to_queue(b.clone());
+        assert!(q.toggle_shuffle());
+        let snap = q.queue_snapshot();
+        assert_eq!(snap.next_in_queue, vec![uri_string(&a), uri_string(&b)]);
+    }
+
+    #[test]
+    fn move_manual_while_playing_queued_track() {
+        let uris = album(2);
+        let mut q = QueueState::default();
+        q.set_queue(uris, 0, None);
+        let a = track_uri("6rqhFgbbKwnb9MLmUQDhG6");
+        let b = track_uri("3n3Ppam7vgaVa1iaRUc9Lp");
+        let c = track_uri("5ChkMS8OtdzJeqyybCc9R5");
+        q.add_to_queue(a.clone());
+        q.add_to_queue(b.clone());
+        q.add_to_queue(c.clone());
+        // Advance onto first queued track.
+        q.skip_next(true);
+        assert_eq!(uri_string(&q.current_uri().unwrap()), uri_string(&a));
+        assert_eq!(q.queue_snapshot().next_in_queue.len(), 2);
+        assert!(q.move_manual_down(0).is_ok());
+        let snap = q.queue_snapshot();
+        assert_eq!(snap.next_in_queue.len(), 2);
+        assert_eq!(snap.next_in_queue[0], uri_string(&c));
+        assert_eq!(snap.next_in_queue[1], uri_string(&b));
+        assert_eq!(uri_string(&q.current_uri().unwrap()), uri_string(&a));
+    }
+
+    #[test]
+    fn promote_context_to_queue_and_demote_back() {
+        let uris = album(4);
+        let mut q = QueueState::default();
+        q.set_queue(uris.clone(), 0, Some("Album".into()));
+        let first_context = uri_string(&uris[1]);
+        assert!(q.move_context_up(0).is_ok());
+        let snap = q.queue_snapshot();
+        assert_eq!(snap.next_in_queue, vec![first_context.clone()]);
+        assert_eq!(snap.next_from_context.len(), 2);
+        // Demote the only manual back into context.
+        assert!(q.move_manual_down(0).is_ok());
+        let snap = q.queue_snapshot();
+        assert!(snap.next_in_queue.is_empty());
+        assert_eq!(snap.next_from_context[0], first_context);
+        assert_eq!(snap.next_from_context.len(), 3);
+    }
+
+    #[test]
+    fn repeat_track_next_preload_is_current() {
+        let uris = album(3);
+        let mut q = QueueState::default();
+        q.set_queue(uris.clone(), 0, None);
+        q.toggle_repeat();
+        assert_eq!(q.toggle_repeat(), RepeatMode::Track);
+        assert_eq!(
+            q.next_preload_uri().map(|u| uri_string(&u)),
+            Some(uri_string(&uris[0]))
+        );
     }
 }

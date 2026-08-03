@@ -72,6 +72,7 @@ class StreamingPolicy(
 
     fun onTrackActive() {
         if (!controller.state.value.isPlaying) return
+        controller.publishNetworkTierHint()
         maybeBufferOpportunistically()
     }
 
@@ -135,6 +136,7 @@ class StreamingPolicy(
         if (upgraded && stableTier != NetworkTier.OFFLINE) {
             controller.warmSpclientSessionAsync()
         }
+        controller.publishNetworkTierHint()
         if (raw != NetworkTier.OFFLINE && controller.state.value.isPlaying) {
             maybeBufferOpportunistically()
         }
@@ -146,7 +148,9 @@ class StreamingPolicy(
         scope.launch {
             // Bank the current track to its end FIRST so a mid-track disconnect
             // never stalls playback, THEN prefetch the predictive next target(s).
+            // awaitBankIdle makes this ordering real (not fire-and-forget).
             bankCurrentTrack()
+            controller.awaitBankIdle(BANK_AWAIT_MS)
             val ahead = prefetchDepth()
             if (ahead > 0) {
                 controller.prefetchUpcoming(ahead)
@@ -227,5 +231,11 @@ class StreamingPolicy(
 
         /** Wi‑Fi must stay visible this long before we prefer it over cellular. */
         const val WIFI_PREFER_AFTER_MS = 2 * 60 * 1000L
+
+        /**
+         * Max wait for current-track bank before look-ahead. Cap so a hung CDN
+         * does not block prefetch forever; policy still prefers bank-first.
+         */
+        const val BANK_AWAIT_MS = 25_000L
     }
 }
