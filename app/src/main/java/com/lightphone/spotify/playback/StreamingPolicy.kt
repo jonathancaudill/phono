@@ -26,7 +26,7 @@ enum class NetworkTier {
  * Uses hysteresis so tier flapping on cellular does not thrash prefetch depth.
  *
  * Wi‑Fi preference gate: while on cellular, a brief Wi‑Fi appearance must stay
- * continuously visible for [WIFI_PREFER_AFTER_MS] before we treat the path as
+ * continuously visible for [WIFI_PREFER_AFTER_MS] (30s) before we treat the path as
  * unmetered Wi‑Fi (or allow a cellular→Wi‑Fi session handoff). All other tier
  * rules are unchanged.
  */
@@ -230,7 +230,7 @@ class StreamingPolicy(
         private const val TIER_DOWN_SAMPLES = 2
 
         /** Wi‑Fi must stay visible this long before we prefer it over cellular. */
-        const val WIFI_PREFER_AFTER_MS = 2 * 60 * 1000L
+        const val WIFI_PREFER_AFTER_MS = 30_000L
 
         /**
          * Max wait for current-track bank before look-ahead. Cap so a hung CDN

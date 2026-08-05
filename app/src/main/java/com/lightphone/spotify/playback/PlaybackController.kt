@@ -358,7 +358,7 @@ class PlaybackController private constructor(
                 else -> null
             }
             // Prefer cellular over a Wi‑Fi blip: do not treat a cellular→Wi‑Fi
-            // handoff as confirmed until StreamingPolicy's 2‑minute Wi‑Fi gate.
+            // handoff as confirmed until StreamingPolicy's Wi‑Fi prefer gate.
             // Wi‑Fi→cellular (and same-transport) keep the existing sample confirm.
             val wifiHandoffBlocked = transport == NetworkCapabilities.TRANSPORT_WIFI &&
                 lastTransport == NetworkCapabilities.TRANSPORT_CELLULAR &&
@@ -376,6 +376,10 @@ class PlaybackController private constructor(
      * Called when [StreamingPolicy]'s Wi‑Fi stability gate elapses so a deferred
      * cellular→Wi‑Fi session handoff can proceed without waiting for another
      * capabilities callback.
+     *
+     * Treats the handoff as confirmed: the gate already proved continuous
+     * visibility, and a lone post-gate callback would never reach
+     * [TRANSPORT_CONFIRM_SAMPLES] on its own.
      */
     internal fun onWifiPreferGateElapsed(caps: NetworkCapabilities) {
         val transport = when {
@@ -386,6 +390,18 @@ class PlaybackController private constructor(
                 NetworkCapabilities.TRANSPORT_CELLULAR
             else -> null
         } ?: return
+        if (
+            transport == NetworkCapabilities.TRANSPORT_WIFI &&
+            lastTransport == NetworkCapabilities.TRANSPORT_CELLULAR &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+            (_state.value.isPlaying || _state.value.reconnecting)
+        ) {
+            lastTransport = transport
+            pendingTransport = null
+            transportConfirmCount = 0
+            debouncedForceReconnect()
+            return
+        }
         considerTransportHandoff(transport, caps)
     }
 
@@ -1726,6 +1742,13 @@ class PlaybackController private constructor(
         lastPositionMs = positionMs
         markPlaybackPulse()
         val audible = audiblePositionMs(positionMs)
+        // Drop a debounce scheduled while reconnecting — otherwise it force-
+        // reconnects a healthy session ~6s after monitor recovery. Do not
+        // cancel unconditional: intentional Wi‑Fi handoff also uses this job.
+        if (_state.value.reconnecting) {
+            reconnectDebounceJob?.cancel()
+            reconnectDebounceJob = null
+        }
         _state.update {
             recomputeStatusMessage(
                 it.copy(
@@ -1806,6 +1829,8 @@ class PlaybackController private constructor(
     }
 
     override fun onConnectionRestored() {
+        reconnectDebounceJob?.cancel()
+        reconnectDebounceJob = null
         syncConnectedFromEngine()
         refreshQueue()
         onSessionRestored?.invoke()

@@ -121,7 +121,7 @@ Librespot crates are pinned to **=0.8.0**. Do not bump without re-validating eve
 - `PlaybackService` + MediaSession; `PlaybackController` owns audio focus, network
   policy, stall UX, and the offline-download façade.
 - **StreamingPolicy:** network tiers (OFFLINE → GOOD_UNMETERED) bank the rest of the
-  current track, then prefetch. Wi‑Fi must stay visible **2 minutes** before it is
+  current track, then prefetch. Wi‑Fi must stay visible **30 seconds** before it is
   preferred over cellular (avoids blip handoffs).
 - Spotify metadata: Web API + `NativeMetadataGateway` (playlists/artists via spclient).
 - TIDAL metadata: REST via `TidalApiClient`.
@@ -206,7 +206,7 @@ bash scripts/build-rust.sh
 | Layer | Mechanism |
 |-------|-----------|
 | Session (Spotify) | Monitor + seamless rebuild; `force_reconnect_check()` on network change |
-| Network policy | StreamingPolicy tiers + 2‑minute Wi‑Fi preference gate |
+| Network policy | StreamingPolicy tiers + 30‑second Wi‑Fi preference gate |
 | Decode / bank | Spotify buffer/prefetch; TIDAL CacheWriter / DashDownloader |
 | Audio output | Ring + drain (Spotify); ExoPlayer (TIDAL); stall recovery |
 | APIs | Token refresh, HTTP 429 `Retry-After` where applicable |

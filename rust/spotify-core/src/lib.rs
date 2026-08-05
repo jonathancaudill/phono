@@ -2184,6 +2184,12 @@ impl EngineShared {
             }
             *last = Some(now);
         }
+        // Snapshot queue before teardown — same as the monitor path. Without
+        // this, a force reconnect after a successful monitor rebuild drops
+        // Active with an empty pending_queue and resumes into silence.
+        if let Some(resume) = self.snapshot_resume_with_position() {
+            *self.pending_queue.lock().unwrap() = Some(resume);
+        }
         // Tear down connected or offline Active so ensure_playback_ready can
         // rebuild (preferring a live AP session when network is online).
         {
