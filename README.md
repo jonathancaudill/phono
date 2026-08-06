@@ -14,13 +14,15 @@ An independent, minimal music client for LightOS. Pick **Spotify** or **TIDAL** 
 > Requires a Spotify **Premium** or active TIDAL account. This is not something we have
 > *any* interest in working around, so please do not ask!
 
+
 **New developer? Agent?** Read [docs/README.md](docs/README.md) and [AGENTS.md](AGENTS.md)
-before changing Spotify/librespot code.
-
-## How is this different from Echo?
+before changing code.
 
 
-vandam rocks. Basically, this works with TIDAL or Spotify, has a few extra features, less album art and doesn't require the Spotify app to be installed if you go the Spotify route.
+## How is this different from Echo? Why would I use this instead?
+
+
+vandam rocks. Basically, this works with TIDAL or Spotify, has a few extra features, less album art and doesn't require the Spotify app to be installed if you go the Spotify route. I also have specifically designed it for streaming "power users" like myself. Folks with large libraries, etc.
 
 # Setup
 
@@ -68,8 +70,8 @@ Spotify dev app restrictions. Just rotate the secret and redo steps 2-3!
 
 
 ## LEGAL
-- Spotify and TIDAL "offline" playback is simply an extra large streaming cache, not an actual raw file downloader. If you haven't been online in 30 days, all downloaded playlists and albums will be wiped to protect Spotify and TIDAL's TOS. 
-- A premium subscription to TIDAL or Spotify is required for ***any*** part of Phono to work.
+- Spotify and TIDAL "offline" playback is basically a big-ass streaming cache. If you haven't been online in 30 days, all downloaded playlists and albums will be wiped to protect Spotify and TIDAL's TOS. 
+- A premium subscription to TIDAL or Spotify is required for ***any*** part of Phono to work. This will never be worked around, ever.
 
 
 # boring architecture descriptions below. literally no point in reading any further unless you wanna make a pr
