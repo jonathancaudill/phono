@@ -71,7 +71,7 @@ Spotify dev app restrictions. Just rotate the secret and redo steps 2-3!
 
 ## LEGAL
 - Spotify and TIDAL "offline" playback is basically a big-ass streaming cache. If you haven't been online in 30 days, all downloaded playlists and albums will be wiped to protect Spotify and TIDAL's TOS. 
-- A premium subscription to TIDAL or Spotify is required for ***any*** part of Phono to work. This will never be worked around, ever.
+- A premium subscription to TIDAL or Spotify is required for ***any*** part of Phono to work. This will never be worked around, ever, and if you fork phono to add it I will report your repo. This is of the utmost importance to protect our own status as a small-scale, non-fully-featured client intended for paying users!
 
 
 # boring architecture descriptions below. literally no point in reading any further unless you wanna make a pr
