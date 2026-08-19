@@ -129,7 +129,7 @@ fun PlayingScreen(
                         )
                         LightText(
                             text = playback.title.orEmpty(),
-                            variant = LightTextVariant.Heading,
+                            variant = LightTextVariant.Subheading,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             align = TextAlign.Center,
