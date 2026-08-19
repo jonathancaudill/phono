@@ -110,7 +110,7 @@ fun LikedSongsScreen(
                             PhonoMediaListItem(
                                 primaryText = track.title,
                                 secondaryText = track.artists,
-                                showImage = false,
+                                imageUrl = track.art_url,
                                 placeholderIcon = Icons.Default.MusicNote,
                                 disabled = disabled,
                                 onClick = { if (!disabled) onPlayTrack(index) },

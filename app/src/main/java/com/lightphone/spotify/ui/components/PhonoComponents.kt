@@ -24,13 +24,18 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import com.lightphone.spotify.ui.light.ArtworkPreferences
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.PhonoHeaderIcon
@@ -46,12 +51,17 @@ fun Modifier.tapWithLongPress(
     onLongClick: (() -> Unit)? = null,
 ): Modifier = composed {
     if (onLongClick != null) {
+        val haptics = LocalHapticFeedback.current
         combinedClickable(
             interactionSource = remember { MutableInteractionSource() },
             indication = null,
             enabled = enabled,
             onClick = onClick,
-            onLongClick = onLongClick,
+            onLongClick = {
+                // Match Tide: a firm buzz confirms the menu long-press.
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                onLongClick()
+            },
         )
     } else {
         lightClickable(enabled = enabled, onClick = onClick)
@@ -129,6 +139,8 @@ fun PhonoMediaListItem(
     val colors = LightThemeTokens.colors
     val textColor = if (disabled) PhonoSemanticColors.DisabledIcon else colors.content
     val editing = onEditDelete != null
+    // Global "List thumbnails" preference; callers can still force-hide via showImage.
+    val showThumbnails by ArtworkPreferences.listThumbnails.collectAsState()
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -142,7 +154,7 @@ fun PhonoMediaListItem(
         if (onEditDelete != null) {
             PhonoEditDeleteLeading(onDelete = onEditDelete)
         }
-        if (showImage) {
+        if (showImage && showThumbnails) {
             PhonoFallbackImage(
                 imageUrl = imageUrl,
                 placeholderIcon = placeholderIcon,
@@ -150,7 +162,9 @@ fun PhonoMediaListItem(
                 modifier = Modifier.size(legacyNToGridDp(50)),
                 disabled = disabled,
                 crossfade = crossfadeImage,
-                decodeSize = if (crossfadeImage) null else legacyNToGridDp(50),
+                // Always downsample cover art to the ~50dp thumbnail slot so
+                // scrolling stays smooth and memory stays low, even with crossfade.
+                decodeSize = legacyNToGridDp(50),
             )
             Spacer(modifier.width(legacyNToGridDp(15)))
         }

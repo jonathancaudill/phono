@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -19,14 +20,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import com.lightphone.spotify.data.tidal.TidalAudioQuality
 import com.lightphone.spotify.ffi.NormalizationType
 import com.lightphone.spotify.ffi.StreamingQuality
 import com.lightphone.spotify.ui.AppViewModel
+import com.lightphone.spotify.ui.light.ArtworkPreferences
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
+import com.lightphone.spotify.ui.navigation.NavBarPreferences
+import com.lightphone.spotify.ui.navigation.PhonoTab
 import com.lightphone.spotify.ui.phono.PhonoScreenShell
 import com.thelightphone.sdk.ui.LightIcon
 import com.thelightphone.sdk.ui.LightIcons
@@ -70,6 +76,12 @@ fun SettingsScreen(
             Column(Modifier.fillMaxWidth()) {
                 SectionLabel("Appearance")
                 SettingsToggleRow("Dark mode", settings.darkTheme, vm::setDarkTheme)
+
+                SectionLabel("Navigation bar")
+                NavBarOptions()
+
+                SectionLabel("Artwork")
+                ArtworkOptions()
 
                 SectionLabel("Playback")
                 SettingsToggleRow("Gapless playback", settings.gaplessEnabled, vm::setGaplessEnabled)
@@ -198,6 +210,111 @@ private fun SettingsToggleRow(
             modifier = Modifier.weight(1f),
         )
     }
+}
+
+/**
+ * Inline editor for the bottom navigation bar: each tab has a show/hide toggle
+ * and up/down reorder arrows. Applies to both backends (the tabs are shared).
+ * Settings is locked visible so a user can't hide their way out of here.
+ */
+@Composable
+private fun NavBarOptions() {
+    val context = LocalContext.current
+    val prefs = remember(context) { NavBarPreferences(context) }
+    val order by NavBarPreferences.order.collectAsState()
+    order.forEachIndexed { i, pref ->
+        val tab = PhonoTab.entries.firstOrNull { it.route == pref.route }
+            ?: return@forEachIndexed
+        val locked = pref.route in NavBarPreferences.LOCKED
+        NavBarEditorRow(
+            label = tab.label,
+            enabled = pref.enabled,
+            locked = locked,
+            canMoveUp = i > 0,
+            canMoveDown = i < order.lastIndex,
+            onToggle = {
+                if (!locked) {
+                    prefs.setOrder(
+                        order.map {
+                            if (it.route == pref.route) it.copy(enabled = !it.enabled) else it
+                        },
+                    )
+                }
+            },
+            onMove = { delta ->
+                val to = i + delta
+                if (to in order.indices) {
+                    val reordered = order.toMutableList()
+                    reordered.add(to, reordered.removeAt(i))
+                    prefs.setOrder(reordered)
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun NavBarEditorRow(
+    label: String,
+    enabled: Boolean,
+    locked: Boolean,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onToggle: () -> Unit,
+    onMove: (Int) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = legacyNToGridDp(8)),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .lightClickable(onClick = onToggle),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            LightIcon(
+                // LightIcons names are inverted vs the artwork (knob-left is labeled ON).
+                icon = if (enabled) LightIcons.TOGGLE_OFF else LightIcons.TOGGLE_ON,
+                modifier = Modifier
+                    .padding(end = legacyNToGridDp(10))
+                    .alpha(if (locked) 0.4f else 1f),
+                contentDescription = null,
+            )
+            LightText(text = label, variant = LightTextVariant.Copy)
+        }
+        Box(
+            modifier = Modifier
+                .alpha(if (canMoveUp) 1f else 0.3f)
+                .lightClickable(enabled = canMoveUp) { onMove(-1) },
+        ) {
+            LightIcon(icon = LightIcons.UP, size = 1.6f, contentDescription = "Move up")
+        }
+        Spacer(Modifier.width(legacyNToGridDp(16)))
+        Box(
+            modifier = Modifier
+                .alpha(if (canMoveDown) 1f else 0.3f)
+                .lightClickable(enabled = canMoveDown) { onMove(1) },
+        ) {
+            LightIcon(icon = LightIcons.DOWN, size = 1.6f, contentDescription = "Move down")
+        }
+    }
+}
+
+/**
+ * Show/hide toggles for cover art: list-row thumbnails and the now-playing
+ * screen. UI-only and backend-agnostic; persisted via [ArtworkPreferences].
+ */
+@Composable
+private fun ArtworkOptions() {
+    val context = LocalContext.current
+    val prefs = remember(context) { ArtworkPreferences(context) }
+    val listThumbnails by ArtworkPreferences.listThumbnails.collectAsState()
+    val nowPlayingArtwork by ArtworkPreferences.nowPlayingArtwork.collectAsState()
+    SettingsToggleRow("List thumbnails", listThumbnails, prefs::setListThumbnails)
+    SettingsToggleRow("Now playing artwork", nowPlayingArtwork, prefs::setNowPlayingArtwork)
 }
 
 @Composable

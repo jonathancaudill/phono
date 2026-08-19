@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -47,7 +48,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.lightphone.spotify.ffi.RepeatMode
 import com.lightphone.spotify.playback.PlaybackUiState
 import com.lightphone.spotify.ui.AppViewModel
+import com.lightphone.spotify.ui.components.PhonoFallbackImage
 import com.lightphone.spotify.ui.components.formatTime
+import com.lightphone.spotify.ui.light.ArtworkPreferences
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.PhonoHeaderIcon
 import com.lightphone.spotify.ui.phono.PhonoScreenShell
@@ -66,6 +69,7 @@ fun PlayingScreen(
 ) {
     val playback by vm.playback.collectAsState()
     val extras by vm.playingExtras.collectAsState()
+    val showArtwork by ArtworkPreferences.nowPlayingArtwork.collectAsState()
 
     LaunchedEffect(playback.currentUri) {
         vm.refreshPlayingScreen()
@@ -104,6 +108,17 @@ fun PlayingScreen(
                         .padding(bottom = legacyNToGridDp(20)),
                 ) {
                     if (hasTrack) {
+                        if (showArtwork && !playback.artUrl.isNullOrBlank()) {
+                            // Keep the cover compact so the transport controls
+                            // (play + skip) always stay on-screen on the LP3.
+                            PhonoFallbackImage(
+                                imageUrl = playback.artUrl,
+                                modifier = Modifier
+                                    .fillMaxWidth(0.4f)
+                                    .aspectRatio(1f)
+                                    .padding(bottom = legacyNToGridDp(12)),
+                            )
+                        }
                         LightText(
                             text = playback.artist.orEmpty(),
                             variant = LightTextVariant.Copy,
@@ -114,7 +129,7 @@ fun PlayingScreen(
                         )
                         LightText(
                             text = playback.title.orEmpty(),
-                            variant = LightTextVariant.Heading,
+                            variant = LightTextVariant.Subheading,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             align = TextAlign.Center,
