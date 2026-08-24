@@ -37,6 +37,14 @@ Settings → Clear Cache wipes **streaming** LRUs only (`tidal-stream`, `spotify
 
 If Phono has not seen a usable network for 30+ days, [`OfflinePinHygiene`](../app/src/main/java/com/lightphone/spotify/playback/download/OfflinePinHygiene.kt) wipes Room pin rows and the `tidal-downloads` / `tidal-mpd` / `spotify-downloads` directories. Streaming cache and credentials are left alone. `markOnline` runs on network available; `enforce` runs once when the controller is created.
 
+## Pacing
+
+Collection pins are one track at a time with a hard-set **2.5–5 s** pause
+between tracks (Spotify audio-key / file open, TIDAL `playbackinfopostpaywall`).
+A detected 429 waits **20 s** before the next attempt. Not user-configurable.
+Shared implementation: [`DownloadPacing`](../app/src/main/java/com/lightphone/spotify/playback/download/DownloadPacing.kt).
+Research: [download-rate-limiting.md](download-rate-limiting.md).
+
 ## Cold start
 
 `MainActivity` calls `offlineDownloads.resumeDownloads()` for whichever backend is active.

@@ -94,15 +94,7 @@ class StreamingPolicy(
         return SystemClock.elapsedRealtime() - since >= WIFI_PREFER_AFTER_MS
     }
 
-    fun prefetchDepth(): Int = when (stableTier) {
-        NetworkTier.GOOD_UNMETERED -> 3
-        NetworkTier.GOOD_METERED -> 2
-        // Even on a weak connection, prefetch the single next track (predictive
-        // skip target) — but only AFTER the current track is banked (see
-        // maybeBufferOpportunistically ordering).
-        NetworkTier.FAIR, NetworkTier.POOR -> 1
-        else -> 0
-    }
+    fun prefetchDepth(): Int = prefetchAhead(stableTier)
 
     private fun applyCaps(caps: NetworkCapabilities) {
         val raw = classify(caps)
@@ -201,24 +193,19 @@ class StreamingPolicy(
     }
 
     private fun classify(caps: NetworkCapabilities): NetworkTier {
-        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
-            return NetworkTier.OFFLINE
-        }
-        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
-            return NetworkTier.POOR
-        }
-        val downKbps = caps.linkDownstreamBandwidthKbps
-        val unmetered = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
-        // Prefer Wi‑Fi as GOOD_UNMETERED only after the stability gate; brief
-        // Wi‑Fi blips while on cellular keep the bandwidth/metered ladder.
-        if (unmetered && isWifiOrEthernet(caps) && shouldPreferWifi(caps)) {
-            return NetworkTier.GOOD_UNMETERED
-        }
-        return when {
-            downKbps >= 1200 -> NetworkTier.GOOD_METERED
-            downKbps >= 400 -> NetworkTier.FAIR
-            else -> NetworkTier.POOR
-        }
+        updateWifiVisibility(caps)
+        val since = wifiVisibleSinceElapsedMs
+        val visibleMs = if (since != null) SystemClock.elapsedRealtime() - since else 0L
+        return classifyLink(
+            LinkSnapshot(
+                hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
+                validated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+                wifiOrEthernet = isWifiOrEthernet(caps),
+                unmetered = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
+                downKbps = caps.linkDownstreamBandwidthKbps,
+                wifiVisibleMs = visibleMs,
+            ),
+        )
     }
 
     private fun isWifiOrEthernet(caps: NetworkCapabilities): Boolean =
@@ -226,8 +213,8 @@ class StreamingPolicy(
             caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
 
     companion object {
-        private const val TIER_UP_SAMPLES = 3
-        private const val TIER_DOWN_SAMPLES = 2
+        internal const val TIER_UP_SAMPLES = 3
+        internal const val TIER_DOWN_SAMPLES = 2
 
         /** Wi‑Fi must stay visible this long before we prefer it over cellular. */
         const val WIFI_PREFER_AFTER_MS = 30_000L
@@ -237,5 +224,71 @@ class StreamingPolicy(
          * does not block prefetch forever; policy still prefers bank-first.
          */
         const val BANK_AWAIT_MS = 25_000L
+
+        fun prefetchAhead(tier: NetworkTier): Int = when (tier) {
+            NetworkTier.GOOD_UNMETERED -> 3
+            NetworkTier.GOOD_METERED -> 2
+            NetworkTier.FAIR, NetworkTier.POOR -> 1
+            NetworkTier.OFFLINE -> 0
+        }
+
+        fun classifyLink(link: LinkSnapshot): NetworkTier {
+            if (!link.hasInternet) return NetworkTier.OFFLINE
+            if (!link.validated) return NetworkTier.POOR
+            if (
+                link.unmetered &&
+                link.wifiOrEthernet &&
+                link.wifiVisibleMs >= WIFI_PREFER_AFTER_MS
+            ) {
+                return NetworkTier.GOOD_UNMETERED
+            }
+            return when {
+                link.downKbps >= 1200 -> NetworkTier.GOOD_METERED
+                link.downKbps >= 400 -> NetworkTier.FAIR
+                else -> NetworkTier.POOR
+            }
+        }
+    }
+}
+
+/** Inputs to [StreamingPolicy.classifyLink] so tests do not need NetworkCapabilities. */
+data class LinkSnapshot(
+    val hasInternet: Boolean,
+    val validated: Boolean,
+    val wifiOrEthernet: Boolean,
+    val unmetered: Boolean,
+    val downKbps: Int,
+    val wifiVisibleMs: Long,
+)
+
+/**
+ * Commit a raw classification into a stable tier. Matches the 3-up / 2-down
+ * sample counts in [StreamingPolicy] so cellular flap does not thrash prefetch.
+ */
+data class NetworkTierHysteresis(
+    val stable: NetworkTier = NetworkTier.FAIR,
+    val upCount: Int = 0,
+    val downCount: Int = 0,
+) {
+    fun observe(raw: NetworkTier): Pair<NetworkTierHysteresis, Boolean> {
+        return when {
+            raw.ordinal > stable.ordinal -> {
+                val ups = upCount + 1
+                if (ups >= StreamingPolicy.TIER_UP_SAMPLES) {
+                    NetworkTierHysteresis(stable = raw) to true
+                } else {
+                    copy(upCount = ups, downCount = 0) to false
+                }
+            }
+            raw.ordinal < stable.ordinal -> {
+                val downs = downCount + 1
+                if (downs >= StreamingPolicy.TIER_DOWN_SAMPLES) {
+                    NetworkTierHysteresis(stable = raw) to false
+                } else {
+                    copy(downCount = downs, upCount = 0) to false
+                }
+            }
+            else -> NetworkTierHysteresis(stable = stable) to false
+        }
     }
 }

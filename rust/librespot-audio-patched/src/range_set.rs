@@ -241,3 +241,85 @@ impl RangeSet {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn remainder_cached(downloaded: &RangeSet, read_pos: usize, file_len: usize) -> bool {
+        if read_pos >= file_len {
+            return true;
+        }
+        downloaded.contained_length_from_value(read_pos) >= file_len - read_pos
+    }
+
+    #[test]
+    fn empty_set_is_not_fully_cached() {
+        let set = RangeSet::new();
+        assert!(!remainder_cached(&set, 0, 1000));
+    }
+
+    #[test]
+    fn full_file_from_start_is_fully_cached() {
+        let mut set = RangeSet::new();
+        set.add_range(&Range::new(0, 1000));
+        assert!(remainder_cached(&set, 0, 1000));
+        assert!(remainder_cached(&set, 250, 1000));
+    }
+
+    #[test]
+    fn remainder_from_playhead_is_enough_to_finish() {
+        let mut set = RangeSet::new();
+        // Playhead at 400; only the tail is cached. That is "fully buffered"
+        // for finishing the current track (optimistic bank of remainder).
+        set.add_range(&Range::new(400, 600));
+        assert!(remainder_cached(&set, 400, 1000));
+        assert!(!remainder_cached(&set, 0, 1000));
+        assert!(!remainder_cached(&set, 399, 1000));
+    }
+
+    #[test]
+    fn hole_in_remainder_is_not_fully_cached() {
+        let mut set = RangeSet::new();
+        set.add_range(&Range::new(0, 100));
+        set.add_range(&Range::new(200, 800));
+        assert!(!remainder_cached(&set, 50, 1000));
+        assert!(remainder_cached(&set, 200, 1000));
+    }
+
+    #[test]
+    fn adjacent_ranges_merge_into_contiguous_cache() {
+        let mut set = RangeSet::new();
+        set.add_range(&Range::new(0, 400));
+        set.add_range(&Range::new(400, 600));
+        assert_eq!(set.len(), 1000);
+        assert!(remainder_cached(&set, 0, 1000));
+    }
+
+    #[test]
+    fn overlapping_prefetch_does_not_double_count() {
+        let mut set = RangeSet::new();
+        set.add_range(&Range::new(0, 500));
+        set.add_range(&Range::new(250, 500));
+        assert_eq!(set.len(), 750);
+        assert!(remainder_cached(&set, 0, 750));
+    }
+
+    #[test]
+    fn stress_random_appends_preserve_contained_length() {
+        let mut set = RangeSet::new();
+        let file_len = 10_000usize;
+        for i in 0..50 {
+            let start = (i * 137) % file_len;
+            let len = 1 + (i * 17) % 400;
+            let len = len.min(file_len - start);
+            set.add_range(&Range::new(start, len));
+        }
+        // contained_length_from_value never reports past an actual hole.
+        for pos in [0usize, 1, 50, 999, 5000, 9999] {
+            let avail = set.contained_length_from_value(pos);
+            assert!(avail <= file_len.saturating_sub(pos));
+        }
+    }
+}
+

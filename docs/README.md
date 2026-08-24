@@ -14,6 +14,7 @@ Start here after skimming the root [README.md](../README.md).
 | [audio-sink-baseline-metrics.md](audio-sink-baseline-metrics.md) | Field-test checklist + BT/routing acceptance matrix. |
 | [playback-stability-field-tests.md](playback-stability-field-tests.md) | Bad-network reconnect stability + precaching test matrix and new debug counters. |
 | [offline-downloads.md](offline-downloads.md) | Platform-agnostic offline pins (Spotify Ogg + TIDAL Media3). |
+| [download-rate-limiting.md](download-rate-limiting.md) | Pin-queue pacing vs other downloaders; hard-set 2.5–5 s stagger and 429 cooldown. |
 
 ## Patched librespot (all pinned to **0.8.0**)
 

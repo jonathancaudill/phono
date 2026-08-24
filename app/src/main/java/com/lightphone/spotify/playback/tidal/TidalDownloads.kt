@@ -25,13 +25,13 @@ import com.lightphone.spotify.data.local.PhonoDatabase
 import com.lightphone.spotify.data.tidal.TidalApiClient
 import com.lightphone.spotify.data.tidal.TidalAuth
 import com.lightphone.spotify.data.tidal.TidalUri
+import com.lightphone.spotify.playback.download.DownloadPacing
 import java.io.File
 import java.io.InterruptedIOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -49,8 +49,8 @@ import kotlinx.coroutines.withContext
  *
  * Enqueue is serialized through one mutex to avoid EncryptedSharedPreferences /
  * DownloadService FGS storms that previously killed the process mid-album.
- * Collection resolves are staggered (jitter) and Media3 runs one CDN pin at a
- * time — same pacing mature downloaders use to avoid playbackinfo 429 storms.
+ * Collection resolves use [DownloadPacing] (2.5–5 s jitter) and Media3 runs one
+ * CDN pin at a time — playbackinfo hygiene, not CDN byte-rate throttling.
  *
  * CDN 403/401 is terminal for Media3; we re-resolve + re-enqueue (capped).
  */
@@ -61,8 +61,6 @@ object TidalDownloadCenter {
     private const val NOTIFICATION_ID = 0x70646c00 // "pdl"
     /** Refuse new collection enqueues below this free space (matches Tide). */
     private const val MIN_FREE_BYTES = 150L * 1024 * 1024
-    private const val STAGGER_MIN_MS = 400L
-    private const val STAGGER_MAX_MS = 1200L
     private const val CDN_RETRY_MAX = 3
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -417,6 +415,10 @@ object TidalDownloadCenter {
                         duration_ms = track.durationMs,
                     ),
                 )
+                if (DownloadPacing.isRateLimited(e)) {
+                    Log.w(TAG, "rate limited resolving ${track.uri}; cooldown ${DownloadPacing.RATE_LIMIT_COOLDOWN_MS}ms")
+                    DownloadPacing.afterRateLimit()
+                }
                 return@withLock
             }
 
@@ -483,7 +485,8 @@ object TidalDownloadCenter {
             }
         } finally {
             if (staggerAfter && didResolveAttempt) {
-                delay(Random.nextLong(STAGGER_MIN_MS, STAGGER_MAX_MS + 1))
+                val waitMs = DownloadPacing.afterTrack()
+                Log.i(TAG, "paced ${waitMs}ms after resolve ${track.uri}")
             }
         }
     }

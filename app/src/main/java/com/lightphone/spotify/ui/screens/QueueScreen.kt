@@ -90,8 +90,8 @@ fun QueueScreen(
                                         canMoveUp = index > 0,
                                         // Last item can demote into context.
                                         canMoveDown = true,
-                                        onMoveUp = { vm.moveQueueItemUp(index) },
-                                        onMoveDown = { vm.moveQueueItemDown(index) },
+                                        onMoveUp = { vm.moveQueueItemUp(item.uri, index) },
+                                        onMoveDown = { vm.moveQueueItemDown(item.uri, index) },
                                     )
                                     Spacer(Modifier.height(legacyNToGridDp(8)))
                                 }
@@ -112,8 +112,8 @@ fun QueueScreen(
                                         // First item can promote into the manual queue.
                                         canMoveUp = true,
                                         canMoveDown = index < queue.nextFromContext.size - 1,
-                                        onMoveUp = { vm.moveContextItemUp(index) },
-                                        onMoveDown = { vm.moveContextItemDown(index) },
+                                        onMoveUp = { vm.moveContextItemUp(item.uri, index) },
+                                        onMoveDown = { vm.moveContextItemDown(item.uri, index) },
                                     )
                                     Spacer(Modifier.height(legacyNToGridDp(8)))
                                 }

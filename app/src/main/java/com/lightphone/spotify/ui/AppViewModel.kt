@@ -1967,10 +1967,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         controller.ensureServiceStarted()
         controller.addToQueue(track)
     }
-    fun moveQueueItemUp(index: Int) = controller.moveQueueItemUp(index)
-    fun moveQueueItemDown(index: Int) = controller.moveQueueItemDown(index)
-    fun moveContextItemUp(index: Int) = controller.moveContextItemUp(index)
-    fun moveContextItemDown(index: Int) = controller.moveContextItemDown(index)
+    fun moveQueueItemUp(uri: String, index: Int) = controller.moveQueueItemUp(uri, index)
+    fun moveQueueItemDown(uri: String, index: Int) = controller.moveQueueItemDown(uri, index)
+    fun moveContextItemUp(uri: String, index: Int) = controller.moveContextItemUp(uri, index)
+    fun moveContextItemDown(uri: String, index: Int) = controller.moveContextItemDown(uri, index)
     fun clearManualQueue() = controller.clearManualQueue()
     fun refreshQueue() = controller.refreshQueue()
     /**

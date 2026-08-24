@@ -60,10 +60,20 @@ interface PlaybackBackend {
     fun getQueue(): QueueSnapshot
     fun addToQueue(uri: String)
     fun clearManualQueue()
-    fun moveQueueItemUp(index: UInt)
-    fun moveQueueItemDown(index: UInt)
-    fun moveContextItemUp(index: UInt)
-    fun moveContextItemDown(index: UInt)
+    /**
+     * Apply reorder ops against live queue state. Each op identifies a track by
+     * URI (plus a possibly-stale click index). Implementations must finish the
+     * mutation before returning so callers can serialize bursts.
+     */
+    fun applyQueueMoves(ops: List<QueueMoveOp>)
+    fun moveQueueItemUp(uri: String, indexHint: Int) =
+        applyQueueMoves(listOf(QueueMoveOp(uri, indexHint, QueueMoveSection.MANUAL, up = true)))
+    fun moveQueueItemDown(uri: String, indexHint: Int) =
+        applyQueueMoves(listOf(QueueMoveOp(uri, indexHint, QueueMoveSection.MANUAL, up = false)))
+    fun moveContextItemUp(uri: String, indexHint: Int) =
+        applyQueueMoves(listOf(QueueMoveOp(uri, indexHint, QueueMoveSection.CONTEXT, up = true)))
+    fun moveContextItemDown(uri: String, indexHint: Int) =
+        applyQueueMoves(listOf(QueueMoveOp(uri, indexHint, QueueMoveSection.CONTEXT, up = false)))
 
     // --- modes --------------------------------------------------------------
     fun getShuffle(): Boolean
@@ -96,6 +106,13 @@ interface PlaybackBackend {
      * race the current track on cellular. Default: already idle.
      */
     fun awaitBankIdle(timeoutMs: Long): Boolean = true
+
+    /**
+     * True when the current track's remaining bytes are already in the local
+     * audio cache. Used to skip session teardown on network handoff so a banked
+     * track does not pause/play.
+     */
+    fun isCurrentFullyBuffered(): Boolean = false
 
     /**
      * Hint for resolve-time quality ceilings ([com.lightphone.spotify.playback.media3.QualityPolicy]).

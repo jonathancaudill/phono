@@ -47,6 +47,8 @@ import com.lightphone.spotify.data.tidal.TidalRepository
 import com.lightphone.spotify.data.tidal.TidalSessionState
 import com.lightphone.spotify.playback.backend.PlaybackBackend
 import com.lightphone.spotify.playback.backend.PlaybackEventListener
+import com.lightphone.spotify.playback.backend.QueueMoveOp
+import com.lightphone.spotify.playback.backend.QueueMoveSection
 import com.lightphone.spotify.playback.download.OfflineDownloadCenter
 import com.lightphone.spotify.playback.download.OfflinePinHygiene
 import com.lightphone.spotify.playback.download.SpotifyDownloadCenter
@@ -164,6 +166,16 @@ class PlaybackController private constructor(
 
     /** Serializes engine transport calls so play/pause/skip cannot race EndOfTrack. */
     private val transportMutex = Mutex()
+
+    /** Pending URI-based reorders, drained under [transportMutex]. */
+    private val pendingQueueMoves = ArrayDeque<QueueMoveOp>()
+
+    /**
+     * True while [drainQueueMoves] is applying a batch. Native `onQueueChanged`
+     * during that window is a no-op; we snapshot once when the batch finishes.
+     */
+    @Volatile
+    private var queueMovesInFlight = false
 
     /**
      * Serializes everything that mutates login/session state at the native engine
@@ -399,7 +411,7 @@ class PlaybackController private constructor(
             lastTransport = transport
             pendingTransport = null
             transportConfirmCount = 0
-            debouncedForceReconnect()
+            maybeForceReconnectAfterHandoff()
             return
         }
         considerTransportHandoff(transport, caps)
@@ -416,17 +428,42 @@ class PlaybackController private constructor(
         } else if (transport == lastTransport) {
             pendingTransport = null
             transportConfirmCount = 0
+        } else if (transport != null && lastTransport == null) {
+            lastTransport = transport
         }
-        lastTransport = transport ?: lastTransport
         if (
             caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
             transportConfirmCount >= TRANSPORT_CONFIRM_SAMPLES &&
             (_state.value.isPlaying || _state.value.reconnecting)
         ) {
+            lastTransport = transport ?: lastTransport
             pendingTransport = null
             transportConfirmCount = 0
-            debouncedForceReconnect()
+            maybeForceReconnectAfterHandoff()
         }
+    }
+
+    /**
+     * Network-path change. If the current track is fully banked, keep the live
+     * player — forceReconnectCheck tears down Active, which is an audible
+     * pause then play even when the ogg is already on disk.
+     */
+    private fun maybeForceReconnectAfterHandoff() {
+        val s = _state.value
+        if (!ReconnectPolicy.shouldTearDownOnTransportHandoff(
+                playing = s.isPlaying,
+                reconnecting = s.reconnecting,
+                fullyBuffered = currentTrackFullyBuffered(),
+            )
+        ) {
+            return
+        }
+        debouncedForceReconnect()
+    }
+
+    private fun currentTrackFullyBuffered(): Boolean {
+        if (!engineReady) return false
+        return runCatching { requireBackend().isCurrentFullyBuffered() }.getOrDefault(false)
     }
 
     init {
@@ -1097,7 +1134,7 @@ class PlaybackController private constructor(
             play(listOf(track), 0, track.album.ifBlank { track.title })
             return
         }
-        scope.launch {
+        launchTransport {
             runCatching { requireBackend().addToQueue(normalizeUri(track.uri)) }
                 .onSuccess { refreshQueue() }
                 .onFailure { e ->
@@ -1107,38 +1144,63 @@ class PlaybackController private constructor(
         }
     }
 
-    fun clearManualQueue() = scope.launch {
-        if (!engineReady) return@launch
+    fun clearManualQueue() = launchTransport {
+        if (!engineReady) return@launchTransport
         requireBackend().clearManualQueue()
         refreshQueue()
     }
 
-    fun moveQueueItemUp(index: Int) = scope.launch {
-        if (!engineReady) return@launch
-        runCatching { requireBackend().moveQueueItemUp(index.toUInt()) }
-            .onSuccess { refreshQueue() }
-            .onFailure { e -> android.util.Log.w("Playback", "moveQueueItemUp failed", e) }
+    fun moveQueueItemUp(uri: String, indexHint: Int) =
+        enqueueQueueMove(uri, indexHint, QueueMoveSection.MANUAL, up = true)
+
+    fun moveQueueItemDown(uri: String, indexHint: Int) =
+        enqueueQueueMove(uri, indexHint, QueueMoveSection.MANUAL, up = false)
+
+    fun moveContextItemUp(uri: String, indexHint: Int) =
+        enqueueQueueMove(uri, indexHint, QueueMoveSection.CONTEXT, up = true)
+
+    fun moveContextItemDown(uri: String, indexHint: Int) =
+        enqueueQueueMove(uri, indexHint, QueueMoveSection.CONTEXT, up = false)
+
+    /**
+     * Rapid arrow taps enqueue by URI and drain under [transportMutex] so they
+     * cannot overlap skip/EndOfTrack or each other. One UI snapshot after the
+     * burst — not one per tap.
+     */
+    private fun enqueueQueueMove(
+        uri: String,
+        indexHint: Int,
+        section: QueueMoveSection,
+        up: Boolean,
+    ) {
+        val op = QueueMoveOp(normalizeUri(uri), indexHint, section, up)
+        synchronized(pendingQueueMoves) { pendingQueueMoves.addLast(op) }
+        launchTransport { drainQueueMoves() }
     }
 
-    fun moveQueueItemDown(index: Int) = scope.launch {
-        if (!engineReady) return@launch
-        runCatching { requireBackend().moveQueueItemDown(index.toUInt()) }
-            .onSuccess { refreshQueue() }
-            .onFailure { e -> android.util.Log.w("Playback", "moveQueueItemDown failed", e) }
-    }
-
-    fun moveContextItemUp(index: Int) = scope.launch {
-        if (!engineReady) return@launch
-        runCatching { requireBackend().moveContextItemUp(index.toUInt()) }
-            .onSuccess { refreshQueue() }
-            .onFailure { e -> android.util.Log.w("Playback", "moveContextItemUp failed", e) }
-    }
-
-    fun moveContextItemDown(index: Int) = scope.launch {
-        if (!engineReady) return@launch
-        runCatching { requireBackend().moveContextItemDown(index.toUInt()) }
-            .onSuccess { refreshQueue() }
-            .onFailure { e -> android.util.Log.w("Playback", "moveContextItemDown failed", e) }
+    private suspend fun drainQueueMoves() {
+        if (!engineReady) {
+            synchronized(pendingQueueMoves) { pendingQueueMoves.clear() }
+            return
+        }
+        while (true) {
+            val batch = synchronized(pendingQueueMoves) {
+                if (pendingQueueMoves.isEmpty()) return
+                buildList {
+                    while (pendingQueueMoves.isNotEmpty()) {
+                        add(pendingQueueMoves.removeFirst())
+                    }
+                }
+            }
+            queueMovesInFlight = true
+            try {
+                runCatching { requireBackend().applyQueueMoves(batch) }
+                    .onFailure { e -> android.util.Log.w("Playback", "applyQueueMoves failed", e) }
+            } finally {
+                queueMovesInFlight = false
+                refreshQueue()
+            }
+        }
     }
 
     fun loadSettings(): SettingsSnapshot {
@@ -1860,7 +1922,7 @@ class PlaybackController private constructor(
                 message.contains("failed", ignoreCase = true))
 
     override fun onQueueChanged() {
-        refreshQueue()
+        if (!queueMovesInFlight) refreshQueue()
     }
 
     private fun fetchMetadata(uri: String) {

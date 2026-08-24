@@ -30,6 +30,7 @@ mod playlist;
 mod artist;
 mod user_profile;
 mod playback_checkpoint;
+mod playback_continuity;
 mod queue;
 mod settings;
 mod downloads;
@@ -505,21 +506,22 @@ impl LibrespotEngine {
         self.shared.add_to_queue(uri)
     }
 
-    /// Move a manual-queue item earlier. `index` is into [QueueSnapshot::next_in_queue].
-    pub fn move_queue_item_up(&self, index: u32) -> Result<(), SpotifyError> {
-        self.shared.move_manual_queue_item(index, true)
+    /// Move a manual-queue item earlier. `uri` is the track; `index_hint` is the
+    /// click-time index into [QueueSnapshot::next_in_queue] (may be stale).
+    pub fn move_queue_item_up(&self, uri: String, index_hint: u32) -> Result<(), SpotifyError> {
+        self.shared.move_manual_queue_item(&uri, index_hint, true)
     }
 
-    pub fn move_queue_item_down(&self, index: u32) -> Result<(), SpotifyError> {
-        self.shared.move_manual_queue_item(index, false)
+    pub fn move_queue_item_down(&self, uri: String, index_hint: u32) -> Result<(), SpotifyError> {
+        self.shared.move_manual_queue_item(&uri, index_hint, false)
     }
 
-    pub fn move_context_item_up(&self, index: u32) -> Result<(), SpotifyError> {
-        self.shared.move_context_queue_item(index, true)
+    pub fn move_context_item_up(&self, uri: String, index_hint: u32) -> Result<(), SpotifyError> {
+        self.shared.move_context_queue_item(&uri, index_hint, true)
     }
 
-    pub fn move_context_item_down(&self, index: u32) -> Result<(), SpotifyError> {
-        self.shared.move_context_queue_item(index, false)
+    pub fn move_context_item_down(&self, uri: String, index_hint: u32) -> Result<(), SpotifyError> {
+        self.shared.move_context_queue_item(&uri, index_hint, false)
     }
 
     /// Remove all manually queued tracks (does not affect playback context).
@@ -1565,21 +1567,26 @@ impl EngineShared {
         Ok(())
     }
 
-    fn move_manual_queue_item(&self, index: u32, up: bool) -> Result<(), SpotifyError> {
+    fn move_manual_queue_item(
+        &self,
+        uri: &str,
+        index_hint: u32,
+        up: bool,
+    ) -> Result<(), SpotifyError> {
         if !self.is_logged_in() {
             return Err(SpotifyError::NotLoggedIn);
         }
         let mut success = false;
         self.with_active_queue_mut(|q| {
             success = if up {
-                q.move_manual_up(index as usize).is_ok()
+                q.move_manual_up_uri(uri, index_hint as usize).is_ok()
             } else {
-                q.move_manual_down(index as usize).is_ok()
+                q.move_manual_down_uri(uri, index_hint as usize).is_ok()
             };
         });
         if !success {
             return Err(SpotifyError::InvalidUri {
-                uri: format!("queue index {index} out of range"),
+                uri: uri.to_string(),
             });
         }
         self.notify_queue_changed();
@@ -1587,21 +1594,26 @@ impl EngineShared {
         Ok(())
     }
 
-    fn move_context_queue_item(&self, index: u32, up: bool) -> Result<(), SpotifyError> {
+    fn move_context_queue_item(
+        &self,
+        uri: &str,
+        index_hint: u32,
+        up: bool,
+    ) -> Result<(), SpotifyError> {
         if !self.is_logged_in() {
             return Err(SpotifyError::NotLoggedIn);
         }
         let mut success = false;
         self.with_active_queue_mut(|q| {
             success = if up {
-                q.move_context_up(index as usize).is_ok()
+                q.move_context_up_uri(uri, index_hint as usize).is_ok()
             } else {
-                q.move_context_down(index as usize).is_ok()
+                q.move_context_down_uri(uri, index_hint as usize).is_ok()
             };
         });
         if !success {
             return Err(SpotifyError::InvalidUri {
-                uri: format!("context index {index} out of range"),
+                uri: uri.to_string(),
             });
         }
         self.notify_queue_changed();
@@ -2174,13 +2186,29 @@ impl EngineShared {
     }
 
     fn force_reconnect_check(self: &Arc<Self>) {
+        // Clone the player handle without holding Active across the query
+        // (is_current_fully_buffered round-trips to the player thread).
+        let player = self
+            .active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|a| Arc::clone(&a.player));
+        let fully_buffered = player
+            .as_ref()
+            .map(|p| p.is_current_fully_buffered())
+            .unwrap_or(false);
+        let playing = self.playing.load(Ordering::SeqCst);
+        if !playback_continuity::should_teardown_on_force_reconnect(playing, fully_buffered) {
+            // Current track is already in cache — tearing down Active would be
+            // an audible pause/play for no streaming benefit.
+            return;
+        }
         let now = Instant::now();
         {
             let mut last = self.last_force_reconnect.lock().unwrap();
-            if let Some(prev) = *last {
-                if now.duration_since(prev) < Duration::from_secs(5) {
-                    return;
-                }
+            if !playback_continuity::force_reconnect_cooldown_elapsed(*last, now) {
+                return;
             }
             *last = Some(now);
         }

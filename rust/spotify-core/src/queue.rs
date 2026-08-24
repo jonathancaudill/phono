@@ -441,6 +441,59 @@ impl QueueState {
         Ok(())
     }
 
+    /// Reorder by URI. `hint` is the click-time sublist index; if it no longer
+    /// names `uri`, look the URI up in the live sublist so a stale Compose
+    /// index cannot move the wrong track.
+    pub fn move_manual_up_uri(&mut self, uri: &str, hint: usize) -> Result<(), ()> {
+        let index = self.resolve_manual_index(uri, hint)?;
+        self.move_manual_up(index)
+    }
+
+    pub fn move_manual_down_uri(&mut self, uri: &str, hint: usize) -> Result<(), ()> {
+        let index = self.resolve_manual_index(uri, hint)?;
+        self.move_manual_down(index)
+    }
+
+    pub fn move_context_up_uri(&mut self, uri: &str, hint: usize) -> Result<(), ()> {
+        let index = self.resolve_context_index(uri, hint)?;
+        self.move_context_up(index)
+    }
+
+    pub fn move_context_down_uri(&mut self, uri: &str, hint: usize) -> Result<(), ()> {
+        let index = self.resolve_context_index(uri, hint)?;
+        self.move_context_down(index)
+    }
+
+    fn resolve_manual_index(&self, uri: &str, hint: usize) -> Result<usize, ()> {
+        self.resolve_sublist_index(&self.upcoming_manual_play_indices(), uri, hint)
+    }
+
+    fn resolve_context_index(&self, uri: &str, hint: usize) -> Result<usize, ()> {
+        self.resolve_sublist_index(&self.upcoming_context_play_indices(), uri, hint)
+    }
+
+    fn resolve_sublist_index(
+        &self,
+        slots: &[usize],
+        uri: &str,
+        hint: usize,
+    ) -> Result<usize, ()> {
+        if hint < slots.len() && self.slot_uri_string(slots[hint]).as_deref() == Some(uri) {
+            return Ok(hint);
+        }
+        slots
+            .iter()
+            .position(|&pos| self.slot_uri_string(pos).as_deref() == Some(uri))
+            .ok_or(())
+    }
+
+    fn slot_uri_string(&self, play_pos: usize) -> Option<String> {
+        self.play_order
+            .get(play_pos)
+            .and_then(|entry| self.entry_uri(entry))
+            .and_then(|u| u.to_uri().ok())
+    }
+
     fn upcoming_manual_play_indices(&self) -> Vec<usize> {
         self.play_order
             .iter()
@@ -719,6 +772,54 @@ mod tests {
         let snap = q.queue_snapshot();
         assert_eq!(snap.next_in_queue[0], uri_string(&b));
         assert_eq!(snap.next_in_queue[1], uri_string(&a));
+    }
+
+    #[test]
+    fn move_manual_uri_ignores_stale_hint() {
+        let uris = vec![track_uri("4iV5W9uYEdYUVa79Axb7Rh")];
+        let mut q = QueueState::default();
+        q.set_queue(uris, 0, None);
+        let a = track_uri("2ZEPR21rR29EXOpF35cHY1");
+        let b = track_uri("6rqhFgbbKwnb9MLmUQDhG6");
+        let c = track_uri("3n3Ppam7vgaVa1iaRUc9Lp");
+        q.add_to_queue(a.clone());
+        q.add_to_queue(b.clone());
+        q.add_to_queue(c.clone());
+        let a_uri = uri_string(&a);
+        // UI still thinks A is at 0 after it has already moved.
+        assert!(q.move_manual_down_uri(&a_uri, 0).is_ok());
+        assert!(q.move_manual_down_uri(&a_uri, 0).is_ok());
+        let snap = q.queue_snapshot();
+        assert_eq!(snap.next_in_queue[0], uri_string(&b));
+        assert_eq!(snap.next_in_queue[1], uri_string(&c));
+        assert_eq!(snap.next_in_queue[2], a_uri);
+    }
+
+    #[test]
+    fn rapid_manual_down_same_uri_with_stale_index() {
+        let uris = vec![track_uri("4iV5W9uYEdYUVa79Axb7Rh")];
+        let mut q = QueueState::default();
+        q.set_queue(uris, 0, None);
+        let a = track_uri("2ZEPR21rR29EXOpF35cHY1");
+        let b = track_uri("6rqhFgbbKwnb9MLmUQDhG6");
+        q.add_to_queue(a.clone());
+        q.add_to_queue(b.clone());
+        let a_uri = uri_string(&a);
+        // Two downs with hint always 0: swap past B, then demote into context.
+        assert!(q.move_manual_down_uri(&a_uri, 0).is_ok());
+        assert!(q.move_manual_down_uri(&a_uri, 0).is_ok());
+        let snap = q.queue_snapshot();
+        assert_eq!(snap.next_in_queue, vec![uri_string(&b)]);
+        assert_eq!(snap.next_from_context[0], a_uri);
+    }
+
+    #[test]
+    fn move_uri_missing_is_err() {
+        let uris = vec![track_uri("4iV5W9uYEdYUVa79Axb7Rh")];
+        let mut q = QueueState::default();
+        q.set_queue(uris, 0, None);
+        assert!(q.move_manual_down_uri("spotify:track:missing", 0).is_err());
+        assert!(q.move_context_down_uri("spotify:track:missing", 0).is_err());
     }
 
     #[test]

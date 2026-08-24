@@ -22,7 +22,6 @@ import com.lightphone.spotify.ffi.LibrespotEngine
 import com.lightphone.spotify.ffi.StreamingQuality
 import com.lightphone.spotify.playback.PlaybackEngineHolder
 import java.util.concurrent.ConcurrentHashMap
-import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -33,21 +32,20 @@ import kotlinx.coroutines.sync.withLock
 
 /**
  * Spotify offline pins via UniFFI [LibrespotEngine.downloadTrack] (decrypt-to-Ogg).
- * Mirrors TIDAL operational maturity: Room stubs first, enqueue mutex, stagger,
- * free-space gate, CDN/session retry, cold-start resume.
+ * Mirrors TIDAL operational maturity: Room stubs first, enqueue mutex,
+ * [DownloadPacing], free-space gate, CDN/session retry, cold-start resume.
  */
 object SpotifyDownloadCenter : OfflineDownloadCenter {
     private const val TAG = "SpotifyDownloads"
     private const val NOTIFICATION_CHANNEL_ID = "phono_downloads"
     private const val NOTIFICATION_ID = 0x70647370 // "pdsp"
     private const val MIN_FREE_BYTES = 150L * 1024 * 1024
-    private const val STAGGER_MIN_MS = 400L
-    private const val STAGGER_MAX_MS = 1200L
     private const val RETRY_MAX = 3
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val enqueueMutex = Mutex()
     private val retryCounts = ConcurrentHashMap<String, Int>()
+    private val rateLimitCounts = ConcurrentHashMap<String, Int>()
 
     @Volatile
     private var engineProvider: (() -> LibrespotEngine?)? = null
@@ -271,6 +269,7 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
             result.fold(
                 onSuccess = { info ->
                     retryCounts.remove(track.uri)
+                    rateLimitCounts.remove(track.uri)
                     db.downloadedTrackDao().upsert(
                         DownloadedTrackEntity(
                             uri = track.uri,
@@ -290,29 +289,51 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
                 },
                 onFailure = { e ->
                     Log.e(TAG, "download failed ${track.uri}", e)
-                    val attempt = (retryCounts[track.uri] ?: 0) + 1
-                    if (attempt <= RETRY_MAX) {
-                        retryCounts[track.uri] = attempt
-                        val backoff = when (attempt) {
-                            1 -> 2_000L
-                            2 -> 5_000L
-                            else -> 10_000L
+                    if (DownloadPacing.isRateLimited(e)) {
+                        val rlAttempt = (rateLimitCounts[track.uri] ?: 0) + 1
+                        if (rlAttempt <= DownloadPacing.RATE_LIMIT_RETRY_MAX) {
+                            rateLimitCounts[track.uri] = rlAttempt
+                            Log.w(
+                                TAG,
+                                "rate limited ${track.uri}; cooldown ${DownloadPacing.RATE_LIMIT_COOLDOWN_MS}ms " +
+                                    "($rlAttempt/${DownloadPacing.RATE_LIMIT_RETRY_MAX})",
+                            )
+                            DownloadPacing.afterRateLimit()
+                            db.downloadedTrackDao().updateState(
+                                uri = track.uri,
+                                state = DownloadStates.QUEUED,
+                                bytes = 0,
+                                updatedAt = System.currentTimeMillis(),
+                            )
+                        } else {
+                            markFailed(db.downloadedTrackDao(), track, quality, 0)
                         }
-                        delay(backoff)
-                        db.downloadedTrackDao().updateState(
-                            uri = track.uri,
-                            state = DownloadStates.QUEUED,
-                            bytes = 0,
-                            updatedAt = System.currentTimeMillis(),
-                        )
                     } else {
-                        markFailed(db.downloadedTrackDao(), track, quality, 0)
+                        val attempt = (retryCounts[track.uri] ?: 0) + 1
+                        if (attempt <= RETRY_MAX) {
+                            retryCounts[track.uri] = attempt
+                            val backoff = when (attempt) {
+                                1 -> 2_000L
+                                2 -> 5_000L
+                                else -> 10_000L
+                            }
+                            delay(backoff)
+                            db.downloadedTrackDao().updateState(
+                                uri = track.uri,
+                                state = DownloadStates.QUEUED,
+                                bytes = 0,
+                                updatedAt = System.currentTimeMillis(),
+                            )
+                        } else {
+                            markFailed(db.downloadedTrackDao(), track, quality, 0)
+                        }
                     }
                 },
             )
         } finally {
             if (staggerAfter && didAttempt) {
-                delay(Random.nextLong(STAGGER_MIN_MS, STAGGER_MAX_MS + 1))
+                val waitMs = DownloadPacing.afterTrack()
+                Log.i(TAG, "paced ${waitMs}ms after ${track.uri}")
             }
         }
     }

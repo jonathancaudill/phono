@@ -23,11 +23,15 @@ import com.lightphone.spotify.ffi.RepeatMode
 import com.lightphone.spotify.ffi.StreamingQuality
 import com.lightphone.spotify.playback.backend.PlaybackBackend
 import com.lightphone.spotify.playback.backend.PlaybackEventListener
+import com.lightphone.spotify.playback.backend.QueueMoveIndex
+import com.lightphone.spotify.playback.backend.QueueMoveOp
+import com.lightphone.spotify.playback.backend.QueueMoveSection
 import com.lightphone.spotify.playback.media3.CdnRefreshAttempts
 import com.lightphone.spotify.playback.media3.CdnUrlRefresher
 import com.lightphone.spotify.playback.media3.QualityCeilings
 import com.lightphone.spotify.playback.media3.QualityPolicy
 import com.lightphone.spotify.playback.NetworkTier
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -79,6 +83,9 @@ class TidalPlaybackBackend(
     @Volatile
     private var cachedQueue: QueueSnapshot =
         QueueSnapshot(null, emptyList(), null, emptyList())
+
+    /** Skip listener fan-out while [applyQueueMoves] applies a burst on the player thread. */
+    private var deferQueueNotify = false
 
     private val priorityTaskManager = PriorityTaskManager()
     private val streamBanker = TidalStreamBanker(appContext, priorityTaskManager)
@@ -299,14 +306,14 @@ class TidalPlaybackBackend(
     override fun getQueue(): QueueSnapshot = cachedQueue
 
     override fun addToQueue(uri: String) {
-        manualMediaIds.add(uri)
         resolveExecutor.execute {
             try {
                 val item = TidalPlayableItems.tryOfflineMediaItem(appContext, uri)
                     ?: TidalPlayableItems.fromCanonicalUri(
                         appContext, api, uri, resolveQuality(), mpdCacheDir,
                     )
-                mainHandler.post {
+                onPlayer {
+                    manualMediaIds.add(uri)
                     val insertAt = insertionIndexForManual()
                     player.addMediaItem(insertAt, item)
                     refreshQueue()
@@ -331,10 +338,25 @@ class TidalPlaybackBackend(
         }
     }
 
-    override fun moveQueueItemUp(index: UInt) = moveInSublist(index.toInt(), manual = true, up = true)
-    override fun moveQueueItemDown(index: UInt) = moveInSublist(index.toInt(), manual = true, up = false)
-    override fun moveContextItemUp(index: UInt) = moveInSublist(index.toInt(), manual = false, up = true)
-    override fun moveContextItemDown(index: UInt) = moveInSublist(index.toInt(), manual = false, up = false)
+    override fun applyQueueMoves(ops: List<QueueMoveOp>) {
+        if (ops.isEmpty()) return
+        onPlayer {
+            deferQueueNotify = true
+            try {
+                for (op in ops) {
+                    moveInSublist(
+                        uri = op.uri,
+                        hint = op.indexHint,
+                        manual = op.section == QueueMoveSection.MANUAL,
+                        up = op.up,
+                    )
+                }
+            } finally {
+                deferQueueNotify = false
+                refreshQueue()
+            }
+        }
+    }
 
     // --- modes --------------------------------------------------------------
 
@@ -623,9 +645,10 @@ class TidalPlaybackBackend(
         return i.coerceAtMost(player.mediaItemCount)
     }
 
-    private fun moveInSublist(index: Int, manual: Boolean, up: Boolean) = onPlayer {
+    private fun moveInSublist(uri: String, hint: Int, manual: Boolean, up: Boolean) {
         val slots = upcomingSlots(manual)
-        if (index < 0 || index >= slots.size) return@onPlayer
+        val ids = slots.map { player.getMediaItemAt(it).mediaId }
+        val index = QueueMoveIndex.resolve(ids, uri, hint) ?: return
         val from = slots[index]
         if (manual && !up && index == slots.lastIndex) {
             // Demote last manual into front of context.
@@ -640,8 +663,7 @@ class TidalPlaybackBackend(
                 insertAt++
             }
             player.addMediaItem(insertAt, item)
-            refreshQueue()
-            return@onPlayer
+            return
         }
         if (!manual && up && index == 0) {
             // Promote first context into end of manual queue.
@@ -651,15 +673,12 @@ class TidalPlaybackBackend(
             player.removeMediaItem(from)
             val insertAt = insertionIndexForManual()
             player.addMediaItem(insertAt, item)
-            refreshQueue()
-            return@onPlayer
+            return
         }
         val neighborIdx = if (up) index - 1 else index + 1
-        if (neighborIdx !in slots.indices) return@onPlayer
+        if (neighborIdx !in slots.indices) return
         val to = slots[neighborIdx]
-        // Media3 moveMediaItem: move fromIndex to toIndex (destination after removal).
         player.moveMediaItem(from, to)
-        refreshQueue()
     }
 
     /** Player indices of upcoming items belonging to the manual (or context) sublist. */
@@ -685,12 +704,35 @@ class TidalPlaybackBackend(
             }
         }
         cachedQueue = QueueSnapshot(nowPlaying, nextInQueue, contextLabel, nextFromContext)
-        listener?.onQueueChanged()
+        if (!deferQueueNotify) listener?.onQueueChanged()
     }
 
-    /** Run [block] on the player's (main) thread. */
+    /**
+     * Run [block] on the player's (main) thread and wait until it finishes.
+     * ExoPlayer playlist mutations are not safe to fire-and-forget from IO —
+     * the controller serializes on the return of this call.
+     */
     private fun onPlayer(block: () -> Unit) {
-        if (Looper.myLooper() == Looper.getMainLooper()) block() else mainHandler.post(block)
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            block()
+            return
+        }
+        val done = CountDownLatch(1)
+        val error = AtomicReference<Throwable>()
+        val posted = mainHandler.post {
+            try {
+                block()
+            } catch (t: Throwable) {
+                error.set(t)
+            } finally {
+                done.countDown()
+            }
+        }
+        if (!posted) {
+            throw IllegalStateException("player thread is gone")
+        }
+        done.await()
+        error.get()?.let { throw it }
     }
 
     private val positionPoller = object : Runnable {
