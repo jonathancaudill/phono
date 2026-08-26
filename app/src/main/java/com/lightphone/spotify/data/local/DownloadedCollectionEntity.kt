@@ -78,6 +78,16 @@ interface DownloadedCollectionDao {
 
     @Query(
         """
+        SELECT t.* FROM downloaded_tracks t
+        INNER JOIN downloaded_collection_tracks m ON m.track_uri = t.uri
+        WHERE m.collection_uri = :collectionUri
+        ORDER BY m.position ASC
+        """,
+    )
+    suspend fun getTracksForCollection(collectionUri: String): List<DownloadedTrackEntity>
+
+    @Query(
+        """
         SELECT
           c.uri AS uri,
           c.type AS type,

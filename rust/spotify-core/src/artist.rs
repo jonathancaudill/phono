@@ -1,5 +1,6 @@
 //! Native artist detail via librespot extended-metadata (Login5).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use librespot::core::{Session, SpotifyUri};
@@ -28,6 +29,7 @@ pub struct ArtistDetailBundle {
     pub genres: Vec<String>,
     pub top_tracks: Vec<TrackInfo>,
     pub albums: Vec<AlbumSummaryNative>,
+    pub singles: Vec<AlbumSummaryNative>,
 }
 
 impl super::EngineShared {
@@ -66,22 +68,20 @@ async fn fetch_artist_detail(
     let top_tracks =
         fetch_artist_top_tracks(session, &artist, artist_id, top_track_limit).await?;
 
-    let album_uris: Vec<SpotifyUri> = artist
-        .albums
-        .current_releases()
-        .chain(artist.singles.current_releases())
-        .take(album_limit as usize)
-        .cloned()
-        .collect();
+    let limit = album_limit as usize;
+    let album_uris = take_current_releases(artist.albums.current_releases(), limit);
+    let single_uris = take_current_releases(artist.singles.current_releases(), limit);
+    log::info!(
+        "artist discography for {artist_id}: {} albums, {} singles (limit {limit})",
+        album_uris.len(),
+        single_uris.len(),
+    );
 
-    let fetched_albums = fetch_albums_metadata_batch(session, &album_uris).await?;
-    let mut albums = Vec::new();
-    for album_uri in album_uris {
-        let key = normalize_entity_uri(&album_uri.to_uri().unwrap_or_default());
-        if let Some(album) = fetched_albums.get(&key) {
-            albums.push(album_to_summary(album));
-        }
-    }
+    let mut hydrate_uris = album_uris.clone();
+    hydrate_uris.extend(single_uris.iter().cloned());
+    let fetched_albums = fetch_albums_metadata_batch(session, &hydrate_uris).await?;
+    let albums = summaries_for_uris(&album_uris, &fetched_albums);
+    let singles = summaries_for_uris(&single_uris, &fetched_albums);
 
     Ok(ArtistDetailBundle {
         id: artist_id.to_string(),
@@ -90,7 +90,29 @@ async fn fetch_artist_detail(
         genres: Vec::new(),
         top_tracks,
         albums,
+        singles,
     })
+}
+
+fn take_current_releases<'a, I>(uris: I, limit: usize) -> Vec<SpotifyUri>
+where
+    I: Iterator<Item = &'a SpotifyUri>,
+{
+    uris.take(limit).cloned().collect()
+}
+
+fn summaries_for_uris(
+    uris: &[SpotifyUri],
+    fetched: &HashMap<String, Album>,
+) -> Vec<AlbumSummaryNative> {
+    let mut out = Vec::new();
+    for uri in uris {
+        let key = normalize_entity_uri(&uri.to_uri().unwrap_or_default());
+        if let Some(album) = fetched.get(&key) {
+            out.push(album_to_summary(album));
+        }
+    }
+    out
 }
 
 /// Popular tracks: context-resolve page 1 (Spotify artist view), then extended-metadata buckets.
@@ -244,12 +266,28 @@ fn album_to_summary(album: &Album) -> AlbumSummaryNative {
             .iter()
             .max_by_key(|c| c.width)
             .map(|c| format!("https://i.scdn.co/image/{}", c.id)),
-        album_type: match album.album_type {
-            AlbumType::ALBUM => "album",
-            AlbumType::SINGLE => "single",
-            AlbumType::COMPILATION => "compilation",
-            _ => "album",
-        }
-        .to_string(),
+        album_type: album_type_label(album.album_type).to_string(),
+    }
+}
+
+fn album_type_label(album_type: AlbumType) -> &'static str {
+    match album_type {
+        AlbumType::ALBUM => "album",
+        AlbumType::SINGLE | AlbumType::EP => "single",
+        AlbumType::COMPILATION => "compilation",
+        _ => "album",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn album_type_label_maps_ep_with_singles() {
+        assert_eq!(album_type_label(AlbumType::ALBUM), "album");
+        assert_eq!(album_type_label(AlbumType::SINGLE), "single");
+        assert_eq!(album_type_label(AlbumType::EP), "single");
+        assert_eq!(album_type_label(AlbumType::COMPILATION), "compilation");
     }
 }

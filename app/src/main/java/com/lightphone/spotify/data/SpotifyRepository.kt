@@ -125,7 +125,7 @@ class SpotifyRepository(
     override fun artistDetail(artistId: String): ArtistDetailResult {
         val bundle = nativeGateway().artistDetail(
             artistId = artistId,
-            albumLimit = 50,
+            albumLimit = ARTIST_DISCOGRAPHY_LIMIT,
             topTrackLimit = 10,
         )
         return NativeMetadataAdapter.toArtistDetailResult(bundle)
@@ -687,10 +687,13 @@ data class AlbumDetailResult(
     val isSaved: Boolean,
 )
 
+const val ARTIST_DISCOGRAPHY_LIMIT = 200
+
 data class ArtistDetailResult(
     val artist: SpotifyArtistDetail,
     val topTracks: List<SpotifyTrack>,
     val albums: List<SpotifyAlbumSimple>,
+    val singles: List<SpotifyAlbumSimple>,
 )
 
 private fun SpotifySearchResults.toSearchResults(query: String): SearchResults {

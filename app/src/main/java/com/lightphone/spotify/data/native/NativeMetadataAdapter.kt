@@ -103,6 +103,7 @@ object NativeMetadataAdapter {
             ),
             topTracks = bundle.topTracks.map { it.toSpotifyTrack() },
             albums = bundle.albums.map { it.toAlbumSimple(bundle.name) },
+            singles = bundle.singles.map { it.toAlbumSimple(bundle.name) },
         )
     }
 

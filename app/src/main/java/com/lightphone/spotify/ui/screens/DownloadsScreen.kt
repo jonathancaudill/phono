@@ -19,10 +19,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import com.lightphone.spotify.data.TrackMetadata
 import com.lightphone.spotify.data.local.DownloadedCollectionWithProgress
 import com.lightphone.spotify.data.local.DownloadedTrackEntity
 import com.lightphone.spotify.playback.download.DownloadStates
+import com.lightphone.spotify.playback.download.toTrackMetadata
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
 import com.lightphone.spotify.ui.components.PhonoMediaListItem
@@ -92,7 +92,7 @@ fun DownloadCollectionDetailScreen(
     collectionUri: String,
     title: String,
     onBack: () -> Unit,
-    onPlayTrack: (TrackMetadata) -> Unit,
+    onPlayTrack: (startUri: String) -> Unit,
 ) {
     val tracksFlow = remember(collectionUri) { vm.observeDownloadCollectionTracks(collectionUri) }
     val tracks by tracksFlow.collectAsState()
@@ -132,7 +132,7 @@ fun DownloadCollectionDetailScreen(
                                         primaryText = row.title,
                                         secondaryText = downloadTrackSubtitle(row),
                                         showImage = false,
-                                        onClick = { onPlayTrack(track) },
+                                        onClick = { onPlayTrack(row.uri) },
                                     )
                                 }
                             } else {
@@ -146,7 +146,7 @@ fun DownloadCollectionDetailScreen(
                                         null
                                     },
                                     onClick = {
-                                        if (!editMode && completed) onPlayTrack(track)
+                                        if (!editMode && completed) onPlayTrack(row.uri)
                                     },
                                 )
                             }
@@ -188,12 +188,3 @@ private fun downloadTrackSubtitle(row: DownloadedTrackEntity): String {
     }
     return if (status != null) "$artists · $status" else artists
 }
-
-private fun DownloadedTrackEntity.toTrackMetadata() = TrackMetadata(
-    uri = uri,
-    title = title,
-    artists = artists,
-    album = album,
-    durationMs = duration_ms,
-    artUrl = art_url,
-)

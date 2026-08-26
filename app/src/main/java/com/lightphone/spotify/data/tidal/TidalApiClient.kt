@@ -1,5 +1,6 @@
 package com.lightphone.spotify.data.tidal
 
+import com.lightphone.spotify.data.ARTIST_DISCOGRAPHY_LIMIT
 import com.lightphone.spotify.data.SpotifyAlbumDetail
 import com.lightphone.spotify.data.SpotifyAlbumSimple
 import com.lightphone.spotify.data.SpotifyArtistDetail
@@ -133,10 +134,17 @@ class TidalApiClient(
             "limit" to limit.coerceIn(1, 50).toString(),
         ).items.map { it.toDomain() }
 
-    fun artistAlbums(artistId: String, limit: Int = 50): List<SpotifyAlbumSimple> =
+    fun artistAlbums(artistId: String, limit: Int = ARTIST_DISCOGRAPHY_LIMIT): List<SpotifyAlbumSimple> =
         paginate<TidalAlbum>(
             "/artists/$artistId/albums",
-            limit = limit.coerceIn(1, 50),
+            limit = limit.coerceIn(1, ARTIST_DISCOGRAPHY_LIMIT),
+        ).map { it.toDomainSimple() }
+
+    fun artistSingles(artistId: String, limit: Int = ARTIST_DISCOGRAPHY_LIMIT): List<SpotifyAlbumSimple> =
+        paginate<TidalAlbum>(
+            "/artists/$artistId/albums",
+            limit = limit.coerceIn(1, ARTIST_DISCOGRAPHY_LIMIT),
+            extraQuery = listOf("filter" to "EPSANDSINGLES"),
         ).map { it.toDomainSimple() }
 
     fun track(trackId: String): SpotifyTrack = get<TidalTrack>("/tracks/$trackId").toDomain()
@@ -283,7 +291,11 @@ class TidalApiClient(
         }
 
     /** Offset-paginated list fetch over TIDAL's `{items,totalNumberOfItems}` envelope. */
-    private inline fun <reified T> paginate(path: String, limit: Int): List<T> {
+    private inline fun <reified T> paginate(
+        path: String,
+        limit: Int,
+        extraQuery: List<Pair<String, String>> = emptyList(),
+    ): List<T> {
         val results = mutableListOf<T>()
         var offset = 0
         var total = Int.MAX_VALUE
@@ -291,8 +303,11 @@ class TidalApiClient(
             val pageLimit = minOf(PAGE_LIMIT, limit - results.size)
             val page: TidalList<T> = get(
                 path,
-                "limit" to pageLimit.toString(),
-                "offset" to offset.toString(),
+                *buildList {
+                    add("limit" to pageLimit.toString())
+                    add("offset" to offset.toString())
+                    addAll(extraQuery)
+                }.toTypedArray(),
             )
             total = page.totalNumberOfItems
             if (page.items.isEmpty()) break

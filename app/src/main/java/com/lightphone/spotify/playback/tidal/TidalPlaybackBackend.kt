@@ -34,6 +34,7 @@ import com.lightphone.spotify.playback.NetworkTier
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -100,6 +101,8 @@ class TidalPlaybackBackend(
     /** Last look-ahead depth requested by [prefetchUpcoming] (0–3). */
     private val resolveAhead = AtomicInteger(2)
 
+    private val lastCheckpointSaveMs = AtomicLong(0L)
+
     private fun resolveQuality(): TidalAudioQuality =
         qualityPolicy.effectiveForResolve(networkTier.get())
 
@@ -165,7 +168,12 @@ class TidalPlaybackBackend(
         auth.exchangeCode(code, state).getOrThrow()
     }
 
-    override fun loginWithCachedCredentials(): Boolean = auth.isAuthorized()
+    override fun loginWithCachedCredentials(): Boolean {
+        if (!auth.isAuthorized()) return false
+        val snap = TidalPlaybackCheckpoint.loadIfFresh(appContext) ?: return true
+        restoreCheckpoint(snap)
+        return true
+    }
 
     override fun logout() {
         playReporter.onTrackStopped()
@@ -180,6 +188,7 @@ class TidalPlaybackBackend(
         resolveExecutor.shutdownNow()
         manualMediaIds.clear()
         cdnRefreshAttempts.clearAll()
+        TidalPlaybackCheckpoint.delete(appContext)
         auth.clearAll()
     }
 
@@ -191,7 +200,6 @@ class TidalPlaybackBackend(
 
     override fun playUris(uris: List<String>, startIndex: UInt, contextLabel: String?) {
         this.contextLabel = contextLabel
-        manualMediaIds.clear()
         if (uris.isEmpty()) return
         val start = startIndex.toInt().coerceIn(0, uris.lastIndex)
         listener?.onLoading()
@@ -233,11 +241,21 @@ class TidalPlaybackBackend(
                     repeat = RepeatMode.OFF
                     player.shuffleModeEnabled = false
                     player.repeatMode = Player.REPEAT_MODE_OFF
-                    player.setMediaItems(items, start, 0L)
+                    val preserved = copyUpcomingManualItems()
+                    val plan = TidalQueueSplice.plan(uris, start, preserved.map { it.mediaId })
+                    val byId = LinkedHashMap<String, MediaItem>()
+                    for (item in items) byId[item.mediaId] = item
+                    for (item in preserved) byId[item.mediaId] = item
+                    val playItems = plan.playUris.map { id ->
+                        byId[id] ?: MediaItem.Builder().setMediaId(id).setUri(Uri.EMPTY).build()
+                    }
+                    manualMediaIds.clear()
+                    manualMediaIds.addAll(plan.manualIds)
+                    player.setMediaItems(playItems, plan.startIndex, 0L)
                     player.prepare()
                     player.playWhenReady = true
                     refreshQueue()
-                    ensureResolvedAround(start, ahead)
+                    ensureResolvedAround(plan.startIndex, ahead)
                 }
             } catch (e: Exception) {
                 android.util.Log.e("TidalPlayback", "playUris resolve failed", e)
@@ -248,7 +266,10 @@ class TidalPlaybackBackend(
         }
     }
 
-    override fun pause() = onPlayer { player.playWhenReady = false }
+    override fun pause() = onPlayer {
+        player.playWhenReady = false
+        maybeSaveCheckpoint()
+    }
     override fun resume() = onPlayer { player.playWhenReady = true }
     override fun next() = onPlayer {
         when (repeat) {
@@ -705,6 +726,81 @@ class TidalPlaybackBackend(
         }
         cachedQueue = QueueSnapshot(nowPlaying, nextInQueue, contextLabel, nextFromContext)
         if (!deferQueueNotify) listener?.onQueueChanged()
+        maybeSaveCheckpoint()
+    }
+
+    private fun copyUpcomingManualItems(): List<MediaItem> {
+        val current = player.currentMediaItemIndex
+        if (current < 0) return emptyList()
+        val out = ArrayList<MediaItem>()
+        for (i in (current + 1) until player.mediaItemCount) {
+            val item = player.getMediaItemAt(i)
+            if (item.mediaId in manualMediaIds) out.add(item)
+        }
+        return out
+    }
+
+    private fun restoreCheckpoint(snap: TidalPlaybackCheckpoint.Snapshot) {
+        contextLabel = snap.contextLabel
+        val placeholders = snap.mediaIds.map { id ->
+            MediaItem.Builder().setMediaId(id).setUri(Uri.EMPTY).build()
+        }
+        val repeatMode = repeatFromName(snap.repeat)
+        onPlayer {
+            streamBanker.cancel()
+            shuffle = snap.shuffle
+            repeat = repeatMode
+            player.shuffleModeEnabled = snap.shuffle
+            player.repeatMode = repeatMode.toExoRepeat()
+            manualMediaIds.clear()
+            manualMediaIds.addAll(snap.manualIds)
+            player.setMediaItems(placeholders, snap.currentIndex, snap.positionMs)
+            player.prepare()
+            player.playWhenReady = false
+            refreshQueue()
+            ensureResolvedAround(snap.currentIndex)
+        }
+    }
+
+    private fun captureCheckpoint(): TidalPlaybackCheckpoint.Snapshot? {
+        val count = player.mediaItemCount
+        if (count <= 0) return null
+        val current = player.currentMediaItemIndex
+        if (current < 0) return null
+        val ids = (0 until count).map { player.getMediaItemAt(it).mediaId }
+        return TidalPlaybackCheckpoint.Snapshot(
+            mediaIds = ids,
+            currentIndex = current.coerceIn(0, ids.lastIndex),
+            positionMs = player.currentPosition.coerceAtLeast(0L),
+            manualIds = manualMediaIds.toList(),
+            contextLabel = contextLabel,
+            shuffle = shuffle,
+            repeat = repeatModeName(repeat),
+        )
+    }
+
+    private fun maybeSaveCheckpoint() {
+        val now = System.currentTimeMillis()
+        if (now - lastCheckpointSaveMs.get() < TidalPlaybackCheckpoint.DEBOUNCE_MS) return
+        lastCheckpointSaveMs.set(now)
+        val snap = captureCheckpoint()
+        if (snap == null) {
+            TidalPlaybackCheckpoint.delete(appContext)
+        } else {
+            TidalPlaybackCheckpoint.save(appContext, snap)
+        }
+    }
+
+    private fun repeatFromName(name: String): RepeatMode = when (name) {
+        "CONTEXT" -> RepeatMode.CONTEXT
+        "TRACK" -> RepeatMode.TRACK
+        else -> RepeatMode.OFF
+    }
+
+    private fun repeatModeName(mode: RepeatMode): String = when (mode) {
+        RepeatMode.CONTEXT -> "CONTEXT"
+        RepeatMode.TRACK -> "TRACK"
+        RepeatMode.OFF -> "OFF"
     }
 
     /**

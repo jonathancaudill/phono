@@ -32,6 +32,7 @@ import com.lightphone.spotify.ui.components.PhonoContextMenuItem
 import com.lightphone.spotify.playback.PlaybackController
 import com.lightphone.spotify.playback.PlaybackUiState
 import com.lightphone.spotify.playback.SettingsSnapshot
+import com.lightphone.spotify.playback.download.DownloadPlaybackQueue
 import com.lightphone.spotify.playback.download.DownloadStates
 import com.lightphone.spotify.ui.light.ThemePreferences
 import kotlinx.coroutines.flow.Flow
@@ -73,6 +74,7 @@ data class ArtistDetailState(
     val artist: SpotifyArtistDetail? = null,
     val topTracks: List<SpotifyTrack> = emptyList(),
     val albums: List<com.lightphone.spotify.data.SpotifyAlbumSimple> = emptyList(),
+    val singles: List<com.lightphone.spotify.data.SpotifyAlbumSimple> = emptyList(),
     val error: String? = null,
 )
 
@@ -266,6 +268,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             .downloadedCollectionDao()
             .observeTracksForCollection(collectionUri)
             .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5_000), emptyList())
+    }
+
+    fun playDownloadCollectionFrom(collectionUri: String, startUri: String, contextLabel: String?) {
+        if (!downloadsSupported) return
+        viewModelScope.launch {
+            val rows = com.lightphone.spotify.data.local.PhonoDatabase.get(getApplication())
+                .downloadedCollectionDao()
+                .getTracksForCollection(collectionUri)
+            val start = DownloadPlaybackQueue.fromCollection(rows, startUri) ?: return@launch
+            playTracks(start.tracks, start.startIndex, contextLabel)
+        }
     }
 
     /** Pin a track for offline playback (uses download quality, not streaming). */
@@ -1719,6 +1732,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         artist = result.artist,
                         topTracks = result.topTracks,
                         albums = result.albums,
+                        singles = result.singles,
                     )
                 }
                 .onFailure { e ->

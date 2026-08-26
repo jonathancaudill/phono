@@ -1,6 +1,7 @@
 package com.lightphone.spotify.data.tidal
 
 import com.lightphone.spotify.data.AlbumDetailResult
+import com.lightphone.spotify.data.ARTIST_DISCOGRAPHY_LIMIT
 import com.lightphone.spotify.data.ArtistDetailResult
 import com.lightphone.spotify.data.MusicRepository
 import com.lightphone.spotify.data.PlaylistDetailResult
@@ -54,7 +55,8 @@ class TidalRepository(
         ArtistDetailResult(
             artist = api.artist(id),
             topTracks = api.artistTopTracks(id, limit = 10),
-            albums = api.artistAlbums(id, limit = 50),
+            albums = api.artistAlbums(id, limit = ARTIST_DISCOGRAPHY_LIMIT),
+            singles = api.artistSingles(id, limit = ARTIST_DISCOGRAPHY_LIMIT),
         )
     }
 

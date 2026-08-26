@@ -116,6 +116,54 @@ class TidalApiClientTest {
     }
 
     @Test
+    fun artistAlbums_omitsFilter_andPaginatesPastFifty() {
+        val firstPage = (1..50).joinToString(",") { id ->
+            """{"id": $id, "title": "Album $id"}"""
+        }
+        val secondPage = (51..60).joinToString(",") { id ->
+            """{"id": $id, "title": "Album $id"}"""
+        }
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"items": [$firstPage], "totalNumberOfItems": 60}""",
+            ),
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"items": [$secondPage], "totalNumberOfItems": 60}""",
+            ),
+        )
+
+        val albums = client().artistAlbums("99", limit = 200)
+
+        assertEquals(60, albums.size)
+        assertEquals("tidal:album:1", albums.first().uri)
+        assertEquals("tidal:album:60", albums.last().uri)
+        val first = server.takeRequest()
+        val second = server.takeRequest()
+        assertTrue(first.path!!.contains("/artists/99/albums"))
+        assertTrue(!first.path!!.contains("filter="))
+        assertTrue(second.path!!.contains("offset=50"))
+    }
+
+    @Test
+    fun artistSingles_sendsEpsAndSinglesFilter() {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"items": [{"id": 7, "title": "EP"}], "totalNumberOfItems": 1}""",
+            ),
+        )
+
+        val singles = client().artistSingles("99", limit = 200)
+
+        assertEquals(1, singles.size)
+        assertEquals("tidal:album:7", singles.first().uri)
+        val request = server.takeRequest()
+        assertTrue(request.path!!.contains("/artists/99/albums"))
+        assertTrue(request.path!!.contains("filter=EPSANDSINGLES"))
+    }
+
+    @Test
     fun retriesOn429_thenSucceeds() {
         server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "1"))
         server.enqueue(MockResponse().setResponseCode(200).setBody("""{"id": 3, "title": "Song", "duration": 10}"""))

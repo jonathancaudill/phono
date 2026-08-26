@@ -102,12 +102,25 @@ class NativeMetadataAdapterTest {
                     albumType = "album",
                 ),
             ),
+            singles = listOf(
+                AlbumSummaryNative(
+                    id = "s1",
+                    name = "Single",
+                    uri = "spotify:album:s1",
+                    imageUrl = null,
+                    albumType = "single",
+                ),
+            ),
         )
         val result = NativeMetadataAdapter.toArtistDetailResult(bundle)
         assertEquals("Artist", result.artist.name)
         assertEquals(1, result.topTracks.size)
         assertEquals("Song", result.topTracks.first().name)
         assertEquals(1, result.albums.size)
+        assertEquals("LP", result.albums.first().name)
         assertEquals("Artist", result.albums.first().artists.first().name)
+        assertEquals(1, result.singles.size)
+        assertEquals("Single", result.singles.first().name)
+        assertEquals("Artist", result.singles.first().artists.first().name)
     }
 }

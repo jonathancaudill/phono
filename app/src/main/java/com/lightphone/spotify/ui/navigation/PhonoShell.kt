@@ -468,8 +468,8 @@ private fun NavGraphBuilder.overlayDestinations(
             collectionUri = collectionUri,
             title = title,
             onBack = { overlayNavController.popBackStack() },
-            onPlayTrack = { track ->
-                vm.playTracks(listOf(track), 0, title)
+            onPlayTrack = { startUri ->
+                vm.playDownloadCollectionFrom(collectionUri, startUri, title)
                 overlayNav.navigate(OverlayDestination.Playing)
             },
         )

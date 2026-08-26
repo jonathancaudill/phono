@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
@@ -15,6 +16,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import com.lightphone.spotify.data.SpotifyAlbumSimple
 import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.components.CustomScrollView
@@ -39,6 +41,18 @@ fun ArtistDetailScreen(
     LaunchedEffect(artistId) { vm.loadArtistDetail(artistId) }
 
     val artist = state.artist?.takeIf { it.id == artistId }
+    val openAlbumMenu: (SpotifyAlbumSimple) -> Unit = { album ->
+        vm.showAlbumContextMenu(
+            album.id,
+            album.uri.ifBlank {
+                com.lightphone.spotify.data.backend.collectionUri(
+                    vm.backendChoice,
+                    com.lightphone.spotify.data.backend.CollectionKind.Album,
+                    album.id,
+                )
+            },
+        )
+    }
 
     PhonoScreenShell(
         title = artist?.name ?: "Artist",
@@ -85,44 +99,61 @@ fun ArtistDetailScreen(
                             }
                         }
                     }
-                    if (state.albums.isNotEmpty()) {
-                        item("albums-header") {
-                            LightText(
-                                text = "Albums",
-                                variant = LightTextVariant.Copy,
-                                modifier = Modifier.padding(
-                                    top = if (state.topTracks.isNotEmpty()) legacyNToGridDp(16) else legacyNToGridDp(0),
-                                    bottom = legacyNToGridDp(8),
-                                ),
-                            )
-                        }
-                        itemsIndexed(state.albums, key = { _, a -> a.id }) { _, album ->
-                            Column {
-                                PhonoMediaListItem(
-                                    primaryText = album.name,
-                                    secondaryText = album.artists.joinToString { it.name },
-                                    showImage = false,
-                                    placeholderIcon = Icons.Default.Album,
-                                    onClick = { onOpenAlbum(album.id, album.name) },
-                                    onLongClick = {
-                                        vm.showAlbumContextMenu(
-                                            album.id,
-                                            album.uri.ifBlank {
-                                                com.lightphone.spotify.data.backend.collectionUri(
-                                                    vm.backendChoice,
-                                                    com.lightphone.spotify.data.backend.CollectionKind.Album,
-                                                    album.id,
-                                                )
-                                            },
-                                        )
-                                    },
-                                )
-                                Spacer(Modifier.height(legacyNToGridDp(8)))
-                            }
-                        }
-                    }
+                    discographySection(
+                        headerKey = "albums-header",
+                        title = "Albums",
+                        itemKeyPrefix = "album",
+                        albums = state.albums,
+                        padTop = state.topTracks.isNotEmpty(),
+                        onOpenAlbum = onOpenAlbum,
+                        onAlbumLongClick = openAlbumMenu,
+                    )
+                    discographySection(
+                        headerKey = "singles-header",
+                        title = "Singles",
+                        itemKeyPrefix = "single",
+                        albums = state.singles,
+                        padTop = state.topTracks.isNotEmpty() || state.albums.isNotEmpty(),
+                        onOpenAlbum = onOpenAlbum,
+                        onAlbumLongClick = openAlbumMenu,
+                    )
                 }
             }
+        }
+    }
+}
+
+private fun LazyListScope.discographySection(
+    headerKey: String,
+    title: String,
+    itemKeyPrefix: String,
+    albums: List<SpotifyAlbumSimple>,
+    padTop: Boolean,
+    onOpenAlbum: (String, String) -> Unit,
+    onAlbumLongClick: (SpotifyAlbumSimple) -> Unit,
+) {
+    if (albums.isEmpty()) return
+    item(headerKey) {
+        LightText(
+            text = title,
+            variant = LightTextVariant.Copy,
+            modifier = Modifier.padding(
+                top = if (padTop) legacyNToGridDp(16) else legacyNToGridDp(0),
+                bottom = legacyNToGridDp(8),
+            ),
+        )
+    }
+    itemsIndexed(albums, key = { _, a -> "$itemKeyPrefix-${a.id}" }) { _, album ->
+        Column {
+            PhonoMediaListItem(
+                primaryText = album.name,
+                secondaryText = album.artists.joinToString { it.name },
+                showImage = false,
+                placeholderIcon = Icons.Default.Album,
+                onClick = { onOpenAlbum(album.id, album.name) },
+                onLongClick = { onAlbumLongClick(album) },
+            )
+            Spacer(Modifier.height(legacyNToGridDp(8)))
         }
     }
 }
