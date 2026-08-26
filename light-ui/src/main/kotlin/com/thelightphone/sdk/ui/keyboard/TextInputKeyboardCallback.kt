@@ -3,11 +3,13 @@ package com.thelightphone.sdk.ui.keyboard
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.delete
 import androidx.compose.ui.text.TextRange
-import com.thelightphone.lp3Keyboard.ui.Lp3RepeatableKeyboardCallback
 import com.thelightphone.lp3Keyboard.ui.SpecialKey
+import com.thelightphone.lp3Keyboard.ui.viewmodel.Lp3RepeatableKeyboardCallback
 
 internal class TextInputKeyboardCallback(
     private val state: TextFieldState,
+    private val singleLine: Boolean = false,
+    private val onReturn: () -> Unit = {},
 ) : Lp3RepeatableKeyboardCallback {
 
     override fun onKeyPressed(code: Int) = Unit
@@ -26,7 +28,7 @@ internal class TextInputKeyboardCallback(
                 val before = state.text.subSequence(0, state.selection.min)
                 deleteBeforeCursor(surrogateAwareDeleteCount(before, 1))
             }
-            SpecialKey.Return -> insertAtCursor("\n")
+            SpecialKey.Return -> if (singleLine) onReturn() else insertAtCursor("\n")
             else -> Unit
         }
     }
@@ -44,8 +46,12 @@ internal class TextInputKeyboardCallback(
         insertCodePoint(code)
     }
 
-    override fun onSpecialKeyRepeated(key: SpecialKey) {
-        if (key == SpecialKey.Space) insertAtCursor(" ")
+    override fun onSpecialKeyRepeated(specialKey: SpecialKey) {
+        if (specialKey == SpecialKey.Space) insertAtCursor(" ")
+    }
+
+    override fun onSubmitWord(word: CharSequence) {
+        insertAtCursor(word.toString())
     }
 
     private fun insertCodePoint(code: Int) {

@@ -70,6 +70,7 @@ fun ArtistDetailScreen(
         ) {
             when {
                 state.error != null && artist == null -> EmptyListMessage(state.error!!)
+                state.loading && artist == null -> EmptyListMessage("Loading artist…")
                 else -> CustomScrollView {
                     if (state.topTracks.isNotEmpty()) {
                         item("popular-header") {

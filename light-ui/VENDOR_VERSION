@@ -1,6 +1,6 @@
 0.0.9
 548b25d
-keyboard: com.thelightphone.lp3keyboard:ui:0.0.11 via GitHub Packages (gpr.user/gpr.key in local.properties)
+keyboard: com.github.lightphone:light-keyboard:v0.0.18 via JitPack (Light SDK current pin)
 
 phono local patches (re-apply after scripts/sync-light-ui.sh):
 - LightBarButton: icon/text hit targets use full bar height and min width (not glyph bounds only)

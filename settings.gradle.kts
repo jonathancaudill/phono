@@ -29,6 +29,10 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         maven {
+            name = "JitPack"
+            url = uri("https://jitpack.io")
+        }
+        maven {
             url = uri("https://maven.pkg.github.com/lightphone/light-keyboard")
             credentials {
                 username = localProperty("gpr.user")

@@ -25,7 +25,7 @@ kotlin {
 }
 
 dependencies {
-    api("com.thelightphone.lp3keyboard:ui:0.0.11")
+    api("com.github.lightphone:light-keyboard:v0.0.18")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
