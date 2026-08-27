@@ -1,7 +1,7 @@
 # Phono — Spotify & TIDAL Client for Light Phone III
 
-<a href="https://www.buymeacoffee.com/jonathancaudill" target="_blank" title="buymeacoffee">
-  <img src="https://iili.io/JoQcIJS.md.png"  alt="buymeacoffee-black-badge" style="width: 104px;">
+<a href="https://buymeacoffee.com/jonathancaudill" target="_blank">
+  <img src="https://buymeacoffee.com" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" >
 </a>
 
 <img width="2572" height="1048" alt="phono-readme-mockup" src="https://github.com/user-attachments/assets/0fde28e8-b041-4c93-b457-217fd87fe06f" />
