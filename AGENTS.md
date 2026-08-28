@@ -1,217 +1,286 @@
-# AGENTS.md — phono: Unofficial Spotify Client for Light Phone III
+# AGENTS.md — phono: Spotify & TIDAL client for Light Phone III
 
-Read this entire file before changing anything. This project touches Spotify's internal
-protocols, a patched fork of librespot, and a **dual authentication** scheme (Keymaster for
-playback, BYO dev-app OAuth for metadata). Most of the hard-won knowledge here is NOT
-discoverable from the code alone, and several "obvious" changes will silently break playback
-or metadata. When in doubt, do less.
+Read this entire file before changing anything. Dual Spotify auth, three patched
+librespot crates, and a two-backend playback split hide most of the hard-won
+knowledge. Obvious changes silently break playback or metadata. When in doubt, do less.
 
----
-
-## What This Is
-
-A minimal, self-contained Spotify client for the Light Phone III (LightOS). It plays Spotify
-Premium audio **without** the official Spotify app and browses the user's library via the
-public Web API. Built on a patched fork of **librespot** (Rust playback) plus a Kotlin/Jetpack
-Compose UI layer.
-
-**Lineage:** UI and Light Phone product patterns descend from
-**[Echo](https://github.com/vandamd/echo)** and
-**[Light Template](https://github.com/vandamd/light-template)** (Vandam Dinh). Playback/session
-patterns also draw on **psst** and **librespot** itself.
-
-Spotify Premium is REQUIRED. Free accounts are not and will never be supported (librespot
-limitation). This is not a bug to fix.
+Architecture index: [docs/README.md](docs/README.md).
 
 ---
 
-## Repository Layout
+## What this is
+
+A minimal LightOS (Light Phone III) music client. The user picks **one** backend
+at first launch (`BackendPickerScreen` → `BackendPreferences`). Switching
+backends means signing out and re-picking.
+
+Spotify **Premium** or an active TIDAL account is required. Free Spotify is a
+librespot limitation, not a bug. Do not work around it.
+
+**Lineage:** UI from [Echo](https://github.com/vandamd/echo) and
+[Light Template](https://github.com/vandamd/light-template) (Vandam Dinh).
+Spotify playback/session patterns from **psst** and **librespot**.
+
+---
+
+## Repository
 
 ```
-/
-├── rust/
-│   ├── spotify-core/              # Rust core: librespot playback + daily-mix discovery
-│   │   └── src/
-│   │       ├── lib.rs             # EngineShared, UniFFI exports, session build, identity init
-│   │       ├── auth.rs            # Keymaster OAuth/PKCE (playback bootstrap only)
-│   │       ├── library.rs         # Daily Mix discovery via spclient context-resolve only
-│   │       └── android_ctx.rs     # Native init (called from Kotlin), identity overrides
-│   └── librespot-core-patched/    # PATCHED fork of librespot-core 0.8.0 (see "The Patch")
-│       └── src/{config.rs, version.rs, spclient.rs, login5.rs, ...}
-├── app/                           # Android app (Kotlin + Jetpack Compose)
-│   └── src/main/java/.../data/
-│       ├── webapi/                # SpotifyWebApi, WebApiAuth (dev-app OAuth + api.spotify.com)
-│       ├── SpotifyRepository.kt   # UI-facing metadata + search cache + ranking
-│       └── SearchRanking.kt       # Client-side search relevance + interleave
-└── README.md
+rust/spotify-core/                          UniFFI engine: session, player, queue, Spotify pins
+rust/librespot-core-patched/                Keymaster/desktop identity (PATCHES.md)
+rust/librespot-playback-patched/            Buffering API, sink lifecycle, seek/skip flush
+rust/librespot-audio-patched/               CDN 429 + parallel range slots
+app/                                        Kotlin + Compose (Spotify + TIDAL)
+setup/                                      GitHub Pages QR helper for Spotify Step 2
+docs/                                       Architecture, offline pins, field tests
+scripts/build-rust.sh                       Cross-compile + UniFFI Kotlin bindings
 ```
 
-librespot is pinned to `=0.8.0` and patched via `[patch.crates-io]`. **DO NOT bump** — the
-patch is written against 0.8.0's exact internal structure.
+All three librespot crates are pinned to **`=0.8.0`** via `[patch.crates-io]` in
+`rust/spotify-core/Cargo.toml`. Bump none of them without re-validating every patch.
+
+Shared Kotlin seams: `PlaybackBackend` + `MusicRepository`. Domain models are the
+`Spotify*` DTOs for **both** services, distinguished by `spotify:` / `tidal:` URIs.
+
+`minSdk` is **33**. Native init order (Spotify): `loadLibrary` →
+`initAndroidContext` → `registerAudioSink` (audiotrack builds).
 
 ---
 
-## Dual Authentication (do not conflate)
+## Backend split
+
+`PlaybackController` binds one `PlaybackBackend` + one `MusicRepository`.
+
+| | Spotify | TIDAL |
+|---|---|---|
+| Playback | `LibrespotPlaybackBackend` (UniFFI) | `TidalPlaybackBackend` (Media3 ExoPlayer) |
+| Metadata | Dev-app Web API + Login5 spclient | `TidalApiClient` REST |
+| Auth | Dual OAuth (below) | `TidalAuth` PKCE WebView (device-grant exists) |
+| Audio | Path C AudioTrack sink | ExoPlayer; **clear** AAC/FLAC only (skip Widevine) |
+| Pins | Rust decrypt-to-Ogg | Media3 `DownloadManager` |
+
+`PlaybackController` owns audio focus, `StreamingPolicy`, stall UX, and the
+`OfflineDownloadCenter` façade. TIDAL logout clears backend choice and returns
+to the picker. TIDAL has no Spotify-style Step 2.
+
+---
+
+## Dual authentication (Spotify — do not conflate)
 
 | Step | Purpose | Client | Redirect URI | Token used for |
 |------|---------|--------|--------------|----------------|
-| **1 — Playback** | librespot session | Keymaster (`65b708073fc0480ea92a077233ca87bd`) | `http://127.0.0.1:8898/login` | Streaming only |
-| **2 — Web API** | Metadata/library | User's dev-app Client ID | `http://127.0.0.1:43821/callback` | `api.spotify.com/v1/*` only |
+| **1 — Playback** | librespot session | Keymaster (`65b708073fc0480ea92a077233ca87bd`) | `http://127.0.0.1:8898/login` | Streaming + spclient only |
+| **2 — Web API** | Metadata/library | User's own dev-app Client ID | `http://127.0.0.1:43821/callback` | `api.spotify.com/v1/*` only |
 
-**Critical:** Never send the Keymaster/Login5 token to `api.spotify.com` — Spotify rate-limits
-and locks down that surface for first-party tokens. Metadata **must** use the dev-app OAuth
-bearer from `WebApiAuth` (`app/.../webapi/WebApiAuth.kt`).
+Token routing:
 
-Username/password auth is dead (Spotify disabled it mid-2024). OAuth WebView flows only.
+- `api.spotify.com` ← **only** `WebApiAuth.currentBearer()` (dev-app).
+- spclient / Login5 / streaming ← **only** the Keymaster session.
 
----
+Never send the Keymaster/Login5 token to `api.spotify.com`. Never send the
+dev-app bearer to spclient hosts.
 
-## Playback Identity: Three Surfaces Must Agree (Keymaster)
+Step 1 capture: WebView intercept **plus** `SpotifyOAuthLoopback` on `:8898`.
+The loopback server exists because email-OTP often skips
+`shouldOverrideUrlLoading` — do not remove it. Host is `127.0.0.1`, never
+`localhost`.
 
-Spotify decides how to treat librespot traffic based on client identity. For **playback**
-(session, spclient, Login5, client-token), all three surfaces must present as Keymaster/desktop:
+Username/password auth is dead (Spotify disabled it mid-2024). OAuth WebView only.
 
-1. **Session client ID** — `session_config.client_id = auth::CLIENT_ID` (Keymaster). Same ID
-   used in Step 1 OAuth (`auth.rs`).
-
-2. **Stored-credential scope** — cached `auth_data` from OAuth is tied to Keymaster.
-
-3. **Client-token client ID** — stock librespot would use `ANDROID_CLIENT_ID` on Android; **the
-   patch** forces session (Keymaster) client ID instead.
-
-If these disagree, Login5 fails with opaque errors (`InvalidCredentials`, `FaultyRequest`).
-
-### Why "android" is the enemy
-
-Stock librespot routes off `std::env::consts::OS == "android"` for client-token ID, UA
-platform, and Spotify version — each contradicts Keymaster/desktop. We force Linux desktop via
-runtime overrides + the patch.
-
-### Runtime overrides (FIRST WRITE WINS — ordering matters)
-
-- `android_ctx.rs`: `set_os_version_override("0")` — Kotlin must call
-  `NativeInit.initAndroidContext` after `System.loadLibrary()`, before engine construction.
-- `lib.rs` `EngineShared::new()`: `set_http_platform_override("linux")`.
-- **DO NOT** add a second `set_os_version_override` in `lib.rs` (OnceLock no-op).
+TIDAL OAuth is a separate stack (`TidalAuth.REDIRECT_URI` =
+`https://tidal.com/android/login/auth`). Do not reuse Spotify redirect URIs or
+tokens. TIDAL client IDs rotate; `TidalAuth` accepts a persisted override.
 
 ---
 
-## The Patch (`librespot-core-patched`)
+## Playback identity: three surfaces must agree (Keymaster)
 
-Minimal patch against librespot-core 0.8.0:
+For **Spotify** session, spclient, Login5, and client-token, all three surfaces
+must present as Keymaster/desktop Linux:
 
-- **`config.rs`**: `HTTP_PLATFORM_OVERRIDE`, `OS_VERSION_OVERRIDE`, `effective_os()`
-- **`spclient.rs`**: client-token uses session (Keymaster) ID on Android; `desktop_linux` platform
-- **`version.rs`**: desktop version numbers when presenting as Linux
-- **`login5.rs`**: UNCHANGED — do not "fix" it
+1. **Session client ID** — `session_config.client_id = auth::CLIENT_ID` (same ID
+   as Step 1 OAuth in `auth.rs`).
+2. **Stored-credential scope** — cached `auth_data` is tied to Keymaster.
+3. **Client-token client ID** — stock librespot would use `ANDROID_CLIENT_ID` on
+   Android; **the core patch** forces the session (Keymaster) ID instead.
+
+If these disagree, Login5 fails with opaque errors (`InvalidCredentials`,
+`FaultyRequest`).
+
+Stock librespot routes off `std::env::consts::OS == "android"` for client-token
+ID, UA platform, and Spotify version — each contradicts Keymaster/desktop.
+Runtime overrides + the core patch force Linux desktop.
+
+### Runtime overrides (OnceLock — first write wins)
+
+1. `android_ctx.rs` via `NativeInit.initAndroidContext`: `set_os_version_override("0")`.
+   Kotlin must call this after `System.loadLibrary()`, before engine construction.
+2. `lib.rs` `EngineShared::new()`: `set_http_platform_override("linux")`.
+
+Do not add a second `set_os_version_override` in `lib.rs` (silent no-op).
+
+### The three patches
+
+- **core** — Keymaster/desktop identity; `login5.rs` is **unchanged** on purpose.
+- **playback** — `BufferCurrentToEnd`, `RecreateSink`, discontinuous `load` flush
+  (user skip/play must not overlap the outgoing PCM tail).
+- **audio** — two concurrent CDN range slots; drop the download permit before
+  429 `Retry-After` sleep.
+
+Details live in each crate's `PATCHES.md`. AudioTrack sink itself lives in
+`spotify-core` (`pcm_ring.rs`, `audio_drain.rs`, JNI → `PhonoAudioTrackSink`).
 
 ---
 
-## Metadata — dual path (native spclient + Kotlin Web API)
+## Spotify metadata — dual path
 
-**Playlists and artists** use native spclient (Login5) via `NativeMetadataGateway` →
-`LibrespotEngine` UniFFI (`playlist.rs`, `artist.rs`). Step 1 playback session must be active.
+**Playlists and artists** use native spclient (Login5) via `NativeMetadataGateway`
+→ UniFFI (`playlist.rs`, `artist.rs`, `user_profile.rs`). Step 1 session must be
+active. Playlist writes: [docs/native-playlist-writes.md](docs/native-playlist-writes.md).
 
-**Search, liked songs, saved albums, album detail, library saves** use the Kotlin Web API
-(`SpotifyWebApi.kt`) with the **dev-app bearer** from `WebApiAuth.currentBearer()`.
+**Search, liked songs, saved albums, album detail, library save/contains** use
+Kotlin `SpotifyWebApi` with the **dev-app bearer**. Library lists land in Room
+(`LibraryRepository`) with head-check delta sync and parallel 50-item page fill.
 
 | Feature | Implementation |
 |---------|----------------|
-| Search | Web API: `GET /search?type=artist,album,track,playlist&market=from_token`; client ranking in `SearchRanking.kt` |
-| Liked songs | Web API: `GET /me/tracks` (paginated) |
-| Saved albums | Web API: `GET /me/albums` (paginated, limit up to 500) |
-| Album detail | Web API: `GET /albums/{id}` |
-| Save/remove track/album | Web API: `PUT`/`DELETE /me/library` |
-| is_saved | Web API: `GET /me/library/contains` |
-| Playlist browse/edit | Native spclient: `get_playlist`, continuation pagination, `ListChanges` writes |
-| Artist detail | Native spclient: `artist.rs` extended-metadata (top tracks + albums) |
-| Playlist owner display names | spclient `user-profile-view` via `user_profile.rs`; Web API `/users/{id}` fallback |
+| Search | Web API `GET /search?type=artist,album,track,playlist&market=from_token`; rank in `SearchRanking.kt` |
+| Liked songs / saved albums | Web API `/me/tracks`, `/me/albums` (50-item pages → Room) |
+| Album detail | Web API `GET /albums/{id}` |
+| Save / remove / is_saved | Web API `PUT`/`DELETE`/`GET` `/me/library` (+ `/contains`) |
+| Playlist browse/edit | Native spclient: `get_playlist`, continuation pagination, `ListChanges` |
+| Artist detail | Native spclient extended-metadata |
+| Playlist owner names | spclient `user-profile-view`; Web API `/users/{id}` fallback |
 | Daily mixes | Native context-resolve (`library.rs`); Web API fallback in repository |
-| User playlists sync | Native rootlist when Step 1 active; Web API `savedPlaylistsPage` fallback only |
+| User playlists sync | Native rootlist when Step 1 is live; Web API `savedPlaylistsPage` fallback only |
+
+Do not move search or liked/saved-album reads into Rust.
 
 ### Web API request rules
 
 - Headers: `Authorization: Bearer {dev_app_token}`, `Accept: application/json` only.
-- **DO NOT** send `client-token`, `app-platform`, or per-request User-Agent to `api.spotify.com`.
-- Honor `Retry-After` on HTTP 429 (capped retries in `SpotifyWebApi.executeWithRetry`).
-- Use `market=from_token` on search (not `marker`).
-- Search responses may contain **null slots** in `items` arrays — use `SearchPagedResponse<T?>` and
-  `filterNotNull()`; never treat empty as error.
-- Paginate library endpoints in 50-item pages; saved albums caller clamp is `clamp(1, 500)`.
+- Do not send `client-token`, `app-platform`, or a per-request User-Agent to
+  `api.spotify.com`.
+- Honor `Retry-After` on HTTP 429 (`SpotifyWebApi.executeWithRetry`).
+- Use `market=from_token` (not `marker`).
+- Search/library `items` arrays may contain **null slots** — parse
+  `SearchPagedResponse<T?>` and `filterNotNull()`. Empty results are valid.
+- Search is **one** combined call per query. Filter chips (All/Songs/Artists/Albums/Playlists)
+  filter the in-memory cache — zero extra API calls.
 
-### Search ranking (client-side)
-
-Spotify returns per-type buckets, not a cross-type SERP. `SearchRanking.rank()` picks a top
-result (text match + popularity + API rank), then round-robin interleaves the remainder for
-variety. Filter chips (All/Songs/Artists/Albums/Playlists) filter cached data — **zero extra
-API calls**.
-
----
-
-## Rust Native Path (playback + playlists/artists + daily mixes)
-
-`playlist.rs` and `artist.rs` implement spclient reads/writes for playlist and artist screens.
-`library.rs` implements Daily Mix / Made-For-You discovery via `spotify:search:…` context-resolve,
-with Web API fallback in `SpotifyRepository.dailyMixes()`.
-
-Do not move search or liked/saved-album reads back into Rust unless you have a compelling reason —
-dev-app Web API remains the supported path for those features.
+`SearchRanking.rank()` picks a top result (text match + popularity + API rank),
+then round-robin interleaves the remainder.
 
 ---
 
 ## Playback
 
-librespot streams over TCP to `ap-*.spotify.com`. Android audio uses a native **`AudioTrack`** sink
-(Path C: SPSC ring + Rust drain thread → Kotlin `PhonoAudioTrackSink` via JNI). The drain thread
-uses `WRITE_BLOCKING`; the librespot player thread only pushes to the ring. See
-[docs/audio-sink.md](docs/audio-sink.md).
+Spotify: librespot TCP to `ap-*.spotify.com`. Android output is native
+**AudioTrack** (Path C: SPSC ring + Rust drain thread → JNI
+`PhonoAudioTrackSink`). Drain uses `WRITE_BLOCKING`; the player thread only
+pushes the ring. [docs/audio-sink.md](docs/audio-sink.md).
 
-Release builds default to `audiotrack-sink`; set `USE_AUDIOTRACK_SINK=false` in `build.gradle.kts` +
-`USE_AUDIOTRACK_SINK=0` in `build-rust.sh` to fall back to rodio/cpal/AAudio.
+Release builds default to `audiotrack-sink`. Rodio/cpal/AAudio fallback:
+`USE_AUDIOTRACK_SINK=0` in `build-rust.sh` **and** `USE_AUDIOTRACK_SINK=false`
+in `app/build.gradle.kts` — both must match.
 
-`MediaSession` / Media3 for lock-screen controls and audio focus. `PlaybackController` owns audio
-focus in Kotlin. Session rebuild (not librespot-java in-place reconnect):
+Session recovery is a full `Active` rebuild with queue/position restore — not
+librespot-java in-place reconnect.
 [docs/future/session-reconnect.md](docs/future/session-reconnect.md).
 
----
+`StreamingPolicy` banks the current track then prefetches on good networks.
+Wi‑Fi must stay visible **30 seconds** before it is preferred over cellular.
 
-## Hard Rules — Violating These Breaks The App
+`MediaSession` / Media3 for lock-screen controls. `PlaybackController` owns
+audio focus. `PlaybackService` must `startForeground()` promptly after
+`startForegroundService()`.
 
-- DO NOT bump librespot off `=0.8.0`.
-- DO NOT use Keymaster/Login5 token for `api.spotify.com` metadata — dev-app OAuth only.
-- DO NOT use Keymaster client ID for the Web API dev-app registration — users bring their own.
-- DO NOT mix Step 1 and Step 2 redirect URIs (`8898/login` vs `43821/callback`).
-- DO NOT change the three playback identity surfaces out of agreement (Keymaster everywhere).
-- DO NOT add a second `set_os_version_override` in `lib.rs`.
-- DO NOT reintroduce pathfinder (`api-partner.spotify.com/pathfinder`).
-- DO NOT implement username/password auth.
-- DO NOT treat empty search/library results as errors.
-- DO NOT cross-contaminate redirect URI host: use `127.0.0.1`, never `localhost`.
+TIDAL: ExoPlayer + stream LRU under `cacheDir/tidal-stream`. Offline pins under
+`filesDir/tidal-downloads`.
 
 ---
 
-## When Things Break: Diagnostic Map
+## Offline pins
 
-- **Login5 / playback auth fails** → identity surface disagreement or overrides ran wrong order.
-  Check Keymaster client ID, `set_http_platform_override("linux")`, `set_os_version_override("0")`,
-  patch client-token alignment.
-- **Web API 401/403** → wrong token (Keymaster token on api.spotify.com?) or Step 2 not completed.
-- **Web API 429** → missing Retry-After handling or too many sequential requests; search should
-  be **one** combined call per query.
-- **Search JSON parse error on playlists** → null items in response; ensure nullable list parsing.
-- **Search results screen crash** → never force-unwrap `results` inside LazyColumn scope; keep
-  stale results while reloading.
-- **Saved albums truncated at 50** → caller clamp must be `clamp(1, 500)`.
+UI talks only to `OfflineDownloadCenter`. Engines differ; Room index is shared.
+[docs/offline-downloads.md](docs/offline-downloads.md).
+
+- Streaming quality and download quality are **independent**. Changing download
+  quality never rewrites completed pins.
+- Settings → Clear Cache wipes stream LRUs only (`spotify-cache/audio`,
+  `tidal-stream`). Pins stay.
+- If Phono has seen no network for **30+ days**, `OfflinePinHygiene` wipes pins
+  (TOS guard). Credentials and stream cache are left alone.
+- Pin-queue pacing: [docs/download-rate-limiting.md](docs/download-rate-limiting.md).
+- Airplane mode: Spotify builds an **offline Active** (`Session::new` without
+  connect) so completed Ogg pins still play.
+
+---
+
+## Self-update
+
+GitHub-release APK installer in `app/.../update/`.
+[docs/self-update.md](docs/self-update.md). Release APKs must be signed with the
+same key and ship **exactly one** `.apk` asset.
+
+---
+
+## Hard rules — violating these breaks the app
+
+- Keep librespot at `=0.8.0` on all three patched crates.
+- Use the dev-app bearer for `api.spotify.com`; use Keymaster for streaming/spclient.
+- Users bring their own Web API Client ID — never register Keymaster as the Step 2 app.
+- Keep Step 1 and Step 2 redirect URIs distinct (`8898/login` vs `43821/callback`).
+- Keep the three playback identity surfaces in agreement (Keymaster everywhere).
+- Set `os_version` override only in `android_ctx.rs`.
+- Leave `login5.rs` unchanged.
+- Keep pathfinder (`api-partner.spotify.com/pathfinder`) out of the tree.
+- Use OAuth WebView only — no username/password.
+- Treat empty search/library results as valid.
+- Use `127.0.0.1` in Spotify redirect URIs, never `localhost`.
+- Recover Spotify sessions by rebuilding `Active`, not `Session.reconnect()`.
+- Keep the 30-day offline pin wipe.
+- Keep streaming vs download quality independent; Clear Cache must not delete pins.
+
+---
+
+## When things break
+
+- **Login5 / playback auth fails** → identity surfaces disagree, or overrides ran
+  in the wrong order. Check Keymaster client ID, `set_http_platform_override("linux")`,
+  `set_os_version_override("0")`, core-patch client-token alignment.
+- **Web API 401/403** → Keymaster token sent to `api.spotify.com`, or Step 2 not done.
+- **Web API 429** → missing `Retry-After`, or more than one search call per query.
+- **Search JSON parse error on playlists** → null `items` slots; keep nullable lists.
+- **Search results screen crash** → never force-unwrap `results` inside LazyColumn;
+  keep stale results while reloading.
+- **Saved albums look truncated** → Room fill stalled (empty page / head-check),
+  not a 50-item API cap. Pages are 50; `fillRemainingParallel` walks the rest.
 - **User-Agent wrong in playback logs** → `version.rs` not using `effective_os()`.
+- **Overlapping audio on skip/reconnect** → user loads must use
+  `load_discontinuous` (flush); check `sink_epoch_rejected_writes` /
+  `stale_load_suppressed` in `PlaybackDebugMetrics`.
+- **Spotify Step 1 WebView never returns** → loopback server on `:8898` not running.
+- **Offline pins vanished** → 30-day hygiene, not Clear Cache.
+- **TIDAL track silent / error** → Widevine/encrypted path; only clear BTS/DASH plays.
+- **Self-update needs a tap** → signing-key mismatch or more than one APK asset.
 
 ---
 
-## Reference Clients
+## Reference
 
-- **[Echo](https://github.com/vandamd/echo)** (Vandam Dinh) — Light Phone Spotify UX, Web API
-  metadata patterns, dev-app setup flow. phono's UI descends from Light Template.
-- **psst** — librespot playback/session reference; search API structure (single combined `/search`).
-- **librespot** — protocol source of truth for session, Login5, spclient, playback.
-- **Jetispot** — informative for librespot-java reconnect + `AndroidSinkOutput`; phono uses Rust
-  stack with seamless rebuild instead. See [docs/future/session-reconnect.md](docs/future/session-reconnect.md).
-- **Developer docs** — [docs/README.md](docs/README.md) for architecture index and field tests.
+- **Echo** — Light Phone UX, Web API metadata patterns, dev-app setup flow.
+- **psst** — librespot playback/session; combined `/search` (we use `market`, not its `marker` typo).
+- **librespot** — session, Login5, spclient, playback protocol.
+- **Jetispot** — Android sink + reconnect history; we rebuild instead.
+  [docs/future/session-reconnect.md](docs/future/session-reconnect.md).
+
+Reach for these when the matching work is in scope:
+
+- [docs/audio-sink.md](docs/audio-sink.md) — AudioTrack threading and recovery
+- [docs/offline-downloads.md](docs/offline-downloads.md) — pins, TOS wipe, airplane mode
+- [docs/download-rate-limiting.md](docs/download-rate-limiting.md) — pin-queue pacing
+- [docs/self-update.md](docs/self-update.md) — GitHub release updater / signing
+- [docs/native-playlist-writes.md](docs/native-playlist-writes.md) — spclient playlist mutations
+- [docs/playback-stability-field-tests.md](docs/playback-stability-field-tests.md) — reconnect / overlap counters
+- `rust/librespot-*-patched/PATCHES.md` — patch internals
