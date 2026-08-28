@@ -69,14 +69,21 @@ fun AlbumDetailScreen(
         onRightIconClick = { vm.toggleAlbumSave(albumId) },
         rightLoading = state.saving || showSaveLoading,
         secondaryRightLightIcon = when {
-            !showDownloadControl || downloadUi == CollectionDownloadUi.Downloading -> null
+            !showDownloadControl -> null
+            downloadUi == CollectionDownloadUi.Downloading -> null
             downloadUi == CollectionDownloadUi.Complete -> LightIcons.DOWNLOADED_ARROW
             else -> LightIcons.DOWNLOAD_ARROW
         },
-        onSecondaryRightIconClick = if (showDownloadControl && downloadUi != CollectionDownloadUi.Downloading) {
+        onSecondaryRightIconClick = if (showDownloadControl) {
             {
-                if (downloadUi == CollectionDownloadUi.Complete) vm.removeCurrentAlbumDownloads()
-                else vm.downloadCurrentAlbum()
+                when (downloadUi) {
+                    CollectionDownloadUi.Complete -> vm.removeCurrentAlbumDownloads()
+                    CollectionDownloadUi.Downloading -> vm.pauseCurrentAlbumDownloads()
+                    CollectionDownloadUi.Paused,
+                    CollectionDownloadUi.Partial,
+                    -> vm.resumeCurrentAlbumDownloads()
+                    CollectionDownloadUi.None -> vm.downloadCurrentAlbum()
+                }
             }
         } else {
             null

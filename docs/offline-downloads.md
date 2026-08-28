@@ -39,10 +39,22 @@ If Phono has not seen a usable network for 30+ days, [`OfflinePinHygiene`](../ap
 
 ## Pacing
 
-Collection pins are one track at a time with a hard-set **2.5–5 s** pause
-between tracks (Spotify audio-key / file open, TIDAL `playbackinfopostpaywall`).
-A detected 429 waits **20 s** before the next attempt. Not user-configurable.
-Shared implementation: [`DownloadPacing`](../app/src/main/java/com/lightphone/spotify/playback/download/DownloadPacing.kt).
+Collection pins stay **one track at a time** (existing drain). Gaps are
+`BASE + uniform(0, 50% × BASE)` from global remaining queued work, not the
+current album size — twenty 10-track albums share the large-queue BASE.
+
+| Remaining tracks | Balanced BASE | Fast | Careful |
+|------------------|---------------|------|---------|
+| ≤ 15 | 2.5s | 2.5s | 2.5s |
+| 16–40 | 10s | 2.5s | 10s + occasional 45s pause |
+| 41+ | `clamp(0.12 × duration, 12s, 40s)` | 2.5s | same + ~15% chance of a 90s pause |
+
+A 429 / audio-key error does **not** fail the track. The queue waits
+(Retry-After if present, else 45s / 2m / 5m) and retries. After three trips
+remaining work is **paused** (`STOPPED`); completed pins are kept. Settings →
+Download speed: Fast / Balanced / Careful.
+
+Shared math: [`DownloadPacing`](../app/src/main/java/com/lightphone/spotify/playback/download/DownloadPacing.kt).
 Research: [download-rate-limiting.md](download-rate-limiting.md).
 
 ## Cold start

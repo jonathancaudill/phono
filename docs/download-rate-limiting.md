@@ -3,12 +3,10 @@
 Research note for phono album/playlist pins. Mature unofficial Spotify and TIDAL
 clients do **not** treat every HTTP 429 as the same surface. Web API
 (`api.spotify.com`) documents a rolling 30s window and `Retry-After`. Audio CDN,
-spclient, audio-key, and TIDAL `playbackinfo` are separate. Phono already
-downloads **one track at a time**; the remaining gap is inter-track pacing plus
-Retry-After-aware cooldown. **Hard-code a 2.5–5s jittered stagger, keep
-parallelism at 1, honor `Retry-After` on the pin queue, and do not expose a
-user-facing delay slider.** 400–1200ms is below every mature sequential
-downloader surveyed.
+spclient, audio-key, and TIDAL `playbackinfo` are separate. Phono downloads
+**one track at a time**. Gaps are `BASE + 0–50%` from **global remaining work**,
+with Fast / Balanced / Careful. Rate limits trip a circuit breaker (pause the
+queue, keep completed pins) instead of failing tracks.
 
 ## Comparison
 
@@ -25,7 +23,7 @@ downloader surveyed.
 | **tidal-dl-ng** | After each successful media download (API+CDN cycle) | `downloads_concurrent_max` default **3** | **3–5s** random when delay on | Not header-specific in download loop (delay is proactive) | Yes: delay on/off, min/max sec, concurrent max |
 | **orpheusdl-tidal** | `playbackinfopostpaywall` | Sequential in core | **None** | Comments mention rate limit; **no 429/Retry-After handler** | No throttle knobs |
 | **OnTheSpot** | Spotify (librespot) + TIDAL | `maximum_download_workers` default **1** | **`download_delay`: 3s** after each item | Retry worker optional (minutes, not 429) | Yes |
-| **phono (this change)** | Spotify: audio-key + CDN. TIDAL: playbackinfo (not Media3 CDN bytes) | Spotify queue **1**. TIDAL Media3 **1**. CDN slots **2** | **2500–5000ms** jitter | Spotify: 20s cooldown on 429 (8 tries); non-429 still 2s/5s/10s. TIDAL API: Retry-After + 20s if resolve still 429s | No (hard-set) |
+| **phono (this change)** | Spotify: audio-key + CDN. TIDAL: playbackinfo (not Media3 CDN bytes) | Spotify queue **1**. TIDAL Media3 **1**. CDN slots **2** | **BASE + 0–50%** from remaining work (Fast 2.5s; Balanced 2.5s / 10s / 12–40s) | Circuit: Retry-After or 45s/2m/5m; pause queue after 3 trips (keep completed) | Fast / Balanced / Careful (not a delay slider) |
 
 ## Surfaces (do not conflate)
 
@@ -315,19 +313,10 @@ seconds on Wi‑Fi), not playback-rate spacing.
 ## What we shipped
 
 Hard-set in [`DownloadPacing`](../app/src/main/java/com/lightphone/spotify/playback/download/DownloadPacing.kt)
-(not a Settings row):
-
-| Knob | Value |
-|------|-------|
-| Parallel tracks | 1 (unchanged) |
-| Inter-track / playbackinfo jitter | **2500–5000ms** |
-| Detected 429 cooldown | **20s**, up to 8 Spotify pin retries |
-| CDN `download_slots` | left at 2 |
-| Real-time byte pacing | no |
-
-Spotify uses it after each pin attempt and on rate-limit failures. TIDAL uses
-it after each playbackinfo resolve (not on Media3 CDN bytes). See
-[offline-downloads.md](offline-downloads.md#pacing).
+was replaced by **BASE + 0–50% jitter**, sized from **global remaining work**,
+with Fast / Balanced / Careful. The drain loop is unchanged (one track at a
+time). A 429 pauses the queue after three circuit trips instead of marking
+tracks failed. See [offline-downloads.md](offline-downloads.md#pacing).
 
 ## Which surface is most likely causing phono’s Spotify 429s
 

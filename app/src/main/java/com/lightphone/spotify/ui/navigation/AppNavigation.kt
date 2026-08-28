@@ -16,7 +16,9 @@ import com.lightphone.spotify.ui.light.LightPhonoTheme
 import com.lightphone.spotify.ui.screens.EmptyListMessage
 import com.lightphone.spotify.ui.screens.LoginScreen
 import com.lightphone.spotify.ui.screens.TidalLoginScreen
+import com.lightphone.spotify.ui.screens.UpdateScreen
 import com.lightphone.spotify.ui.screens.WebApiSetupScreen
+import com.lightphone.spotify.update.UpdateViewModel
 import com.thelightphone.sdk.ui.LightThemeTokens
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -51,37 +53,52 @@ fun SpotifyApp(
     val onLoginBack = {
         vm.logout(onReturnToPicker)
     }
+    // Activity-scoped, so the "Check for updates" row in Settings drives this same overlay.
+    val updateVm: UpdateViewModel = viewModel()
+    val updateState by updateVm.state.collectAsState()
+    LaunchedEffect(auth.loggedIn) {
+        if (auth.loggedIn) updateVm.checkOnLaunch()
+    }
     LightPhonoTheme {
-        when {
-            !auth.authInitialized -> Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(LightThemeTokens.colors.background),
-            ) {
-                EmptyListMessage("Loading…")
-            }
-            !auth.loggedIn ->
-                if (vm.backendChoice == BackendChoice.TIDAL) {
-                    TidalLoginScreen(vm, onBack = onLoginBack)
-                } else {
-                    LoginScreen(vm, onBack = onLoginBack)
+        Box(Modifier.fillMaxSize()) {
+            when {
+                !auth.authInitialized -> Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(LightThemeTokens.colors.background),
+                ) {
+                    EmptyListMessage("Loading…")
                 }
-            // Spotify Step 2 only — TIDAL never uses the dev-app Web API.
-            vm.backendChoice == BackendChoice.SPOTIFY && !auth.webApiReady -> WebApiSetupScreen(vm)
-            else -> {
-                LaunchedEffect(Unit) { vm.onLoggedIn() }
-                if (libraryBootstrapping) {
-                    Box(
-                        Modifier
-                            .fillMaxSize()
-                            .background(LightThemeTokens.colors.background),
-                    ) {
-                        EmptyListMessage("Loading your library…")
+                !auth.loggedIn ->
+                    if (vm.backendChoice == BackendChoice.TIDAL) {
+                        TidalLoginScreen(vm, onBack = onLoginBack)
+                    } else {
+                        LoginScreen(vm, onBack = onLoginBack)
                     }
-                } else {
-                    PhonoShell(vm)
+                // Spotify Step 2 only — TIDAL never uses the dev-app Web API.
+                vm.backendChoice == BackendChoice.SPOTIFY && !auth.webApiReady -> WebApiSetupScreen(vm)
+                else -> {
+                    LaunchedEffect(Unit) { vm.onLoggedIn() }
+                    if (libraryBootstrapping) {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .background(LightThemeTokens.colors.background),
+                        ) {
+                            EmptyListMessage("Loading your library…")
+                        }
+                    } else {
+                        PhonoShell(vm)
+                    }
                 }
             }
+
+            UpdateScreen(
+                state = updateState,
+                onIgnore = updateVm::ignore,
+                onApply = updateVm::applyUpdate,
+                onDismiss = updateVm::dismiss,
+            )
         }
     }
 }

@@ -50,6 +50,7 @@ data class DownloadedCollectionWithProgress(
     val completed_count: Int,
     val in_progress_count: Int,
     val failed_count: Int,
+    val stopped_count: Int,
 )
 
 @Dao
@@ -59,6 +60,9 @@ interface DownloadedCollectionDao {
 
     @Query("SELECT * FROM downloaded_collections WHERE uri = :uri LIMIT 1")
     fun observeByUri(uri: String): Flow<DownloadedCollectionEntity?>
+
+    @Query("SELECT * FROM downloaded_collections WHERE uri = :uri LIMIT 1")
+    suspend fun getByUri(uri: String): DownloadedCollectionEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: DownloadedCollectionEntity)
@@ -97,7 +101,8 @@ interface DownloadedCollectionDao {
           COUNT(m.track_uri) AS track_count,
           SUM(CASE WHEN t.state = :completedState THEN 1 ELSE 0 END) AS completed_count,
           SUM(CASE WHEN t.state IN (:queuedState, :downloadingState, :restartingState) THEN 1 ELSE 0 END) AS in_progress_count,
-          SUM(CASE WHEN t.state = :failedState THEN 1 ELSE 0 END) AS failed_count
+          SUM(CASE WHEN t.state = :failedState THEN 1 ELSE 0 END) AS failed_count,
+          SUM(CASE WHEN t.state = :stoppedState THEN 1 ELSE 0 END) AS stopped_count
         FROM downloaded_collections c
         LEFT JOIN downloaded_collection_tracks m ON m.collection_uri = c.uri
         LEFT JOIN downloaded_tracks t ON t.uri = m.track_uri
@@ -111,6 +116,7 @@ interface DownloadedCollectionDao {
         downloadingState: Int,
         restartingState: Int,
         failedState: Int,
+        stoppedState: Int,
     ): Flow<List<DownloadedCollectionWithProgress>>
 
     @Query("DELETE FROM downloaded_collections WHERE uri = :uri")

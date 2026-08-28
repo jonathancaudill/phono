@@ -26,11 +26,13 @@ import com.lightphone.spotify.data.tidal.TidalApiClient
 import com.lightphone.spotify.data.tidal.TidalAuth
 import com.lightphone.spotify.data.tidal.TidalUri
 import com.lightphone.spotify.playback.download.DownloadPacing
+import com.lightphone.spotify.playback.download.DownloadPreferences
 import java.io.File
 import java.io.InterruptedIOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.Executors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -49,8 +51,9 @@ import kotlinx.coroutines.withContext
  *
  * Enqueue is serialized through one mutex to avoid EncryptedSharedPreferences /
  * DownloadService FGS storms that previously killed the process mid-album.
- * Collection resolves use [DownloadPacing] (2.5–5 s jitter) and Media3 runs one
- * CDN pin at a time — playbackinfo hygiene, not CDN byte-rate throttling.
+ * Collection resolves use [DownloadPacing] (BASE + 0–50% jitter from remaining
+ * work) and Media3 runs one CDN pin at a time — playbackinfo hygiene, not CDN
+ * byte-rate throttling.
  *
  * CDN 403/401 is terminal for Media3; we re-resolve + re-enqueue (capped).
  */
@@ -65,6 +68,8 @@ object TidalDownloadCenter {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val enqueueMutex = Mutex()
+    private val circuitTrips = AtomicInteger(0)
+    @Volatile private var pauseDrain = false
     private val cdnRetryCounts = ConcurrentHashMap<String, Int>()
     /** Media3 remove during CDN retry must not wipe the Room stub. */
     private val suppressRoomDeleteIds = ConcurrentHashMap.newKeySet<String>()
@@ -267,6 +272,8 @@ object TidalDownloadCenter {
     ) {
         val appContext = context.applicationContext
         scope.launch {
+            pauseDrain = false
+            circuitTrips.set(0)
             val db = PhonoDatabase.get(appContext)
             val collections = db.downloadedCollectionDao()
             val trackDao = db.downloadedTrackDao()
@@ -319,11 +326,14 @@ object TidalDownloadCenter {
             // Serialize resolve + enqueue so we never open N EncryptedPrefs /
             // start N FGS races at once. Stagger playbackinfo calls between tracks.
             for ((index, track) in tracks.withIndex()) {
+                if (pauseDrain) break
                 if (insufficientFreeSpace(appContext)) {
                     Log.w(TAG, "stop collection enqueue mid-album — low free space")
                     failQueuedTracks(trackDao, tracks.drop(index), quality)
                     break
                 }
+                val existing = trackDao.getByUri(track.uri)
+                if (existing?.state == Download.STATE_STOPPED) continue
                 val staggerAfter = index < tracks.lastIndex
                 enqueueTrack(
                     appContext,
@@ -351,6 +361,7 @@ object TidalDownloadCenter {
                 Download.STATE_COMPLETED,
                 Download.STATE_DOWNLOADING,
                 Download.STATE_RESTARTING,
+                Download.STATE_STOPPED,
                 -> {
                     Log.i(TAG, "skip ${track.uri} — already state=${existing.state} @ ${existing.quality}")
                     return@withLock
@@ -395,31 +406,59 @@ object TidalDownloadCenter {
             runCatching { auth.ensureSessionMeta() }
             val id = TidalUri.rawId(track.uri)
             didResolveAttempt = true
-            val resolved = try {
-                withContext(Dispatchers.IO) {
-                    TidalStreamResolve.resolve(api, id, quality)
+            lateinit var resolved: TidalResolvedStream
+            resolveLoop@ while (true) {
+                try {
+                    resolved = withContext(Dispatchers.IO) {
+                        TidalStreamResolve.resolve(api, id, quality)
+                    }
+                    break@resolveLoop
+                } catch (e: Exception) {
+                    Log.e(TAG, "resolve failed for ${track.uri}", e)
+                    if (DownloadPacing.isRateLimited(e)) {
+                        val trip = circuitTrips.incrementAndGet()
+                        val retryAfter = DownloadPacing.parseRetryAfterMs(e)
+                        Log.w(
+                            TAG,
+                            "rate limited resolving ${track.uri}; circuit trip $trip/" +
+                                "${DownloadPacing.CIRCUIT_TRIPS_BEFORE_STOP} retryAfterMs=$retryAfter",
+                        )
+                        db.downloadedTrackDao().updateState(
+                            uri = track.uri,
+                            state = Download.STATE_QUEUED,
+                            bytes = 0,
+                            updatedAt = System.currentTimeMillis(),
+                        )
+                        if (trip >= DownloadPacing.CIRCUIT_TRIPS_BEFORE_STOP) {
+                            pauseQueued(db.downloadedTrackDao(), null)
+                            pauseDrain = true
+                            Log.w(TAG, "circuit open — paused remaining queue")
+                            didResolveAttempt = false
+                            return@withLock
+                        }
+                        delay(DownloadPacing.circuitWaitMs(trip, retryAfter))
+                        if (pauseDrain) {
+                            didResolveAttempt = false
+                            return@withLock
+                        }
+                        continue@resolveLoop
+                    }
+                    db.downloadedTrackDao().upsert(
+                        DownloadedTrackEntity(
+                            uri = track.uri,
+                            title = track.title,
+                            artists = track.artists,
+                            album = track.album,
+                            art_url = track.artUrl,
+                            quality = quality,
+                            state = Download.STATE_FAILED,
+                            bytes = 0,
+                            updated_at = System.currentTimeMillis(),
+                            duration_ms = track.durationMs,
+                        ),
+                    )
+                    return@withLock
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "resolve failed for ${track.uri}", e)
-                db.downloadedTrackDao().upsert(
-                    DownloadedTrackEntity(
-                        uri = track.uri,
-                        title = track.title,
-                        artists = track.artists,
-                        album = track.album,
-                        art_url = track.artUrl,
-                        quality = quality,
-                        state = Download.STATE_FAILED,
-                        bytes = 0,
-                        updated_at = System.currentTimeMillis(),
-                        duration_ms = track.durationMs,
-                    ),
-                )
-                if (DownloadPacing.isRateLimited(e)) {
-                    Log.w(TAG, "rate limited resolving ${track.uri}; cooldown ${DownloadPacing.RATE_LIMIT_COOLDOWN_MS}ms")
-                    DownloadPacing.afterRateLimit()
-                }
-                return@withLock
             }
 
             val pinnedQuality = resolved.audioQuality.ifBlank { quality }
@@ -485,8 +524,20 @@ object TidalDownloadCenter {
             }
         } finally {
             if (staggerAfter && didResolveAttempt) {
-                val waitMs = DownloadPacing.afterTrack()
-                Log.i(TAG, "paced ${waitMs}ms after resolve ${track.uri}")
+                val remaining = PhonoDatabase.get(appContext).downloadedTrackDao()
+                    .getAll()
+                    .count {
+                        it.state == Download.STATE_QUEUED ||
+                            it.state == Download.STATE_DOWNLOADING ||
+                            it.state == Download.STATE_RESTARTING
+                    }
+                val waitMs = DownloadPacing.afterTrackWaitMs(
+                    mode = DownloadPreferences(appContext).mode(),
+                    remaining = remaining,
+                    durationMs = track.durationMs,
+                )
+                Log.i(TAG, "paced ${waitMs}ms after resolve ${track.uri} remaining=$remaining")
+                delay(waitMs)
             }
         }
     }
@@ -570,6 +621,90 @@ object TidalDownloadCenter {
                         row.quality,
                     )
                 }
+            }
+        }
+    }
+
+    fun pauseDownloads(context: Context, collectionUri: String?) {
+        pauseDrain = true
+        val app = context.applicationContext
+        scope.launch {
+            pauseQueued(PhonoDatabase.get(app).downloadedTrackDao(), collectionUri)
+            Log.i(TAG, "paused downloads collection=${collectionUri ?: "*"}")
+        }
+    }
+
+    fun resumeUnfinished(context: Context, collectionUri: String?) {
+        val app = context.applicationContext
+        scope.launch {
+            pauseDrain = false
+            circuitTrips.set(0)
+            resumeUnfinishedRows(PhonoDatabase.get(app).downloadedTrackDao(), collectionUri)
+            val db = PhonoDatabase.get(app)
+            val tracks = if (collectionUri != null) {
+                db.downloadedCollectionDao().getTracksForCollection(collectionUri)
+                    .filter { it.state == Download.STATE_QUEUED }
+                    .map {
+                        TrackMetadata(it.uri, it.title, it.artists, it.album, it.duration_ms, it.art_url)
+                    }
+            } else {
+                db.downloadedTrackDao().getAll()
+                    .filter { it.state == Download.STATE_QUEUED }
+                    .map {
+                        TrackMetadata(it.uri, it.title, it.artists, it.album, it.duration_ms, it.art_url)
+                    }
+            }
+            for ((index, track) in tracks.withIndex()) {
+                if (pauseDrain) break
+                val row = db.downloadedTrackDao().getByUri(track.uri)
+                enqueueTrack(
+                    app,
+                    track,
+                    row?.quality?.ifBlank { "LOSSLESS" } ?: "LOSSLESS",
+                    upsertStubFirst = false,
+                    staggerAfter = index < tracks.lastIndex,
+                )
+            }
+        }
+    }
+
+    fun retryTrack(context: Context, trackUri: String) {
+        val app = context.applicationContext
+        scope.launch {
+            val dao = PhonoDatabase.get(app).downloadedTrackDao()
+            val row = dao.getByUri(trackUri) ?: return@launch
+            if (row.state != Download.STATE_FAILED && row.state != Download.STATE_STOPPED) return@launch
+            dao.updateState(trackUri, Download.STATE_QUEUED, row.bytes, System.currentTimeMillis())
+            pauseDrain = false
+            enqueueTrack(
+                app,
+                TrackMetadata(row.uri, row.title, row.artists, row.album, row.duration_ms, row.art_url),
+                row.quality.ifBlank { "LOSSLESS" },
+                upsertStubFirst = false,
+            )
+        }
+    }
+
+    private suspend fun pauseQueued(dao: DownloadedTrackDao, collectionUri: String?) {
+        val now = System.currentTimeMillis()
+        if (collectionUri != null) {
+            dao.updateCollectionTracksWithState(
+                collectionUri, Download.STATE_QUEUED, Download.STATE_STOPPED, now,
+            )
+        } else {
+            dao.updateAllWithState(Download.STATE_QUEUED, Download.STATE_STOPPED, now)
+        }
+    }
+
+    private suspend fun resumeUnfinishedRows(dao: DownloadedTrackDao, collectionUri: String?) {
+        val now = System.currentTimeMillis()
+        for (from in listOf(Download.STATE_STOPPED, Download.STATE_FAILED)) {
+            if (collectionUri != null) {
+                dao.updateCollectionTracksWithState(
+                    collectionUri, from, Download.STATE_QUEUED, now,
+                )
+            } else {
+                dao.updateAllWithState(from, Download.STATE_QUEUED, now)
             }
         }
     }

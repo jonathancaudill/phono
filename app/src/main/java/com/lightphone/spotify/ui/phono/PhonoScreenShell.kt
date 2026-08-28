@@ -39,6 +39,7 @@ fun PhonoScreenShell(
     hideBackButton: Boolean = true,
     onBack: (() -> Unit)? = null,
     leftIcon: ImageVector? = null,
+    leftLightIcon: LightIconConfiguration? = null,
     onLeftIconClick: (() -> Unit)? = null,
     rightIcon: ImageVector? = null,
     rightLightIcon: LightIconConfiguration? = null,
@@ -69,6 +70,12 @@ fun PhonoScreenShell(
         Column(Modifier.fillMaxSize()) {
         val leftButton = when {
             !hideBackButton && onBack != null -> LightBarButton.LightIcon(LightIcons.BACK, onClick = onBack)
+            leftLightIcon != null && onLeftIconClick != null ->
+                LightBarButton.LightIcon(
+                    icon = leftLightIcon,
+                    onClick = onLeftIconClick,
+                    sizeUnits = barIconSizeUnits(leftLightIcon),
+                )
             leftIcon != null && onLeftIconClick != null -> {
                 val lightIcon = lightIconFor(leftIcon)
                 if (lightIcon != null) {
@@ -155,7 +162,14 @@ fun PhonoScreenShell(
                         CircularProgressIndicator(
                             modifier = Modifier
                                 .padding(end = SecondaryRightGap)
-                                .size(legacyNToGridDp(20)),
+                                .size(legacyNToGridDp(20))
+                                .then(
+                                    if (onSecondaryRightIconClick != null) {
+                                        Modifier.lightClickable(onClick = onSecondaryRightIconClick)
+                                    } else {
+                                        Modifier
+                                    },
+                                ),
                             color = colors.content,
                             strokeWidth = 2.dp,
                         )

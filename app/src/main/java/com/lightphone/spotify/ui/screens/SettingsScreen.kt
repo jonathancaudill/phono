@@ -1,5 +1,6 @@
 package com.lightphone.spotify.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,16 +22,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.style.TextAlign
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.lightphone.spotify.BuildConfig
 import com.lightphone.spotify.data.tidal.TidalAudioQuality
 import com.lightphone.spotify.ffi.NormalizationType
 import com.lightphone.spotify.ffi.StreamingQuality
+import com.lightphone.spotify.playback.download.DownloadPaceMode
 import com.lightphone.spotify.ui.AppViewModel
+import com.lightphone.spotify.ui.components.CustomScrollView
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.PhonoScreenShell
+import com.lightphone.spotify.update.UpdateUiState
+import com.lightphone.spotify.update.UpdateViewModel
 import com.thelightphone.sdk.ui.LightIcon
 import com.thelightphone.sdk.ui.LightIcons
-import com.thelightphone.sdk.ui.LightScrollView
 import com.thelightphone.sdk.ui.LightText
 import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
@@ -40,13 +46,18 @@ import com.thelightphone.sdk.ui.lightClickable
 @Composable
 fun SettingsScreen(
     vm: AppViewModel,
+    onBack: () -> Unit,
     onLogout: () -> Unit,
 ) {
     val settings by vm.settings.collectAsState()
+    // Activity-scoped; the resulting prompt is drawn by SpotifyApp over the whole shell.
+    val updateVm: UpdateViewModel = viewModel()
+    val updateState by updateVm.state.collectAsState()
     var confirm by remember { mutableStateOf<ConfirmRequest?>(null) }
     val caps = vm.capabilities
 
     confirm?.let { request ->
+        BackHandler { confirm = null }
         PhonoConfirmScreen(
             title = request.title,
             message = request.message,
@@ -62,78 +73,111 @@ fun SettingsScreen(
 
     PhonoScreenShell(
         title = "Settings",
-        hideBackButton = true,
+        hideBackButton = false,
+        onBack = onBack,
         rightIconVisible = false,
+        horizontalPadding = legacyNToGridDp(20),
         modifier = Modifier.fillMaxSize(),
     ) {
-        LightScrollView(modifier = Modifier.weight(1f)) {
-            Column(Modifier.fillMaxWidth()) {
-                SectionLabel("Appearance")
-                SettingsToggleRow("Dark mode", settings.darkTheme, vm::setDarkTheme)
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+        ) {
+            CustomScrollView {
+                item("settings") {
+                    Column(Modifier.fillMaxWidth()) {
+                        SectionLabel("Appearance")
+                        SettingsToggleRow("Dark mode", settings.darkTheme, vm::setDarkTheme)
 
-                SectionLabel("Playback")
-                SettingsToggleRow("Gapless playback", settings.gaplessEnabled, vm::setGaplessEnabled)
-                SettingsToggleRow("Normalize volume", settings.normalizationEnabled, vm::setNormalizationEnabled)
-                if (settings.normalizationEnabled) {
-                    Spacer(Modifier.height(legacyNToGridDp(8)))
-                    NormalizationOptions(settings.normalizationType, vm::setNormalizationType)
-                }
-                if (caps.tidalStyleAudioQuality) {
-                    SettingsToggleRow(
-                        "Report plays",
-                        settings.tidalReportPlays,
-                        vm::setTidalReportPlays,
-                    )
-                }
+                        SectionLabel("Playback")
+                        SettingsToggleRow("Gapless playback", settings.gaplessEnabled, vm::setGaplessEnabled)
+                        SettingsToggleRow("Normalize volume", settings.normalizationEnabled, vm::setNormalizationEnabled)
+                        if (settings.normalizationEnabled) {
+                            Spacer(Modifier.height(legacyNToGridDp(8)))
+                            NormalizationOptions(settings.normalizationType, vm::setNormalizationType)
+                        }
+                        if (caps.tidalStyleAudioQuality) {
+                            SettingsToggleRow(
+                                "Report plays",
+                                settings.tidalReportPlays,
+                                vm::setTidalReportPlays,
+                            )
+                        }
 
-                SectionLabel("Audio quality")
-                if (caps.tidalStyleAudioQuality) {
-                    TidalAudioQualityOptions(settings.tidalAudioQuality, vm::setTidalAudioQuality)
-                } else if (caps.spotifyStreamingQuality) {
-                    StreamingQualityOptions(settings.streamingQuality, vm::setStreamingQuality)
-                }
-                if (caps.downloads) {
-                    SectionLabel("Download quality")
-                    if (caps.tidalStyleAudioQuality) {
-                        TidalAudioQualityOptions(
-                            settings.tidalDownloadQuality,
-                            vm::setTidalDownloadQuality,
+                        SectionLabel("Audio quality")
+                        if (caps.tidalStyleAudioQuality) {
+                            TidalAudioQualityOptions(settings.tidalAudioQuality, vm::setTidalAudioQuality)
+                        } else if (caps.spotifyStreamingQuality) {
+                            StreamingQualityOptions(settings.streamingQuality, vm::setStreamingQuality)
+                        }
+                        if (caps.downloads) {
+                            SectionLabel("Download quality")
+                            if (caps.tidalStyleAudioQuality) {
+                                TidalAudioQualityOptions(
+                                    settings.tidalDownloadQuality,
+                                    vm::setTidalDownloadQuality,
+                                )
+                            } else if (caps.spotifyStreamingQuality) {
+                                StreamingQualityOptions(settings.downloadQuality, vm::setDownloadQuality)
+                            }
+                        }
+
+                        if (caps.downloads) {
+                            SectionLabel("Download speed")
+                            DownloadPaceOptions(settings.downloadPaceMode, vm::setDownloadPaceMode)
+                        }
+
+                        SectionLabel("Storage")
+                        SettingsActionRow("Clear cache") {
+                            confirm = ConfirmRequest(
+                                title = "Clear cache",
+                                message = "Delete temporary streaming cache? Offline downloads and credentials are kept.",
+                                confirmText = "Clear",
+                                onConfirm = { vm.clearAudioCache() },
+                            )
+                        }
+
+                        SectionLabel("Advanced")
+                        SettingsActionRow(
+                            text = if (settings.showAdvanced) "Hide proxy settings" else "Show proxy settings",
+                            onClick = vm::toggleAdvancedSettings,
                         )
-                    } else if (caps.spotifyStreamingQuality) {
-                        StreamingQualityOptions(settings.downloadQuality, vm::setDownloadQuality)
+                        if (settings.showAdvanced) {
+                            Spacer(Modifier.height(legacyNToGridDp(12)))
+                            ProxyField(settings.proxy, vm::setProxy)
+                        }
+
+                        SectionLabel("Updates")
+                        LightText(
+                            text = "Version ${BuildConfig.VERSION_NAME}",
+                            variant = LightTextVariant.Copy,
+                            color = PhonoSemanticColors.Placeholder,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = legacyNToGridDp(8)),
+                        )
+                        SettingsActionRow(
+                            text = when (updateState) {
+                                UpdateUiState.Checking -> "Checking…"
+                                UpdateUiState.UpToDate -> "No new updates"
+                                else -> "Check for updates"
+                            },
+                            onClick = updateVm::checkNow,
+                        )
+
+                        SectionLabel("Account")
+                        SettingsActionRow("Logout") {
+                            confirm = ConfirmRequest(
+                                title = "Logout",
+                                message = "Sign out and return to service selection?",
+                                confirmText = "Logout",
+                                onConfirm = onLogout,
+                            )
+                        }
+                        Spacer(Modifier.height(legacyNToGridDp(40)))
                     }
                 }
-
-                SectionLabel("Storage")
-                SettingsActionRow("Clear Cache") {
-                    confirm = ConfirmRequest(
-                        title = "Clear Cache",
-                        message = "Delete temporary streaming cache? Offline downloads and credentials are kept.",
-                        confirmText = "Clear",
-                        onConfirm = { vm.clearAudioCache() },
-                    )
-                }
-
-                SectionLabel("Advanced")
-                SettingsActionRow(
-                    text = if (settings.showAdvanced) "Hide proxy settings" else "Show proxy settings",
-                    onClick = vm::toggleAdvancedSettings,
-                )
-                if (settings.showAdvanced) {
-                    Spacer(Modifier.height(legacyNToGridDp(12)))
-                    ProxyField(settings.proxy, vm::setProxy)
-                }
-
-                SectionLabel("Account")
-                SettingsActionRow("Logout") {
-                    confirm = ConfirmRequest(
-                        title = "Logout",
-                        message = "Sign out and return to service selection?",
-                        confirmText = "Logout",
-                        onConfirm = onLogout,
-                    )
-                }
-                Spacer(Modifier.height(legacyNToGridDp(40)))
             }
         }
     }
@@ -223,6 +267,21 @@ private fun TidalAudioQualityOptions(
             selected = quality == selected,
             onClick = { onSelect(quality) },
         )
+    }
+}
+
+@Composable
+private fun DownloadPaceOptions(
+    selected: DownloadPaceMode,
+    onSelect: (DownloadPaceMode) -> Unit,
+) {
+    val options = listOf(
+        DownloadPaceMode.FAST to "Fast",
+        DownloadPaceMode.BALANCED to "Balanced",
+        DownloadPaceMode.CAREFUL to "Careful",
+    )
+    options.forEach { (mode, label) ->
+        SettingsActionRow(text = label, selected = mode == selected, onClick = { onSelect(mode) })
     }
 }
 

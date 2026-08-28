@@ -3,7 +3,6 @@ package com.lightphone.spotify.ui.navigation
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.thelightphone.sdk.ui.LightIconConfiguration
@@ -40,11 +39,6 @@ enum class PhonoTab(
         label = "Downloads",
         lightIcon = LightIcons.DOWNLOAD_ARROW,
     ),
-    Settings(
-        route = "settings",
-        label = "Settings",
-        icon = Icons.Filled.MoreHoriz,
-    ),
 }
 
 /** Library tabs always present. [PhonoTab.Downloads] when offline downloads are supported. */
@@ -54,7 +48,6 @@ fun phonoTabs(includeDownloads: Boolean): List<PhonoTab> = buildList {
     add(PhonoTab.Playlists)
     add(PhonoTab.Search)
     if (includeDownloads) add(PhonoTab.Downloads)
-    add(PhonoTab.Settings)
 }
 
 val DefaultPhonoTabs = phonoTabs(includeDownloads = false)

@@ -31,4 +31,30 @@ object DownloadStates {
         COMPLETED, FAILED, REMOVING -> true
         else -> false
     }
+
+    /** Album/playlist header + Downloads-tab aggregate. Partial is not Downloading. */
+    fun collectionUi(
+        total: Int,
+        completed: Int,
+        inProgress: Int,
+        failed: Int,
+        stopped: Int,
+    ): CollectionDownloadUi {
+        if (total <= 0) return CollectionDownloadUi.None
+        return when {
+            completed >= total -> CollectionDownloadUi.Complete
+            inProgress > 0 -> CollectionDownloadUi.Downloading
+            stopped > 0 -> CollectionDownloadUi.Paused
+            completed > 0 || failed > 0 -> CollectionDownloadUi.Partial
+            else -> CollectionDownloadUi.None
+        }
+    }
+}
+
+enum class CollectionDownloadUi {
+    None,
+    Downloading,
+    Paused,
+    Partial,
+    Complete,
 }

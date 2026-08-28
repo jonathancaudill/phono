@@ -21,6 +21,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.lightphone.spotify.data.local.DownloadedCollectionWithProgress
 import com.lightphone.spotify.data.local.DownloadedTrackEntity
+import com.lightphone.spotify.playback.download.CollectionDownloadUi
 import com.lightphone.spotify.playback.download.DownloadStates
 import com.lightphone.spotify.playback.download.toTrackMetadata
 import com.lightphone.spotify.ui.AppViewModel
@@ -98,6 +99,15 @@ fun DownloadCollectionDetailScreen(
     val tracks by tracksFlow.collectAsState()
     val listState = rememberLazyListState()
     var editMode by remember { mutableStateOf(false) }
+    val phase = remember(tracks) {
+        DownloadStates.collectionUi(
+            total = tracks.size,
+            completed = tracks.count { it.state == DownloadStates.COMPLETED },
+            inProgress = tracks.count { DownloadStates.isActive(it.state) },
+            failed = tracks.count { it.state == DownloadStates.FAILED },
+            stopped = tracks.count { it.state == DownloadStates.STOPPED },
+        )
+    }
 
     PhonoScreenShell(
         title = title,
@@ -108,6 +118,27 @@ fun DownloadCollectionDetailScreen(
         rightIcon = if (editMode) Icons.Default.Check else Icons.Default.Edit,
         onRightIconClick = { editMode = !editMode },
         rightIconVisible = tracks.isNotEmpty(),
+        secondaryRightLightIcon = when {
+            editMode -> null
+            phase == CollectionDownloadUi.Downloading -> null
+            phase == CollectionDownloadUi.Complete -> null
+            phase == CollectionDownloadUi.None -> null
+            else -> LightIcons.DOWNLOAD_ARROW
+        },
+        onSecondaryRightIconClick = if (!editMode) {
+            {
+                when (phase) {
+                    CollectionDownloadUi.Downloading -> vm.pauseDownloadCollection(collectionUri)
+                    CollectionDownloadUi.Paused,
+                    CollectionDownloadUi.Partial,
+                    -> vm.resumeDownloadCollection(collectionUri)
+                    else -> Unit
+                }
+            }
+        } else {
+            null
+        },
+        secondaryRightLoading = !editMode && phase == CollectionDownloadUi.Downloading,
         horizontalPadding = legacyNToGridDp(20),
         modifier = Modifier.fillMaxSize(),
     ) {
@@ -146,7 +177,13 @@ fun DownloadCollectionDetailScreen(
                                         null
                                     },
                                     onClick = {
-                                        if (!editMode && completed) onPlayTrack(row.uri)
+                                        when {
+                                            editMode -> Unit
+                                            completed -> onPlayTrack(row.uri)
+                                            row.state == DownloadStates.FAILED ||
+                                                row.state == DownloadStates.STOPPED ->
+                                                vm.retryDownloadTrack(row.uri)
+                                        }
                                     },
                                 )
                             }
@@ -163,13 +200,23 @@ private fun collectionSubtitle(row: DownloadedCollectionWithProgress): String {
     val kind = if (row.type == "playlist") "Playlist" else "Album"
     val total = row.track_count
     val done = row.completed_count
+    val phase = DownloadStates.collectionUi(
+        total = total,
+        completed = done,
+        inProgress = row.in_progress_count,
+        failed = row.failed_count,
+        stopped = row.stopped_count,
+    )
     return when {
         total == 0 -> kind
-        row.failed_count > 0 && done + row.in_progress_count == 0 ->
-            "$kind · Failed"
-        row.in_progress_count > 0 || (done in 1 until total) ->
+        phase == CollectionDownloadUi.Downloading ->
             "$kind · $done/$total · Downloading…"
-        done == total ->
+        phase == CollectionDownloadUi.Paused ->
+            "$kind · $done/$total · Paused"
+        phase == CollectionDownloadUi.Partial ->
+            if (row.failed_count > 0) "$kind · $done/$total · ${row.failed_count} failed"
+            else "$kind · $done/$total"
+        phase == CollectionDownloadUi.Complete ->
             "$kind · $total songs"
         else ->
             "$kind · $done/$total"

@@ -23,13 +23,18 @@ import kotlinx.coroutines.flow.MutableStateFlow
 fun SearchScreen(
     vm: AppViewModel,
     onOpenEditor: (String) -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenPlaying: () -> Unit,
 ) {
     val search by vm.search.collectAsState()
 
     PhonoScreenShell(
         title = "Search",
         hideBackButton = true,
-        rightIconVisible = false,
+        leftLightIcon = LightIcons.SETTINGS,
+        onLeftIconClick = onOpenSettings,
+        rightLightIcon = LightIcons.AUDIO_MESSAGE,
+        onRightIconClick = onOpenPlaying,
         horizontalPadding = legacyNToGridDp(20),
         modifier = Modifier.fillMaxSize(),
     ) {

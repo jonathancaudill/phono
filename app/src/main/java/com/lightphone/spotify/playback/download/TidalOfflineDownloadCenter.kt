@@ -51,4 +51,16 @@ class TidalOfflineDownloadCenter(
     override fun removeCollection(context: Context, collectionUri: String) {
         TidalDownloadCenter.removeCollection(context, collectionUri)
     }
+
+    override fun pauseDownloads(context: Context, collectionUri: String?) {
+        TidalDownloadCenter.pauseDownloads(context, collectionUri)
+    }
+
+    override fun resumeUnfinished(context: Context, collectionUri: String?) {
+        TidalDownloadCenter.resumeUnfinished(context, collectionUri)
+    }
+
+    override fun retryTrack(context: Context, trackUri: String) {
+        TidalDownloadCenter.retryTrack(context, trackUri)
+    }
 }

@@ -91,14 +91,21 @@ fun PlaylistDetailScreen(
         rightIconVisible = state.isEditable || detail != null,
         rightLoading = state.mutating || state.saving,
         secondaryRightLightIcon = when {
-            !showDownloadControl || downloadUi == CollectionDownloadUi.Downloading -> null
+            !showDownloadControl -> null
+            downloadUi == CollectionDownloadUi.Downloading -> null
             downloadUi == CollectionDownloadUi.Complete -> LightIcons.DOWNLOADED_ARROW
             else -> LightIcons.DOWNLOAD_ARROW
         },
-        onSecondaryRightIconClick = if (showDownloadControl && downloadUi != CollectionDownloadUi.Downloading) {
+        onSecondaryRightIconClick = if (showDownloadControl) {
             {
-                if (downloadUi == CollectionDownloadUi.Complete) vm.removeCurrentPlaylistDownloads()
-                else vm.downloadCurrentPlaylist()
+                when (downloadUi) {
+                    CollectionDownloadUi.Complete -> vm.removeCurrentPlaylistDownloads()
+                    CollectionDownloadUi.Downloading -> vm.pauseCurrentPlaylistDownloads()
+                    CollectionDownloadUi.Paused,
+                    CollectionDownloadUi.Partial,
+                    -> vm.resumeCurrentPlaylistDownloads()
+                    CollectionDownloadUi.None -> vm.downloadCurrentPlaylist()
+                }
             }
         } else {
             null

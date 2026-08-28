@@ -32,7 +32,9 @@ import com.lightphone.spotify.ui.components.PhonoContextMenuItem
 import com.lightphone.spotify.playback.PlaybackController
 import com.lightphone.spotify.playback.PlaybackUiState
 import com.lightphone.spotify.playback.SettingsSnapshot
+import com.lightphone.spotify.playback.download.DownloadPaceMode
 import com.lightphone.spotify.playback.download.DownloadPlaybackQueue
+import com.lightphone.spotify.playback.download.DownloadPreferences
 import com.lightphone.spotify.playback.download.DownloadStates
 import com.lightphone.spotify.ui.light.ThemePreferences
 import kotlinx.coroutines.flow.Flow
@@ -124,6 +126,8 @@ data class SettingsUiState(
     val proxy: String = "",
     val showAdvanced: Boolean = false,
     val darkTheme: Boolean = true,
+    val downloadPaceMode: com.lightphone.spotify.playback.download.DownloadPaceMode =
+        com.lightphone.spotify.playback.download.DownloadPaceMode.BALANCED,
 )
 
 data class PlaylistDetailTrackRow(
@@ -177,14 +181,11 @@ enum class ContextMenuAction {
     DeletePlaylist,
     Download,
     RemoveDownload,
+    StopDownload,
+    ResumeDownload,
 }
 
-/** Offline pin state for an album/playlist header icon. */
-enum class CollectionDownloadUi {
-    None,
-    Downloading,
-    Complete,
-}
+typealias CollectionDownloadUi = com.lightphone.spotify.playback.download.CollectionDownloadUi
 
 sealed interface ContextMenuTarget {
     data class Track(val uri: String, val id: String) : ContextMenuTarget
@@ -235,6 +236,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     downloadingState = DownloadStates.DOWNLOADING,
                     restartingState = DownloadStates.RESTARTING,
                     failedState = DownloadStates.FAILED,
+                    stoppedState = DownloadStates.STOPPED,
                 )
                 .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptyList())
         } else {
@@ -362,6 +364,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val byUri = downloads.value.associateBy { it.uri }
         var completed = 0
         var inProgress = 0
+        var failed = 0
+        var stopped = 0
         for (uri in trackUris) {
             when (byUri[uri]?.state) {
                 DownloadStates.COMPLETED -> completed++
@@ -369,18 +373,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 DownloadStates.QUEUED,
                 DownloadStates.RESTARTING,
                 -> inProgress++
+                DownloadStates.FAILED -> failed++
+                DownloadStates.STOPPED -> stopped++
                 else -> Unit
             }
         }
-        return when {
-            completed == trackUris.size -> CollectionDownloadUi.Complete
-            inProgress > 0 || (completed > 0 && completed < trackUris.size) ->
-                CollectionDownloadUi.Downloading
-            else -> CollectionDownloadUi.None
-        }
+        return DownloadStates.collectionUi(
+            total = trackUris.size,
+            completed = completed,
+            inProgress = inProgress,
+            failed = failed,
+            stopped = stopped,
+        )
     }
 
-    /** True if this collection URI is fully (or partially) present in offline pins. */
+    /** True if this collection URI is fully present in offline pins. */
     fun isCollectionDownloaded(collectionUri: String): Boolean {
         if (!downloadsSupported) return false
         val row = downloadCollections.value.firstOrNull { it.uri == collectionUri } ?: return false
@@ -390,8 +397,67 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun isCollectionDownloading(collectionUri: String): Boolean {
         if (!downloadsSupported) return false
         val row = downloadCollections.value.firstOrNull { it.uri == collectionUri } ?: return false
-        return row.in_progress_count > 0 ||
-            (row.completed_count in 1 until row.track_count)
+        return row.in_progress_count > 0
+    }
+
+    fun isCollectionPartial(collectionUri: String): Boolean {
+        if (!downloadsSupported) return false
+        val row = downloadCollections.value.firstOrNull { it.uri == collectionUri } ?: return false
+        val ui = DownloadStates.collectionUi(
+            total = row.track_count,
+            completed = row.completed_count,
+            inProgress = row.in_progress_count,
+            failed = row.failed_count,
+            stopped = row.stopped_count,
+        )
+        return ui == CollectionDownloadUi.Partial || ui == CollectionDownloadUi.Paused
+    }
+
+    fun pauseDownloadCollection(collectionUri: String) {
+        if (!downloadsSupported) return
+        controller.offlineDownloads.pauseDownloads(getApplication(), collectionUri)
+    }
+
+    fun resumeDownloadCollection(collectionUri: String) {
+        if (!downloadsSupported) return
+        controller.offlineDownloads.resumeUnfinished(getApplication(), collectionUri)
+    }
+
+    fun retryDownloadTrack(trackUri: String) {
+        if (!downloadsSupported) return
+        controller.offlineDownloads.retryTrack(getApplication(), trackUri)
+    }
+
+    fun pauseCurrentAlbumDownloads() {
+        if (!downloadsSupported) return
+        val album = _albumDetail.value.album ?: return
+        pauseDownloadCollection(
+            collectionUri(backendChoice, CollectionKind.Album, album.id, album.uri),
+        )
+    }
+
+    fun pauseCurrentPlaylistDownloads() {
+        if (!downloadsSupported) return
+        val detail = _playlistDetail.value.detail ?: return
+        pauseDownloadCollection(
+            collectionUri(backendChoice, CollectionKind.Playlist, detail.id, detail.uri),
+        )
+    }
+
+    fun resumeCurrentAlbumDownloads() {
+        if (!downloadsSupported) return
+        val album = _albumDetail.value.album ?: return
+        resumeDownloadCollection(
+            collectionUri(backendChoice, CollectionKind.Album, album.id, album.uri),
+        )
+    }
+
+    fun resumeCurrentPlaylistDownloads() {
+        if (!downloadsSupported) return
+        val detail = _playlistDetail.value.detail ?: return
+        resumeDownloadCollection(
+            collectionUri(backendChoice, CollectionKind.Playlist, detail.id, detail.uri),
+        )
     }
 
     fun downloadAlbumById(albumId: String, uri: String = "") {
@@ -676,6 +742,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     current.tidalReportPlays
                 },
+                downloadPaceMode = DownloadPreferences(getApplication()).mode(),
             )
         }
     }
@@ -2013,6 +2080,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         controller.setSpotifyDownloadQuality(quality)
     }
 
+    fun setDownloadPaceMode(mode: DownloadPaceMode) {
+        _settings.value = _settings.value.copy(downloadPaceMode = mode)
+        DownloadPreferences(getApplication()).setMode(mode)
+    }
+
     fun setTidalAudioQuality(quality: com.lightphone.spotify.data.tidal.TidalAudioQuality) {
         _settings.value = _settings.value.copy(tidalAudioQuality = quality)
         controller.setTidalAudioQuality(quality)
@@ -2107,10 +2179,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val collUri = collectionUri(
                         backendChoice, CollectionKind.Album, target.albumId, target.uri,
                     )
-                    if (isCollectionDownloaded(collUri) || isCollectionDownloading(collUri)) {
-                        add(PhonoContextMenuItem("Remove download", ContextMenuAction.RemoveDownload))
-                    } else {
-                        add(PhonoContextMenuItem("Download", ContextMenuAction.Download))
+                    when {
+                        isCollectionDownloaded(collUri) ->
+                            add(PhonoContextMenuItem("Remove download", ContextMenuAction.RemoveDownload))
+                        isCollectionDownloading(collUri) -> {
+                            add(PhonoContextMenuItem("Stop download", ContextMenuAction.StopDownload))
+                            add(PhonoContextMenuItem("Remove download", ContextMenuAction.RemoveDownload))
+                        }
+                        isCollectionPartial(collUri) -> {
+                            add(PhonoContextMenuItem("Resume remaining", ContextMenuAction.ResumeDownload))
+                            add(PhonoContextMenuItem("Remove download", ContextMenuAction.RemoveDownload))
+                        }
+                        else ->
+                            add(PhonoContextMenuItem("Download", ContextMenuAction.Download))
                     }
                 }
             }
@@ -2123,10 +2204,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val collUri = collectionUri(
                         backendChoice, CollectionKind.Playlist, target.playlistId, target.uri,
                     )
-                    if (isCollectionDownloaded(collUri) || isCollectionDownloading(collUri)) {
-                        add(PhonoContextMenuItem("Remove download", ContextMenuAction.RemoveDownload))
-                    } else {
-                        add(PhonoContextMenuItem("Download", ContextMenuAction.Download))
+                    when {
+                        isCollectionDownloaded(collUri) ->
+                            add(PhonoContextMenuItem("Remove download", ContextMenuAction.RemoveDownload))
+                        isCollectionDownloading(collUri) -> {
+                            add(PhonoContextMenuItem("Stop download", ContextMenuAction.StopDownload))
+                            add(PhonoContextMenuItem("Remove download", ContextMenuAction.RemoveDownload))
+                        }
+                        isCollectionPartial(collUri) -> {
+                            add(PhonoContextMenuItem("Resume remaining", ContextMenuAction.ResumeDownload))
+                            add(PhonoContextMenuItem("Remove download", ContextMenuAction.RemoveDownload))
+                        }
+                        else ->
+                            add(PhonoContextMenuItem("Download", ContextMenuAction.Download))
                     }
                 }
             }
@@ -2176,6 +2266,42 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         )
                     is ContextMenuTarget.Playlist ->
                         removeDownloadCollection(
+                            collectionUri(
+                                backendChoice, CollectionKind.Playlist, target.playlistId, target.uri,
+                            ),
+                        )
+                    is ContextMenuTarget.Track -> Unit
+                }
+            }
+            ContextMenuAction.StopDownload -> {
+                dismissContextMenu()
+                when (target) {
+                    is ContextMenuTarget.Album ->
+                        pauseDownloadCollection(
+                            collectionUri(
+                                backendChoice, CollectionKind.Album, target.albumId, target.uri,
+                            ),
+                        )
+                    is ContextMenuTarget.Playlist ->
+                        pauseDownloadCollection(
+                            collectionUri(
+                                backendChoice, CollectionKind.Playlist, target.playlistId, target.uri,
+                            ),
+                        )
+                    is ContextMenuTarget.Track -> Unit
+                }
+            }
+            ContextMenuAction.ResumeDownload -> {
+                dismissContextMenu()
+                when (target) {
+                    is ContextMenuTarget.Album ->
+                        resumeDownloadCollection(
+                            collectionUri(
+                                backendChoice, CollectionKind.Album, target.albumId, target.uri,
+                            ),
+                        )
+                    is ContextMenuTarget.Playlist ->
+                        resumeDownloadCollection(
                             collectionUri(
                                 backendChoice, CollectionKind.Playlist, target.playlistId, target.uri,
                             ),
@@ -2244,6 +2370,7 @@ private fun SettingsSnapshot.toUiState(
     tidalDownloadQuality: com.lightphone.spotify.data.tidal.TidalAudioQuality =
         com.lightphone.spotify.data.tidal.TidalAudioQuality.DEFAULT,
     tidalReportPlays: Boolean = true,
+    downloadPaceMode: DownloadPaceMode = DownloadPaceMode.BALANCED,
 ) = SettingsUiState(
     streamingQuality = streamingQuality,
     downloadQuality = downloadQuality,
@@ -2256,4 +2383,5 @@ private fun SettingsSnapshot.toUiState(
     proxy = proxy.orEmpty(),
     showAdvanced = showAdvanced,
     darkTheme = darkTheme,
+    downloadPaceMode = downloadPaceMode,
 )

@@ -58,4 +58,29 @@ interface DownloadedTrackDao {
 
     @Query("SELECT COALESCE(SUM(bytes), 0) FROM downloaded_tracks")
     suspend fun totalBytes(): Long
+
+    @Query(
+        """
+        UPDATE downloaded_tracks SET state = :toState, updated_at = :now
+        WHERE state = :fromState
+        """,
+    )
+    suspend fun updateAllWithState(fromState: Int, toState: Int, now: Long)
+
+    @Query(
+        """
+        UPDATE downloaded_tracks SET state = :toState, updated_at = :now
+        WHERE state = :fromState
+        AND uri IN (
+          SELECT track_uri FROM downloaded_collection_tracks
+          WHERE collection_uri = :collectionUri
+        )
+        """,
+    )
+    suspend fun updateCollectionTracksWithState(
+        collectionUri: String,
+        fromState: Int,
+        toState: Int,
+        now: Long,
+    )
 }

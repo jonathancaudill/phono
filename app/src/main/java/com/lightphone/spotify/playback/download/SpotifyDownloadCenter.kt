@@ -22,6 +22,7 @@ import com.lightphone.spotify.ffi.LibrespotEngine
 import com.lightphone.spotify.ffi.StreamingQuality
 import com.lightphone.spotify.playback.PlaybackEngineHolder
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -40,12 +41,11 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
     private const val NOTIFICATION_CHANNEL_ID = "phono_downloads"
     private const val NOTIFICATION_ID = 0x70647370 // "pdsp"
     private const val MIN_FREE_BYTES = 150L * 1024 * 1024
-    private const val RETRY_MAX = 3
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val enqueueMutex = Mutex()
     private val retryCounts = ConcurrentHashMap<String, Int>()
-    private val rateLimitCounts = ConcurrentHashMap<String, Int>()
+    private val circuitTrips = AtomicInteger(0)
 
     @Volatile
     private var engineProvider: (() -> LibrespotEngine?)? = null
@@ -195,6 +195,34 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
         }
     }
 
+    override fun pauseDownloads(context: Context, collectionUri: String?) {
+        val app = context.applicationContext
+        scope.launch {
+            pauseQueued(PhonoDatabase.get(app).downloadedTrackDao(), collectionUri)
+            Log.i(TAG, "paused downloads collection=${collectionUri ?: "*"}")
+        }
+    }
+
+    override fun resumeUnfinished(context: Context, collectionUri: String?) {
+        val app = context.applicationContext
+        scope.launch {
+            resumeUnfinishedRows(PhonoDatabase.get(app).downloadedTrackDao(), collectionUri)
+            circuitTrips.set(0)
+            kickService(app)
+        }
+    }
+
+    override fun retryTrack(context: Context, trackUri: String) {
+        val app = context.applicationContext
+        scope.launch {
+            val dao = PhonoDatabase.get(app).downloadedTrackDao()
+            val row = dao.getByUri(trackUri) ?: return@launch
+            if (row.state != DownloadStates.FAILED && row.state != DownloadStates.STOPPED) return@launch
+            dao.updateState(trackUri, DownloadStates.QUEUED, row.bytes, System.currentTimeMillis())
+            kickService(app)
+        }
+    }
+
     /**
      * Drain one queued track (called from [SpotifyDownloadService]).
      * @return true if work remains
@@ -232,14 +260,13 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
         quality: String,
         staggerAfter: Boolean = false,
     ) = enqueueMutex.withLock {
-        var didAttempt = false
-        try {
             val db = PhonoDatabase.get(appContext)
             val existing = db.downloadedTrackDao().getByUri(track.uri)
             when (existing?.state) {
                 DownloadStates.COMPLETED,
                 DownloadStates.DOWNLOADING,
                 DownloadStates.RESTARTING,
+                DownloadStates.STOPPED,
                 -> {
                     Log.i(TAG, "skip ${track.uri} — state=${existing.state}")
                     return@withLock
@@ -254,7 +281,6 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
                 return@withLock
             }
 
-            didAttempt = true
             db.downloadedTrackDao().updateState(
                 uri = track.uri,
                 state = DownloadStates.DOWNLOADING,
@@ -269,7 +295,7 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
             result.fold(
                 onSuccess = { info ->
                     retryCounts.remove(track.uri)
-                    rateLimitCounts.remove(track.uri)
+                    circuitTrips.set(0)
                     db.downloadedTrackDao().upsert(
                         DownloadedTrackEntity(
                             uri = track.uri,
@@ -286,38 +312,40 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
                                 ?: 0L,
                         ),
                     )
+                    if (staggerAfter) {
+                        awaitTrackGap(appContext, db.downloadedTrackDao(), track.durationMs)
+                    }
                 },
                 onFailure = { e ->
                     Log.e(TAG, "download failed ${track.uri}", e)
                     if (DownloadPacing.isRateLimited(e)) {
-                        val rlAttempt = (rateLimitCounts[track.uri] ?: 0) + 1
-                        if (rlAttempt <= DownloadPacing.RATE_LIMIT_RETRY_MAX) {
-                            rateLimitCounts[track.uri] = rlAttempt
-                            Log.w(
-                                TAG,
-                                "rate limited ${track.uri}; cooldown ${DownloadPacing.RATE_LIMIT_COOLDOWN_MS}ms " +
-                                    "($rlAttempt/${DownloadPacing.RATE_LIMIT_RETRY_MAX})",
-                            )
-                            DownloadPacing.afterRateLimit()
-                            db.downloadedTrackDao().updateState(
-                                uri = track.uri,
-                                state = DownloadStates.QUEUED,
-                                bytes = 0,
-                                updatedAt = System.currentTimeMillis(),
-                            )
+                        val trip = circuitTrips.incrementAndGet()
+                        val retryAfter = DownloadPacing.parseRetryAfterMs(e)
+                        Log.w(
+                            TAG,
+                            "rate limited ${track.uri}; circuit trip $trip/" +
+                                "${DownloadPacing.CIRCUIT_TRIPS_BEFORE_STOP} retryAfterMs=$retryAfter",
+                        )
+                        db.downloadedTrackDao().updateState(
+                            uri = track.uri,
+                            state = DownloadStates.QUEUED,
+                            bytes = 0,
+                            updatedAt = System.currentTimeMillis(),
+                        )
+                        if (trip >= DownloadPacing.CIRCUIT_TRIPS_BEFORE_STOP) {
+                            pauseQueued(db.downloadedTrackDao(), null)
+                            Log.w(TAG, "circuit open — paused remaining queue")
                         } else {
-                            markFailed(db.downloadedTrackDao(), track, quality, 0)
+                            val waitMs = DownloadPacing.circuitWaitMs(trip, retryAfter)
+                            delay(waitMs)
                         }
+                    } else if (DownloadPacing.isPermanentFailure(e)) {
+                        markFailed(db.downloadedTrackDao(), track, quality, 0)
                     } else {
                         val attempt = (retryCounts[track.uri] ?: 0) + 1
-                        if (attempt <= RETRY_MAX) {
+                        if (attempt <= DownloadPacing.TRANSIENT_RETRY_MAX) {
                             retryCounts[track.uri] = attempt
-                            val backoff = when (attempt) {
-                                1 -> 2_000L
-                                2 -> 5_000L
-                                else -> 10_000L
-                            }
-                            delay(backoff)
+                            delay(DownloadPacing.transientRetryWaitMs(attempt))
                             db.downloadedTrackDao().updateState(
                                 uri = track.uri,
                                 state = DownloadStates.QUEUED,
@@ -330,12 +358,21 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
                     }
                 },
             )
-        } finally {
-            if (staggerAfter && didAttempt) {
-                val waitMs = DownloadPacing.afterTrack()
-                Log.i(TAG, "paced ${waitMs}ms after ${track.uri}")
-            }
         }
+
+    private suspend fun awaitTrackGap(
+        context: Context,
+        dao: DownloadedTrackDao,
+        durationMs: Long,
+    ) {
+        val remaining = dao.getAll().count { DownloadStates.isActive(it.state) }
+        val waitMs = DownloadPacing.afterTrackWaitMs(
+            mode = DownloadPreferences(context).mode(),
+            remaining = remaining,
+            durationMs = durationMs,
+        )
+        Log.i(TAG, "paced ${waitMs}ms remaining=$remaining")
+        delay(waitMs)
     }
 
     private fun requireEngine(context: Context): LibrespotEngine? {
@@ -394,6 +431,31 @@ object SpotifyDownloadCenter : OfflineDownloadCenter {
                     duration_ms = track.durationMs.takeIf { it > 0 } ?: existing?.duration_ms ?: 0L,
                 ),
             )
+        }
+    }
+
+    private suspend fun pauseQueued(dao: DownloadedTrackDao, collectionUri: String?) {
+        val now = System.currentTimeMillis()
+        if (collectionUri != null) {
+            dao.updateCollectionTracksWithState(
+                collectionUri, DownloadStates.QUEUED, DownloadStates.STOPPED, now,
+            )
+        } else {
+            dao.updateAllWithState(DownloadStates.QUEUED, DownloadStates.STOPPED, now)
+        }
+    }
+
+    private suspend fun resumeUnfinishedRows(dao: DownloadedTrackDao, collectionUri: String?) {
+        val now = System.currentTimeMillis()
+        val fromStates = listOf(DownloadStates.STOPPED, DownloadStates.FAILED)
+        for (from in fromStates) {
+            if (collectionUri != null) {
+                dao.updateCollectionTracksWithState(
+                    collectionUri, from, DownloadStates.QUEUED, now,
+                )
+            } else {
+                dao.updateAllWithState(from, DownloadStates.QUEUED, now)
+            }
         }
     }
 

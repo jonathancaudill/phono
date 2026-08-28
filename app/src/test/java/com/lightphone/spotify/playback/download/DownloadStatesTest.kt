@@ -23,5 +23,31 @@ class DownloadStatesTest {
         assertTrue(DownloadStates.shouldSkipEnqueue(DownloadStates.COMPLETED))
         assertTrue(DownloadStates.isActive(DownloadStates.QUEUED))
         assertFalse(DownloadStates.isActive(DownloadStates.FAILED))
+        assertFalse(DownloadStates.shouldSkipEnqueue(DownloadStates.STOPPED))
+        assertFalse(DownloadStates.shouldSkipEnqueue(DownloadStates.FAILED))
+    }
+
+    @Test
+    fun collectionUiTreatsPartialAsNotDownloading() {
+        assertEquals(
+            CollectionDownloadUi.Complete,
+            DownloadStates.collectionUi(10, completed = 10, inProgress = 0, failed = 0, stopped = 0),
+        )
+        assertEquals(
+            CollectionDownloadUi.Downloading,
+            DownloadStates.collectionUi(10, completed = 4, inProgress = 2, failed = 0, stopped = 0),
+        )
+        assertEquals(
+            CollectionDownloadUi.Paused,
+            DownloadStates.collectionUi(10, completed = 4, inProgress = 0, failed = 0, stopped = 6),
+        )
+        assertEquals(
+            CollectionDownloadUi.Partial,
+            DownloadStates.collectionUi(10, completed = 7, inProgress = 0, failed = 3, stopped = 0),
+        )
+        assertEquals(
+            CollectionDownloadUi.None,
+            DownloadStates.collectionUi(10, completed = 0, inProgress = 0, failed = 0, stopped = 0),
+        )
     }
 }

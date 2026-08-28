@@ -210,6 +210,10 @@ fun PhonoShell(
                             onOpenEditor = { query ->
                                 overlayNav.navigate(OverlayDestination.SearchInput(query))
                             },
+                            onOpenSettings = {
+                                overlayNav.navigate(OverlayDestination.Settings)
+                            },
+                            onOpenPlaying = { overlayNav.navigate(OverlayDestination.Playing) },
                         )
                         PhonoTab.Downloads -> DownloadsScreen(
                             vm = vm,
@@ -220,20 +224,6 @@ fun PhonoShell(
                                 )
                             },
                         )
-                        PhonoTab.Settings -> {
-                            val activity = LocalContext.current as? ComponentActivity
-                            SettingsScreen(
-                                vm = vm,
-                                onLogout = {
-                                    vm.logout {
-                                        // Drop retained ViewModels so the next backend pick
-                                        // builds a fresh AppViewModel with the right choice.
-                                        activity?.viewModelStore?.clear()
-                                        activity?.recreate()
-                                    }
-                                },
-                            )
-                        }
                     }
                 }
 
@@ -322,6 +312,21 @@ private fun NavGraphBuilder.overlayDestinations(
         QueueScreen(
             vm = vm,
             onBack = { overlayNavController.popBackStack() },
+        )
+    }
+    composable(Routes.Settings) {
+        val activity = LocalContext.current as? ComponentActivity
+        SettingsScreen(
+            vm = vm,
+            onBack = { overlayNavController.popBackStack() },
+            onLogout = {
+                vm.logout {
+                    // Drop retained ViewModels so the next backend pick
+                    // builds a fresh AppViewModel with the right choice.
+                    activity?.viewModelStore?.clear()
+                    activity?.recreate()
+                }
+            },
         )
     }
     composable(
