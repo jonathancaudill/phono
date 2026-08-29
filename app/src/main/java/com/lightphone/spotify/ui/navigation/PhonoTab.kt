@@ -45,8 +45,8 @@ enum class PhonoTab(
 fun phonoTabs(includeDownloads: Boolean): List<PhonoTab> = buildList {
     add(PhonoTab.Liked)
     add(PhonoTab.Albums)
-    add(PhonoTab.Playlists)
     add(PhonoTab.Search)
+    add(PhonoTab.Playlists)
     if (includeDownloads) add(PhonoTab.Downloads)
 }
 

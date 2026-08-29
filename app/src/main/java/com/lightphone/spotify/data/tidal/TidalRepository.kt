@@ -3,7 +3,9 @@ package com.lightphone.spotify.data.tidal
 import com.lightphone.spotify.data.AlbumDetailResult
 import com.lightphone.spotify.data.ARTIST_DISCOGRAPHY_LIMIT
 import com.lightphone.spotify.data.ArtistDetailResult
+import com.lightphone.spotify.data.EphemeralTtlCache
 import com.lightphone.spotify.data.MusicRepository
+import com.lightphone.spotify.data.OverlayMetadataCache
 import com.lightphone.spotify.data.PlaylistDetailResult
 import com.lightphone.spotify.data.SearchRanking
 import com.lightphone.spotify.data.SearchResults
@@ -20,7 +22,6 @@ import com.lightphone.spotify.data.toMetadata
 import com.lightphone.spotify.data.toPlaylistSimple
 import com.lightphone.spotify.data.webapi.LibraryPage
 import java.time.Instant
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -38,7 +39,22 @@ class TidalRepository(
     private val libraryRepository: LibraryRepository,
 ) : MusicRepository {
 
-    private val searchCache = ConcurrentHashMap<String, SearchResults>()
+    private val searchCache = EphemeralTtlCache<String, SearchResults>(
+        ttlMs = OverlayMetadataCache.SEARCH_TTL_MS,
+        maxSize = OverlayMetadataCache.SEARCH_CAP,
+    )
+    private val albumCache = EphemeralTtlCache<String, AlbumDetailResult>(
+        ttlMs = OverlayMetadataCache.DETAIL_TTL_MS,
+        maxSize = OverlayMetadataCache.ALBUM_CAP,
+    )
+    private val artistCache = EphemeralTtlCache<String, ArtistDetailResult>(
+        ttlMs = OverlayMetadataCache.DETAIL_TTL_MS,
+        maxSize = OverlayMetadataCache.ARTIST_CAP,
+    )
+    private val playlistCache = EphemeralTtlCache<String, PlaylistDetailResult>(
+        ttlMs = OverlayMetadataCache.DETAIL_TTL_MS,
+        maxSize = OverlayMetadataCache.PLAYLIST_CAP,
+    )
 
     override fun hasPlaybackCredsWithoutLiveSession(): Boolean = false
 
@@ -46,23 +62,32 @@ class TidalRepository(
 
     override suspend fun albumDetail(albumId: String): AlbumDetailResult = withContext(Dispatchers.IO) {
         val id = TidalUri.rawId(albumId)
+        albumCache.get(id)?.let { return@withContext it }
         val album = api.album(id)
-        AlbumDetailResult(album = album, isSaved = libraryRepository.isSavedAlbumCached(id))
+        val result = AlbumDetailResult(album = album, isSaved = libraryRepository.isSavedAlbumCached(id))
+        albumCache.put(id, result)
+        result
     }
 
-    override fun artistDetail(artistId: String): ArtistDetailResult = runBlocking(Dispatchers.IO) {
+    override fun artistDetail(artistId: String): ArtistDetailResult {
         val id = TidalUri.rawId(artistId)
-        ArtistDetailResult(
-            artist = api.artist(id),
-            topTracks = api.artistTopTracks(id, limit = 10),
-            albums = api.artistAlbums(id, limit = ARTIST_DISCOGRAPHY_LIMIT),
-            singles = api.artistSingles(id, limit = ARTIST_DISCOGRAPHY_LIMIT),
-        )
+        artistCache.get(id)?.let { return it }
+        return runBlocking(Dispatchers.IO) {
+            val result = ArtistDetailResult(
+                artist = api.artist(id),
+                topTracks = api.artistTopTracks(id, limit = 10),
+                albums = api.artistAlbums(id, limit = ARTIST_DISCOGRAPHY_LIMIT),
+                singles = api.artistSingles(id, limit = ARTIST_DISCOGRAPHY_LIMIT),
+            )
+            artistCache.put(id, result)
+            result
+        }
     }
 
     override suspend fun playlistDetail(playlistId: String, trackLimit: Int): PlaylistDetailResult =
         withContext(Dispatchers.IO) {
             val uuid = TidalUri.rawId(playlistId)
+            playlistCache.get(uuid)?.let { return@withContext it }
             val detail = api.playlist(uuid)
             val tracks = api.playlistTracks(uuid, trackLimit.coerceIn(1, 500))
                 .map { SpotifyPlaylistTrackItem(track = it) }
@@ -73,13 +98,15 @@ class TidalRepository(
             resolvedOwner?.displayName
                 ?.takeIf { it.isNotBlank() && it != resolvedOwner.id }
                 ?.let { libraryRepository.updatePlaylistOwnerName(uuid, it) }
-            PlaylistDetailResult(
+            val result = PlaylistDetailResult(
                 detail = detail.copy(owner = resolvedOwner),
                 tracks = tracks,
                 currentUserId = userId,
                 isEditable = isEditable,
                 isInLibrary = isInLibrary,
             )
+            playlistCache.put(uuid, result)
+            result
         }
 
     override fun playlistTracks(playlistId: String, limit: Int): List<TrackMetadata> =
@@ -102,7 +129,7 @@ class TidalRepository(
     override fun search(query: String, limitPerType: Int): SearchResults {
         val key = query.trim()
         if (key.isEmpty()) return SearchResults(query = "")
-        searchCache[key]?.let { return it }
+        searchCache.get(key)?.let { return it }
         val response = runBlocking(Dispatchers.IO) { api.search(key, limitPerType) }
         val base = SearchResults(
             query = key,
@@ -113,10 +140,24 @@ class TidalRepository(
         )
         val ranked = SearchRanking.rank(key, base)
         val result = base.copy(topResult = ranked.topResult, rankedItems = ranked.rankedItems)
-        if (searchCache.size > SEARCH_CACHE_CAP) searchCache.clear()
-        searchCache[key] = result
+        searchCache.put(key, result)
         return result
     }
+
+    override fun cachedSearch(query: String): SearchResults? {
+        val key = query.trim()
+        if (key.isEmpty()) return null
+        return searchCache.get(key)
+    }
+
+    override fun cachedAlbumDetail(albumId: String): AlbumDetailResult? =
+        albumCache.get(TidalUri.rawId(albumId))
+
+    override fun cachedArtistDetail(artistId: String): ArtistDetailResult? =
+        artistCache.get(TidalUri.rawId(artistId))
+
+    override fun cachedPlaylistDetail(playlistId: String): PlaylistDetailResult? =
+        playlistCache.get(TidalUri.rawId(playlistId))
 
     /** TIDAL editorial mixes require the /pages surface; unsupported for now. */
     override suspend fun dailyMixes(): List<SpotifyPlaylistSimple> = emptyList()
@@ -151,6 +192,7 @@ class TidalRepository(
     override suspend fun saveAlbum(albumId: String) = withContext(Dispatchers.IO) {
         val id = TidalUri.rawId(albumId)
         api.addFavoriteAlbum(id)
+        albumCache.remove(id)
         val detail = api.album(id)
         libraryRepository.prependSavedAlbum(
             SpotifySavedAlbum(
@@ -169,6 +211,7 @@ class TidalRepository(
     override suspend fun removeAlbum(albumId: String) = withContext(Dispatchers.IO) {
         val id = TidalUri.rawId(albumId)
         api.removeFavoriteAlbum(id)
+        albumCache.remove(id)
         libraryRepository.removeSavedAlbum(id)
     }
 
@@ -188,6 +231,7 @@ class TidalRepository(
             val trimmed = name.trim()
             api.renamePlaylist(uuid, trimmed, etag = null)
             libraryRepository.updatePlaylistName(uuid, trimmed)
+            playlistCache.remove(uuid)
             api.playlist(uuid)
         }
 
@@ -200,6 +244,7 @@ class TidalRepository(
         val uuid = TidalUri.rawId(playlistId)
         val newEtag = api.addPlaylistTracks(uuid, listOf(TidalUri.rawId(uri)), etag = null, toIndex = position)
         libraryRepository.updatePlaylistSnapshot(uuid, newEtag)
+        playlistCache.remove(uuid)
         newEtag
     }
 
@@ -215,6 +260,7 @@ class TidalRepository(
         if (index < 0) return@withContext libraryRepository.getPlaylistSnapshot(uuid).orEmpty()
         val newEtag = api.removePlaylistItem(uuid, index, etag = null)
         libraryRepository.updatePlaylistSnapshot(uuid, newEtag)
+        playlistCache.remove(uuid)
         newEtag
     }
 
@@ -228,6 +274,7 @@ class TidalRepository(
         if (fromIndex == toIndex) return@withContext libraryRepository.getPlaylistSnapshot(uuid).orEmpty()
         val newEtag = api.movePlaylistItem(uuid, fromIndex, toIndex, etag = null)
         libraryRepository.updatePlaylistSnapshot(uuid, newEtag)
+        playlistCache.remove(uuid)
         newEtag
     }
 
@@ -235,12 +282,14 @@ class TidalRepository(
         val uuid = TidalUri.rawId(playlistId)
         api.addFavoritePlaylist(uuid)
         libraryRepository.prependPlaylist(api.playlist(uuid).toPlaylistSimple())
+        playlistCache.remove(uuid)
     }
 
     override suspend fun unfollowPlaylist(playlistId: String) = withContext(Dispatchers.IO) {
         val uuid = TidalUri.rawId(playlistId)
         api.removeFavoritePlaylist(uuid)
         libraryRepository.removePlaylist(uuid)
+        playlistCache.remove(uuid)
     }
 
     override suspend fun editablePlaylists(userId: String?): List<PlaylistEntity> {
@@ -285,6 +334,9 @@ class TidalRepository(
 
     override fun clearSessionCaches() {
         searchCache.clear()
+        albumCache.clear()
+        artistCache.clear()
+        playlistCache.clear()
     }
 
     private fun resolveOwner(owner: SpotifyPlaylistOwner?): SpotifyPlaylistOwner? {
@@ -294,8 +346,4 @@ class TidalRepository(
     }
 
     private fun normalize(uri: String): String = uri.substringBefore('?').trim()
-
-    companion object {
-        private const val SEARCH_CACHE_CAP = 25
-    }
 }

@@ -2,6 +2,7 @@ package com.lightphone.spotify.playback.backend
 
 import com.lightphone.spotify.data.native.NativeMetadataGateway
 import com.lightphone.spotify.ffi.NormalizationType
+import com.lightphone.spotify.ffi.PlaybackDebugMetrics
 import com.lightphone.spotify.ffi.QueueSnapshot
 import com.lightphone.spotify.ffi.RepeatMode
 import com.lightphone.spotify.ffi.StreamingQuality
@@ -113,6 +114,9 @@ interface PlaybackBackend {
      * track does not pause/play.
      */
     fun isCurrentFullyBuffered(): Boolean = false
+
+    /** Spotify UniFFI counters; null on backends that do not expose them. */
+    fun playbackDebugMetrics(): PlaybackDebugMetrics? = null
 
     /**
      * Hint for resolve-time quality ceilings ([com.lightphone.spotify.playback.media3.QualityPolicy]).

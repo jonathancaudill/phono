@@ -9,10 +9,13 @@ the racey session drops that triggered the bug.
 ## Logcat tags
 
 ```bash
-adb logcat -s SpotifyCore Playback PhonoAudioDrain PhonoAudioTrack
+adb logcat -s spotify-core:W Playback:W PhonoAudioDrain PhonoAudioTrack
 ```
 
 Key lines:
+- `continuity: event=…` — Phase 0 field capture (pause/play flicker). Rust tag is
+  `spotify-core`; Kotlin tag is `Playback`. `buffered=?` on play/pause is
+  intentional (do not query the player thread there).
 - `build_active: uri=... reason=session_rebuild` — a rebuild installed + resumed.
 - `build_active: skipping auto-resume, superseded by user command epoch` — the
   command-epoch guard suppressed a stale restore (expected when you tap during a
@@ -26,6 +29,9 @@ Key lines:
 | `sink_epoch_rejected_writes` | PCM writes blocked because a newer sink owns the AudioTrack | At/near **0**; any nonzero proves the ownership guard caught an overlap that would otherwise be audible |
 | `stale_load_suppressed` | Auto-resume loads dropped because a newer user command arrived | Rises when tapping during reconnect (expected) |
 | `prefetch_cancelled` | Prefetch loops abandoned after the queue moved on | Rises with rapid skipping (expected) |
+| `connection_lost_while_buffered` | Session monitor dropped Active while the current track was fully banked | Climbs if Wi‑Fi pause/play is H1 |
+| `force_reconnect_skipped_banked` | Native `force_reconnect_check` refused teardown because playing + banked | Climbs on handoff of a banked track |
+| `decoder_wait_timeout` | Decoder `Read` hit `AudioFileError::WaitTimeout` | Climbs if encoded read-ahead ran out (H3) |
 
 ## Correctness matrix (must pass)
 

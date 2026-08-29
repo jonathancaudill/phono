@@ -27,7 +27,7 @@ import com.thelightphone.sdk.ui.gridUnitsAsDp
 import com.thelightphone.sdk.ui.lightClickable
 
 /** Slightly above LightBarButtonDefaults (2f) so tab icons read clearly on LP3. */
-private const val TAB_ICON_SIZE_UNITS = 2.55f
+private const val TAB_ICON_SIZE_UNITS = 2.7f
 
 private const val BAR_HEIGHT_UNITS = 3.5f
 private const val TOP_MARGIN_UNITS = 0.5f

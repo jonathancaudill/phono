@@ -30,6 +30,8 @@ On Android Path C, recreates the ring + drain + Kotlin `AudioTrack` via the sink
 - `Player::load_discontinuous()` — public API; sends `flush = true`
 - `Player::load()` unchanged (sends `flush = false`, used for gapless auto-advance
   and fresh-session resume)
+- Decode errors that skip the track log `continuity: decode_skip` (Phase 0 field
+  capture; skip behaviour unchanged)
 - `handle_command_load` flushes the sink when `flush = true` and the sink is
   running, so a user skip/play during a slow load cannot let the outgoing track's
   buffered PCM tail overlap the incoming track ("two sections at once" garble that

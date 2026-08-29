@@ -260,6 +260,10 @@ same key and ship **exactly one** `.apk` asset.
 - **Overlapping audio on skip/reconnect** → user loads must use
   `load_discontinuous` (flush); check `sink_epoch_rejected_writes` /
   `stale_load_suppressed` in `PlaybackDebugMetrics`.
+- **Pause/play flicker on Wi‑Fi (roam, default-network change)** → AP TCP died
+  and the monitor dropped `Active` even if the track was banked. Today that is
+  expected. Capture `adb logcat -s spotify-core:W Playback:W` (`continuity:`).
+  Planned fix: [docs/future/playback-continuity.md](docs/future/playback-continuity.md).
 - **Spotify Step 1 WebView never returns** → loopback server on `:8898` not running.
 - **Offline pins vanished** → 30-day hygiene, not Clear Cache.
 - **TIDAL track silent / error** → Widevine/encrypted path; only clear BTS/DASH plays.
@@ -272,8 +276,9 @@ same key and ship **exactly one** `.apk` asset.
 - **Echo** — Light Phone UX, Web API metadata patterns, dev-app setup flow.
 - **psst** — librespot playback/session; combined `/search` (we use `market`, not its `marker` typo).
 - **librespot** — session, Login5, spclient, playback protocol.
-- **Jetispot** — Android sink + reconnect history; we rebuild instead.
-  [docs/future/session-reconnect.md](docs/future/session-reconnect.md).
+- **Jetispot / librespot-java** — Android sink; in-place `Session.reconnect()`
+  (we copy the *contract* in rust, we do not switch engines).
+  [docs/future/playback-continuity.md](docs/future/playback-continuity.md).
 
 Reach for these when the matching work is in scope:
 
@@ -283,4 +288,5 @@ Reach for these when the matching work is in scope:
 - [docs/self-update.md](docs/self-update.md) — GitHub release updater / signing
 - [docs/native-playlist-writes.md](docs/native-playlist-writes.md) — spclient playlist mutations
 - [docs/playback-stability-field-tests.md](docs/playback-stability-field-tests.md) — reconnect / overlap counters
+- [docs/future/playback-continuity.md](docs/future/playback-continuity.md) — keep Player when AP socket dies (Wi‑Fi pause/play)
 - `rust/librespot-*-patched/PATCHES.md` — patch internals

@@ -1673,7 +1673,7 @@ impl Future for PlayerInternal {
                                         }
                                         Err(e) => {
                                             error!(
-                                                "Skipping to next track, unable to decode samples for track <{track_id:?}>: {e:?}"
+                                                "continuity: decode_skip samples track=<{track_id:?}>: {e:?}"
                                             );
                                             self.send_event(PlayerEvent::EndOfTrack {
                                                 track_id,
@@ -1688,7 +1688,7 @@ impl Future for PlayerInternal {
                         }
                         Err(e) => {
                             error!(
-                                "Skipping to next track, unable to get next packet for track <{track_id:?}>: {e:?}"
+                                "continuity: decode_skip packet track=<{track_id:?}>: {e:?}"
                             );
                             self.send_event(PlayerEvent::EndOfTrack {
                                 track_id,

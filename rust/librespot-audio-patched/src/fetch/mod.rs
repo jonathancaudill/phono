@@ -6,7 +6,7 @@ use std::{
     io::{self, Read, Seek, SeekFrom},
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     },
     sync::{Condvar, Mutex},
     time::Duration,
@@ -29,6 +29,19 @@ use crate::range_set::{Range, RangeSet};
 pub type AudioFileResult = Result<(), librespot_core::Error>;
 
 const DOWNLOAD_STATUS_POISON_MSG: &str = "audio download status mutex should not be poisoned";
+
+static WAIT_TIMEOUT_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Times the decoder blocked on a CDN range until `download_timeout` (field
+/// continuity / H3). Survives as a process counter; read from spotify-core metrics.
+pub fn wait_timeout_count() -> u32 {
+    WAIT_TIMEOUT_COUNT.load(Ordering::Relaxed)
+}
+
+fn note_wait_timeout() {
+    WAIT_TIMEOUT_COUNT.fetch_add(1, Ordering::Relaxed);
+    warn!("continuity: decoder_wait_timeout");
+}
 
 #[derive(Error, Debug)]
 pub enum AudioFileError {
@@ -238,6 +251,7 @@ impl StreamLoaderController {
 
                 download_status = new_download_status;
                 if wait_result.timed_out() {
+                    note_wait_timeout();
                     return Err(AudioFileError::WaitTimeout.into());
                 }
 
@@ -602,6 +616,7 @@ impl Read for AudioFileStreaming {
 
             download_status = new_download_status;
             if wait_result.timed_out() {
+                note_wait_timeout();
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     Error::deadline_exceeded(AudioFileError::WaitTimeout),

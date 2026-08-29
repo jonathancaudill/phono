@@ -235,6 +235,10 @@ struct EngineShared {
     metrics_rebuild_coalesced: AtomicU32,
     metrics_prefetch_cancelled: AtomicU32,
     stale_load_suppressed: AtomicU32,
+    /// Monitor `on_connection_lost` while remaining audio was already local.
+    metrics_connection_lost_while_buffered: AtomicU32,
+    /// `force_reconnect_check` refused to drop a banked playing track.
+    metrics_force_reconnect_skipped_banked: AtomicU32,
     /// Debounce for `PlayerEvent::Stopped` recovery so a storm of stop events on
     /// a flaky connection cannot spawn a pile of recovery threads that all pile
     /// onto the single-flight rebuild guard.
@@ -272,6 +276,12 @@ pub struct PlaybackDebugMetrics {
     pub stale_load_suppressed: u32,
     /// Prefetch loops cancelled because the queue moved on.
     pub prefetch_cancelled: u32,
+    /// Session monitor emitted connection-lost while the current track was fully banked.
+    pub connection_lost_while_buffered: u32,
+    /// Native force-reconnect skipped because playing + fully banked.
+    pub force_reconnect_skipped_banked: u32,
+    /// Decoder `Read` hit `AudioFileError::WaitTimeout` (CDN range wait).
+    pub decoder_wait_timeout: u32,
 }
 
 /// The UniFFI object handed to Kotlin.
@@ -826,6 +836,8 @@ impl EngineShared {
             metrics_rebuild_coalesced: AtomicU32::new(0),
             metrics_prefetch_cancelled: AtomicU32::new(0),
             stale_load_suppressed: AtomicU32::new(0),
+            metrics_connection_lost_while_buffered: AtomicU32::new(0),
+            metrics_force_reconnect_skipped_banked: AtomicU32::new(0),
             recovery_inflight: AtomicBool::new(false),
             last_checkpoint_save: Mutex::new(None),
             app_foreground: AtomicBool::new(false),
@@ -901,6 +913,13 @@ impl EngineShared {
             sink_epoch_rejected_writes: epoch_rejected,
             stale_load_suppressed: self.stale_load_suppressed.load(Ordering::Relaxed),
             prefetch_cancelled: self.metrics_prefetch_cancelled.load(Ordering::Relaxed),
+            connection_lost_while_buffered: self
+                .metrics_connection_lost_while_buffered
+                .load(Ordering::Relaxed),
+            force_reconnect_skipped_banked: self
+                .metrics_force_reconnect_skipped_banked
+                .load(Ordering::Relaxed),
+            decoder_wait_timeout: librespot::audio::wait_timeout_count(),
         }
     }
 
@@ -914,6 +933,7 @@ impl EngineShared {
     }
 
     async fn rebuild_active_staged(self: Arc<Self>) {
+        self.log_continuity("staged_rebuild", None);
         let resume = self.snapshot_resume_with_position();
         notify(&self.listener, |l| l.on_connection_lost());
         *self.pending_queue.lock().unwrap() = resume.clone();
@@ -1797,8 +1817,11 @@ impl EngineShared {
         // Active — callers want to upgrade to a connected session.
         if self.has_connected_active() {
             self.metrics_rebuild_coalesced.fetch_add(1, Ordering::Relaxed);
+            self.log_continuity("rebuild_coalesced", None);
             return Ok(());
         }
+
+        self.log_continuity("full_rebuild", None);
 
         // Ensure the previous Active is fully torn down (player thread + load
         // threads joined, drain stopped) BEFORE we construct the new player, so
@@ -2185,6 +2208,34 @@ impl EngineShared {
         });
     }
 
+    /// Field-test snapshot. Skip `is_current_fully_buffered` unless the caller
+    /// already measured it — that query blocks on the player thread.
+    fn log_continuity(&self, event: &str, fully_buffered: Option<bool>) {
+        let playing = self.playing.load(Ordering::SeqCst);
+        let session_ok = self.has_connected_active();
+        let buffered = fully_buffered
+            .map(|b| if b { "1" } else { "0" })
+            .unwrap_or("?");
+        let m = self.playback_debug_metrics();
+        log::warn!(
+            "continuity: event={event} playing={playing} buffered={buffered} session_ok={session_ok} \
+             online={} fg={} full_rebuild={} transport_reconnect={} stall={} lost_while_buffered={} \
+             skip_banked={} wait_timeout={} coalesced={} stale_load={} ring_ms={} pending_ms={}",
+            self.network_online.load(Ordering::SeqCst),
+            self.app_foreground.load(Ordering::SeqCst),
+            m.full_rebuild,
+            m.transport_reconnect,
+            m.stall_events,
+            m.connection_lost_while_buffered,
+            m.force_reconnect_skipped_banked,
+            m.decoder_wait_timeout,
+            m.rebuild_coalesced,
+            m.stale_load_suppressed,
+            m.ring_occupancy_ms,
+            m.pending_output_ms,
+        );
+    }
+
     fn force_reconnect_check(self: &Arc<Self>) {
         // Clone the player handle without holding Active across the query
         // (is_current_fully_buffered round-trips to the player thread).
@@ -2200,18 +2251,21 @@ impl EngineShared {
             .unwrap_or(false);
         let playing = self.playing.load(Ordering::SeqCst);
         if !playback_continuity::should_teardown_on_force_reconnect(playing, fully_buffered) {
-            // Current track is already in cache — tearing down Active would be
-            // an audible pause/play for no streaming benefit.
+            self.metrics_force_reconnect_skipped_banked
+                .fetch_add(1, Ordering::Relaxed);
+            self.log_continuity("force_reconnect_skipped_banked", Some(fully_buffered));
             return;
         }
         let now = Instant::now();
         {
             let mut last = self.last_force_reconnect.lock().unwrap();
             if !playback_continuity::force_reconnect_cooldown_elapsed(*last, now) {
+                self.log_continuity("force_reconnect_cooldown", Some(fully_buffered));
                 return;
             }
             *last = Some(now);
         }
+        self.log_continuity("force_reconnect_teardown", Some(fully_buffered));
         // Snapshot queue before teardown — same as the monitor path. Without
         // this, a force reconnect after a successful monitor rebuild drops
         // Active with an empty pending_queue and resumes into silence.
@@ -2307,6 +2361,19 @@ fn spawn_monitor(
             }
 
             let was_playing = shared.playing.load(Ordering::SeqCst);
+            let fully_buffered = shared
+                .active
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|a| a.player.is_current_fully_buffered())
+                .unwrap_or(false);
+            if was_playing && fully_buffered {
+                shared
+                    .metrics_connection_lost_while_buffered
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            shared.log_continuity("connection_lost", Some(fully_buffered));
             if was_playing {
                 notify(&shared.listener, |l| l.on_connection_lost());
             }
@@ -2443,6 +2510,9 @@ async fn forward_events(
         match event {
             PlayerEvent::Loading { track_id, .. } => {
                 unavailable_guard.reset();
+                if let Some(shared) = weak.upgrade() {
+                    shared.log_continuity("loading", None);
+                }
                 notify(&listener, |l| l.on_buffering(true));
                 notify(&listener, |l| l.on_loading());
                 notify(&listener, |l| l.on_track_changed(uri_to_string(&track_id)));
@@ -2457,6 +2527,9 @@ async fn forward_events(
                 playing.store(true, Ordering::SeqCst);
                 notify(&listener, |l| l.on_buffering(false));
                 notify(&listener, |l| l.on_playing(position_ms as i64));
+                if let Some(shared) = weak.upgrade() {
+                    shared.log_continuity("playing", None);
+                }
                 // Do not re-emit on_track_changed here — Loading / TrackChanged
                 // already notified the URI. Re-emitting zeros Kotlin position on resume.
                 let _ = track_id;
@@ -2465,6 +2538,9 @@ async fn forward_events(
                 sync_queue_position(&queue, position_ms, &last_known_position_ms);
                 playing.store(false, Ordering::SeqCst);
                 notify(&listener, |l| l.on_paused(position_ms as i64));
+                if let Some(shared) = weak.upgrade() {
+                    shared.log_continuity("paused", None);
+                }
             }
             PlayerEvent::PositionChanged { position_ms, .. }
             | PlayerEvent::PositionCorrection { position_ms, .. }
@@ -2529,6 +2605,7 @@ async fn forward_events(
                     shared
                         .metrics_stall_events
                         .fetch_add(1, Ordering::SeqCst);
+                    shared.log_continuity("stopped", None);
                     // Debounce: only one recovery thread at a time. Others coalesce
                     // via the single-flight rebuild guard anyway; this just avoids
                     // spawning a thread per stop event during a connection storm.
@@ -2557,6 +2634,9 @@ async fn forward_events(
                 }
             }
             PlayerEvent::EndOfTrack { .. } => {
+                if let Some(shared) = weak.upgrade() {
+                    shared.log_continuity("end_of_track", None);
+                }
                 let next = queue.lock().unwrap().end_of_track();
                 if let Some(uri) = next {
                     player.load(uri, true, 0);

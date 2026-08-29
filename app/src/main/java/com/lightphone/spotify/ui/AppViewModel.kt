@@ -8,6 +8,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.compose.foundation.lazy.LazyListState
 import com.lightphone.spotify.App
+import com.lightphone.spotify.data.AlbumDetailResult
+import com.lightphone.spotify.data.ArtistDetailResult
+import com.lightphone.spotify.data.PlaylistDetailResult
 import com.lightphone.spotify.data.PlaylistFilter
 import com.lightphone.spotify.data.SearchFilter
 import com.lightphone.spotify.data.SearchResults
@@ -1330,11 +1333,53 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun playlistUiState(playlistId: String, result: PlaylistDetailResult) = PlaylistDetailState(
+        requestedId = playlistId,
+        detail = result.detail,
+        tracks = result.tracks.mapNotNull { item ->
+            item.track?.let { track ->
+                PlaylistDetailTrackRow(
+                    track = track,
+                    addedAt = item.addedAt,
+                    uri = track.uri,
+                )
+            }
+        },
+        snapshotId = result.detail.snapshotId,
+        isEditable = result.isEditable,
+        isInLibrary = result.isInLibrary,
+    )
+
+    private fun albumUiState(albumId: String, result: AlbumDetailResult) = AlbumDetailState(
+        requestedId = albumId,
+        album = result.album,
+        isSaved = result.isSaved,
+        isSavedConfirmed = true,
+    )
+
+    private fun artistUiState(artistId: String, result: ArtistDetailResult) = ArtistDetailState(
+        requestedId = artistId,
+        artist = result.artist,
+        topTracks = result.topTracks,
+        albums = result.albums,
+        singles = result.singles,
+    )
+
     fun loadPlaylistDetail(playlistId: String) {
-        if (loadedPlaylistId == playlistId &&
-            _playlistDetail.value.detail?.id == playlistId &&
-            !_playlistDetail.value.loading
+        val current = _playlistDetail.value
+        if (shouldSkipOverlayReload(
+                requestedId = playlistId,
+                currentRequestedId = current.requestedId,
+                hasPayload = current.detail?.id == playlistId,
+                loading = current.loading,
+                error = current.error,
+            )
         ) {
+            return
+        }
+        controller.cachedPlaylistDetail(playlistId)?.let { cached ->
+            loadedPlaylistId = playlistId
+            _playlistDetail.value = playlistUiState(playlistId, cached)
             return
         }
         loadedPlaylistId = playlistId
@@ -1349,22 +1394,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     // signed out) while this request was in flight — otherwise a slow
                     // response for playlist A can land on top of playlist B's screen.
                     if (_playlistDetail.value.requestedId != playlistId) return@onSuccess
-                    _playlistDetail.value = PlaylistDetailState(
-                        requestedId = playlistId,
-                        detail = result.detail,
-                        tracks = result.tracks.mapNotNull { item ->
-                            item.track?.let { track ->
-                                PlaylistDetailTrackRow(
-                                    track = track,
-                                    addedAt = item.addedAt,
-                                    uri = track.uri,
-                                )
-                            }
-                        },
-                        snapshotId = result.detail.snapshotId,
-                        isEditable = result.isEditable,
-                        isInLibrary = result.isInLibrary,
-                    )
+                    _playlistDetail.value = playlistUiState(playlistId, result)
                 }
                 .onFailure { e ->
                     if (_playlistDetail.value.requestedId != playlistId) return@onFailure
@@ -1738,6 +1768,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun addTrackToSelectedPlaylists(onAdded: () -> Unit) = applyPlaylistPickerChanges(onAdded)
 
     fun loadAlbumDetail(albumId: String) {
+        val current = _albumDetail.value
+        if (shouldSkipOverlayReload(
+                requestedId = albumId,
+                currentRequestedId = current.requestedId,
+                hasPayload = current.album?.id == albumId,
+                loading = current.loading,
+                error = current.error,
+            )
+        ) {
+            return
+        }
+        controller.cachedAlbumDetail(albumId)?.let { cached ->
+            _albumDetail.value = albumUiState(albumId, cached)
+            return
+        }
         _albumDetail.value = AlbumDetailState(loading = true, requestedId = albumId)
         viewModelScope.launch {
             val cachedSaved = runCatching { controller.isSavedAlbumCached(albumId) }
@@ -1749,12 +1794,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { controller.albumDetail(albumId) }
                 .onSuccess { result ->
                     if (_albumDetail.value.requestedId != albumId) return@onSuccess
-                    _albumDetail.value = AlbumDetailState(
-                        requestedId = albumId,
-                        album = result.album,
-                        isSaved = result.isSaved,
-                        isSavedConfirmed = true,
-                    )
+                    _albumDetail.value = albumUiState(albumId, result)
                 }
                 .onFailure { e ->
                     if (_albumDetail.value.requestedId != albumId) return@onFailure
@@ -1789,18 +1829,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadArtistDetail(artistId: String) {
+        val current = _artistDetail.value
+        if (shouldSkipOverlayReload(
+                requestedId = artistId,
+                currentRequestedId = current.requestedId,
+                hasPayload = current.artist?.id == artistId,
+                loading = current.loading,
+                error = current.error,
+            )
+        ) {
+            return
+        }
+        controller.cachedArtistDetail(artistId)?.let { cached ->
+            _artistDetail.value = artistUiState(artistId, cached)
+            return
+        }
         _artistDetail.value = ArtistDetailState(loading = true, requestedId = artistId)
         viewModelScope.launch {
             runCatching { controller.artistDetail(artistId) }
                 .onSuccess { result ->
                     if (_artistDetail.value.requestedId != artistId) return@onSuccess
-                    _artistDetail.value = ArtistDetailState(
-                        requestedId = artistId,
-                        artist = result.artist,
-                        topTracks = result.topTracks,
-                        albums = result.albums,
-                        singles = result.singles,
-                    )
+                    _artistDetail.value = artistUiState(artistId, result)
                 }
                 .onFailure { e ->
                     if (_artistDetail.value.requestedId != artistId) return@onFailure
@@ -1821,6 +1870,34 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun submitSearch(query: String) {
         if (query.isBlank()) return
         val trimmed = query.trim()
+        val prev = _search.value
+        if (shouldSkipSearchReload(
+                query = trimmed,
+                resultsQuery = prev.resultsQuery,
+                hasResults = prev.results != null,
+            )
+        ) {
+            if (prev.query != trimmed) {
+                _search.update { it.copy(query = trimmed) }
+            }
+            return
+        }
+        controller.cachedSearch(trimmed)?.let { cached ->
+            searchJob?.cancel()
+            _search.update {
+                it.copy(
+                    query = trimmed,
+                    resultsQuery = trimmed,
+                    results = cached,
+                    initialLoading = false,
+                    refreshing = false,
+                    error = null,
+                    refreshError = null,
+                    filter = if (it.query != trimmed) SearchFilter.All else it.filter,
+                )
+            }
+            return
+        }
         if (!isNetworkOnline()) {
             _search.update {
                 it.copy(
@@ -1836,7 +1913,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val requestId = ++searchRequestId
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
-            val prev = _search.value
             val sameQuery = prev.resultsQuery == trimmed && prev.results != null
             _search.update {
                 it.copy(

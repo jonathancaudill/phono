@@ -32,7 +32,8 @@ Start here after skimming the root [README.md](../README.md).
 
 | Doc | Topic |
 |-----|--------|
-| [future/session-reconnect.md](future/session-reconnect.md) | Why in-place `Session.reconnect()` is a no-go in Rust 0.8.0; seamless rebuild today; Path A if needed |
+| [future/playback-continuity.md](future/playback-continuity.md) | Keep Player/sink when AP TCP dies; copy java/go contract in rust. Phased: field loop → stop ConnectivityManager teardown → session-only rebuild → longer bank → decoder retry. |
+| [future/session-reconnect.md](future/session-reconnect.md) | Stub. In-place rust `Session.reconnect()` is optional Phase 5 of playback-continuity, not the plan. |
 | [future/backend-consolidation.md](future/backend-consolidation.md) | Phase D: move AudioTrack sink into `librespot-playback-patched` |
 
 ## Architecture at a glance
@@ -53,6 +54,6 @@ PhonoAudioTrackSink (Kotlin) ──► AudioTrack (USAGE_MEDIA)
 
 **Two auth flows:** Keymaster OAuth for streaming; separate dev-app OAuth for metadata. Never mix tokens or redirect URIs.
 
-**Session recovery:** Full `Active` rebuild with queue/position restore — not librespot-java in-place reconnect. See [future/session-reconnect.md](future/session-reconnect.md).
+**Session recovery (today):** Full `Active` rebuild with queue/position restore. **Planned:** keep the Player when remaining audio is local; replace only the AP session. See [future/playback-continuity.md](future/playback-continuity.md).
 
 **Audio recovery:** `recreateAudioSink()` (Rust) + Kotlin coordinator (DEAD_OBJECT / stalled playhead). Orthogonal to session rebuild.

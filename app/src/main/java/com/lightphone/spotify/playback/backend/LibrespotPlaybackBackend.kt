@@ -172,6 +172,8 @@ class LibrespotPlaybackBackend(
 
     override fun isCurrentFullyBuffered(): Boolean = engine.isCurrentFullyBuffered()
 
+    override fun playbackDebugMetrics() = engine.playbackDebugMetrics()
+
     override fun awaitBankIdle(timeoutMs: Long): Boolean {
         if (engine.isCurrentFullyBuffered()) return true
         val deadline = System.nanoTime() + timeoutMs.coerceAtLeast(0L) * 1_000_000L

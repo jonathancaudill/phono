@@ -24,6 +24,8 @@ Minimal patches so Android builds present as **Keymaster desktop Linux** for pla
 
 ## Session reconnect
 
-In-place `Session.reconnect()` is **not** supported in 0.8.0. See [docs/future/session-reconnect.md](../../docs/future/session-reconnect.md).
+In-place `Session.reconnect()` is **not** supported in 0.8.0. Playback plan:
+keep the Player and replace the Session object — [docs/future/playback-continuity.md](../../docs/future/playback-continuity.md).
+In-place reconnect is optional Phase 5 of that doc.
 
 Upstream: crates.io `librespot-core-0.8.0`

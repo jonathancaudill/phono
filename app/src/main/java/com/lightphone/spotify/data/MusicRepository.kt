@@ -64,6 +64,12 @@ interface MusicRepository {
     // --- library paging (drives LibraryRepository sync) ---------------------
     suspend fun playlistLibraryPage(offset: Int, limit: Int): LibraryPage<SpotifyPlaylistSimple>
 
+    // --- overlay peeks (in-memory TTL; never I/O) ---------------------------
+    fun cachedSearch(query: String): SearchResults?
+    fun cachedAlbumDetail(albumId: String): AlbumDetailResult?
+    fun cachedArtistDetail(artistId: String): ArtistDetailResult?
+    fun cachedPlaylistDetail(playlistId: String): PlaylistDetailResult?
+
     // --- cache lifecycle ----------------------------------------------------
     suspend fun clearLibraryCache()
     fun clearSessionCaches()

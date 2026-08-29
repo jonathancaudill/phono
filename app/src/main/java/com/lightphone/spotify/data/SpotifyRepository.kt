@@ -89,22 +89,28 @@ class SpotifyRepository(
         return gateway
     }
 
-    private val searchCache = ConcurrentHashMap<String, EphemeralEntry<SearchResults>>()
-    private val ephemeralAlbumCache = ConcurrentHashMap<String, EphemeralEntry<AlbumDetailResult>>()
-    private val ephemeralPlaylistCache = ConcurrentHashMap<String, EphemeralEntry<PlaylistDetailResult>>()
+    private val searchCache = EphemeralTtlCache<String, SearchResults>(
+        ttlMs = OverlayMetadataCache.SEARCH_TTL_MS,
+        maxSize = OverlayMetadataCache.SEARCH_CAP,
+    )
+    private val ephemeralAlbumCache = EphemeralTtlCache<String, AlbumDetailResult>(
+        ttlMs = OverlayMetadataCache.DETAIL_TTL_MS,
+        maxSize = OverlayMetadataCache.ALBUM_CAP,
+    )
+    private val ephemeralPlaylistCache = EphemeralTtlCache<String, PlaylistDetailResult>(
+        ttlMs = OverlayMetadataCache.DETAIL_TTL_MS,
+        maxSize = OverlayMetadataCache.PLAYLIST_CAP,
+    )
+    private val ephemeralArtistCache = EphemeralTtlCache<String, ArtistDetailResult>(
+        ttlMs = OverlayMetadataCache.DETAIL_TTL_MS,
+        maxSize = OverlayMetadataCache.ARTIST_CAP,
+    )
     private var dailyMixesCache: Pair<Long, List<SpotifyPlaylistSimple>>? = null
     private var currentUserIdCache: String? = null
     private val ownerDisplayNameCache = ConcurrentHashMap<String, String>()
 
     override suspend fun albumDetail(albumId: String): AlbumDetailResult {
-        val now = System.currentTimeMillis()
-        ephemeralAlbumCache[albumId]?.let { entry ->
-            if (now - entry.at < CACHE_TTL_MS) {
-                entry.touch(now)
-                return entry.value
-            }
-            ephemeralAlbumCache.remove(albumId)
-        }
+        ephemeralAlbumCache.get(albumId)?.let { return it }
         detailCache.getPinnedAlbumDetail(albumId)?.let { (album, isSaved) ->
             return AlbumDetailResult(album = album, isSaved = isSaved)
         }
@@ -117,37 +123,47 @@ class SpotifyRepository(
         if (detailCache.isSavedAlbumCached(albumId)) {
             detailCache.putPinnedAlbumDetail(albumId, album, isSaved)
         } else {
-            putEphemeralAlbum(albumId, result, now)
+            ephemeralAlbumCache.put(albumId, result)
         }
         return result
     }
 
     override fun artistDetail(artistId: String): ArtistDetailResult {
+        ephemeralArtistCache.get(artistId)?.let { return it }
         val bundle = nativeGateway().artistDetail(
             artistId = artistId,
             albumLimit = ARTIST_DISCOGRAPHY_LIMIT,
             topTrackLimit = 10,
         )
-        return NativeMetadataAdapter.toArtistDetailResult(bundle)
+        val result = NativeMetadataAdapter.toArtistDetailResult(bundle)
+        ephemeralArtistCache.put(artistId, result)
+        return result
     }
 
     override fun search(query: String, limitPerType: Int): SearchResults {
         val key = query.trim()
         if (key.isEmpty()) return SearchResults(query = "")
-        val now = System.currentTimeMillis()
-        searchCache[key]?.let { entry ->
-            if (now - entry.at < SEARCH_TTL_MS) {
-                entry.touch(now)
-                return entry.value
-            }
-            searchCache.remove(key)
-        }
+        searchCache.get(key)?.let { return it }
         val apiResults = webApi.search(key, limitPerType)
         val items = apiResults.toSearchResults(key)
-        evictOldestIfNeeded(searchCache, SEARCH_CACHE_CAP)
-        searchCache[key] = EphemeralEntry(items, now, now)
+        searchCache.put(key, items)
         return items
     }
+
+    override fun cachedSearch(query: String): SearchResults? {
+        val key = query.trim()
+        if (key.isEmpty()) return null
+        return searchCache.get(key)
+    }
+
+    override fun cachedAlbumDetail(albumId: String): AlbumDetailResult? =
+        ephemeralAlbumCache.get(albumId)
+
+    override fun cachedArtistDetail(artistId: String): ArtistDetailResult? =
+        ephemeralArtistCache.get(artistId)
+
+    override fun cachedPlaylistDetail(playlistId: String): PlaylistDetailResult? =
+        ephemeralPlaylistCache.get(playlistId)
 
     override fun playlistTracks(playlistId: String, limit: Int): List<TrackMetadata> {
         val bundle = nativeGateway().playlistDetail(playlistId, limit.coerceIn(1, 500))
@@ -164,14 +180,7 @@ class SpotifyRepository(
     }
 
     override suspend fun playlistDetail(playlistId: String, trackLimit: Int): PlaylistDetailResult {
-        val now = System.currentTimeMillis()
-        ephemeralPlaylistCache[playlistId]?.let { entry ->
-            if (now - entry.at < CACHE_TTL_MS) {
-                entry.touch(now)
-                return entry.value
-            }
-            ephemeralPlaylistCache.remove(playlistId)
-        }
+        ephemeralPlaylistCache.get(playlistId)?.let { return it }
         val authoritativeSnapshot = libraryRepository.getPlaylistSnapshot(playlistId)
         detailCache.getPinnedPlaylistDetail(playlistId, authoritativeSnapshot)?.let { (detail, tracks, _) ->
             val userId = currentUserIdSuspend()
@@ -208,7 +217,7 @@ class SpotifyRepository(
                 result.detail.snapshotId,
             )
         } else {
-            putEphemeralPlaylist(playlistId, result, now)
+            ephemeralPlaylistCache.put(playlistId, result)
         }
         return result
     }
@@ -223,7 +232,7 @@ class SpotifyRepository(
             .filterTo(mutableSetOf()) { it in idSet }
         for (playlistId in playlistIds) {
             if (playlistId in found) continue
-            val inEphemeral = ephemeralPlaylistCache[playlistId]?.value?.tracks?.any { item ->
+            val inEphemeral = ephemeralPlaylistCache.get(playlistId)?.tracks?.any { item ->
                 item.track?.uri?.let { normalizeUri(it) } == normalized
             } == true
             if (inEphemeral) found.add(playlistId)
@@ -362,6 +371,7 @@ class SpotifyRepository(
         nativeGateway().unfollowPlaylist("spotify:playlist:$playlistId")
         libraryRepository.removePlaylist(playlistId)
         detailCache.clearPlaylistUriIndex(playlistId)
+        ephemeralPlaylistCache.remove(playlistId)
     }
 
     override suspend fun editablePlaylists(userId: String?): List<PlaylistEntity> {
@@ -512,6 +522,7 @@ class SpotifyRepository(
         searchCache.clear()
         ephemeralAlbumCache.clear()
         ephemeralPlaylistCache.clear()
+        ephemeralArtistCache.clear()
         dailyMixesCache = null
         currentUserIdCache = null
         ownerDisplayNameCache.clear()
@@ -542,49 +553,8 @@ class SpotifyRepository(
         }
     }
 
-    private fun invalidateEphemeralPlaylist(playlistId: String) {
-        ephemeralPlaylistCache.remove(playlistId)
-    }
-
-    private fun invalidateEphemeralAlbum(albumId: String) {
-        ephemeralAlbumCache.remove(albumId)
-    }
-
-    private data class EphemeralEntry<T>(
-        val value: T,
-        var at: Long,
-        var lastAccessedAt: Long,
-    ) {
-        fun touch(now: Long) {
-            lastAccessedAt = now
-        }
-    }
-
-    private fun putEphemeralAlbum(albumId: String, result: AlbumDetailResult, now: Long) {
-        evictOldestIfNeeded(ephemeralAlbumCache, EPHEMERAL_ALBUM_CAP)
-        ephemeralAlbumCache[albumId] = EphemeralEntry(result, now, now)
-    }
-
-    private fun putEphemeralPlaylist(playlistId: String, result: PlaylistDetailResult, now: Long) {
-        evictOldestIfNeeded(ephemeralPlaylistCache, EPHEMERAL_PLAYLIST_CAP)
-        ephemeralPlaylistCache[playlistId] = EphemeralEntry(result, now, now)
-    }
-
-    private fun <T> evictOldestIfNeeded(
-        cache: ConcurrentHashMap<String, EphemeralEntry<T>>,
-        cap: Int,
-    ) {
-        if (cache.size < cap) return
-        val oldest = cache.entries.minByOrNull { it.value.lastAccessedAt }?.key ?: return
-        cache.remove(oldest)
-    }
-
     companion object {
-        private const val CACHE_TTL_MS = 5 * 60_000L
-        private const val SEARCH_TTL_MS = 2 * 60_000L
-        private const val SEARCH_CACHE_CAP = 25
-        private const val EPHEMERAL_ALBUM_CAP = 20
-        private const val EPHEMERAL_PLAYLIST_CAP = 10
+        private const val CACHE_TTL_MS = OverlayMetadataCache.DETAIL_TTL_MS
         private const val URI_INDEX_TRACK_LIMIT = 10_000
         private const val DAILY_MIXES_SCAN_LIMIT = 200
         private const val OWNER_DISPLAY_NAME_PARALLELISM = 4
@@ -599,7 +569,7 @@ class SpotifyRepository(
         snapshotId?.takeIf { it.isNotBlank() }?.let { return it }
         libraryRepository.getPlaylistSnapshot(playlistId)?.takeIf { it.isNotBlank() }?.let { return it }
         detailCache.indexedSnapshotId(playlistId)?.takeIf { it.isNotBlank() }?.let { return it }
-        ephemeralPlaylistCache[playlistId]?.value?.detail?.snapshotId
+        ephemeralPlaylistCache.get(playlistId)?.detail?.snapshotId
             ?.takeIf { it.isNotBlank() }
             ?.let { return it }
         val revision = nativeGateway().playlistDetail(playlistId, trackLimit = 1).detail.revisionB64

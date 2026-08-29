@@ -18,6 +18,11 @@ class FakeNativeMetadataGateway(
     var rootlistCallCount = 0
         private set
 
+    var artistDetailCallCount = 0
+        private set
+
+    var artistDetailHandler: ((String) -> ArtistDetailBundle)? = null
+
     override fun requireLoggedIn() {
         if (!loggedIn) throw NativeSessionRequiredException()
     }
@@ -44,7 +49,9 @@ class FakeNativeMetadataGateway(
         albumLimit: Int,
         topTrackLimit: Int,
     ): ArtistDetailBundle {
-        throw UnsupportedOperationException()
+        artistDetailCallCount++
+        return artistDetailHandler?.invoke(artistId)
+            ?: throw UnsupportedOperationException()
     }
 
     override fun userDisplayName(username: String): String? = null

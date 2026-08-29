@@ -282,15 +282,18 @@ class PlaybackController private constructor(
     private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
         when (change) {
             AudioManager.AUDIOFOCUS_LOSS -> {
+                logContinuity("audio_focus", extra = "change=LOSS")
                 hasAudioFocus = false
                 pauseTransport(userInitiated = false)
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                logContinuity("audio_focus", extra = "change=LOSS_TRANSIENT")
                 playWhenFocusReturns = _state.value.isPlaying
                 pauseTransport(userInitiated = false)
             }
             AudioManager.AUDIOFOCUS_GAIN -> {
+                logContinuity("audio_focus", extra = "change=GAIN")
                 hasAudioFocus = true
                 if (playWhenFocusReturns) {
                     playWhenFocusReturns = false
@@ -310,6 +313,7 @@ class PlaybackController private constructor(
     private val becomingNoisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
+                logContinuity("audio_becoming_noisy")
                 pauseTransport(userInitiated = false)
             }
         }
@@ -340,6 +344,11 @@ class PlaybackController private constructor(
                 }
                 val current = _state.value
                 val sessionDead = engineReady && !requireBackend().isSessionConnected()
+                logContinuity(
+                    "network_available",
+                    extra = "sessionDead=$sessionDead connected=${current.connected} reconnecting=${current.reconnecting}",
+                    queryBuffered = true,
+                )
                 if (!current.connected || current.reconnecting || sessionDead) {
                     debouncedForceReconnect()
                 }
@@ -350,6 +359,7 @@ class PlaybackController private constructor(
             networkLostGraceJob?.cancel()
             networkLostGraceJob = scope.launch {
                 delay(NETWORK_HANDOFF_GRACE_MS)
+                logContinuity("network_lost", queryBuffered = true)
                 _state.update { recomputeStatusMessage(it.copy(networkOnline = false)) }
                 runCatching { requireBackend().setNetworkOnline(false) }
                 streamingPolicy.onOffline()
@@ -375,10 +385,21 @@ class PlaybackController private constructor(
             val wifiHandoffBlocked = transport == NetworkCapabilities.TRANSPORT_WIFI &&
                 lastTransport == NetworkCapabilities.TRANSPORT_CELLULAR &&
                 !streamingPolicy.shouldPreferWifi(caps)
+            val validated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
             if (wifiHandoffBlocked) {
+                logContinuity(
+                    "wifi_handoff_blocked",
+                    extra = "transport=$transport validated=$validated",
+                )
                 pendingTransport = null
                 transportConfirmCount = 0
                 return
+            }
+            if (transport != lastTransport) {
+                logContinuity(
+                    "network_caps",
+                    extra = "transport=$transport last=$lastTransport validated=$validated",
+                )
             }
             considerTransportHandoff(transport, caps)
         }
@@ -450,20 +471,68 @@ class PlaybackController private constructor(
      */
     private fun maybeForceReconnectAfterHandoff() {
         val s = _state.value
+        val fullyBuffered = currentTrackFullyBuffered()
         if (!ReconnectPolicy.shouldTearDownOnTransportHandoff(
                 playing = s.isPlaying,
                 reconnecting = s.reconnecting,
-                fullyBuffered = currentTrackFullyBuffered(),
+                fullyBuffered = fullyBuffered,
             )
         ) {
+            logContinuity("handoff_skipped_banked", fullyBuffered = fullyBuffered)
             return
         }
+        logContinuity("handoff_teardown", fullyBuffered = fullyBuffered)
         debouncedForceReconnect()
     }
 
     private fun currentTrackFullyBuffered(): Boolean {
         if (!engineReady) return false
         return runCatching { requireBackend().isCurrentFullyBuffered() }.getOrDefault(false)
+    }
+
+    /**
+     * Phase 0 field capture. Uses [android.util.Log.w] so lines survive R8
+     * stripping of debug/info. Do not call [currentTrackFullyBuffered] unless
+     * [queryBuffered] / [fullyBuffered] — that query blocks the player thread.
+     */
+    private fun logContinuity(
+        event: String,
+        extra: String = "",
+        queryBuffered: Boolean = false,
+        fullyBuffered: Boolean? = null,
+    ) {
+        val s = _state.value
+        val buffered = when {
+            fullyBuffered != null -> if (fullyBuffered) "1" else "0"
+            queryBuffered && engineReady -> if (currentTrackFullyBuffered()) "1" else "0"
+            else -> "?"
+        }
+        val sessionOk = if (engineReady) {
+            runCatching { requireBackend().isSessionConnected() }.getOrDefault(false)
+        } else {
+            false
+        }
+        val m = if (engineReady) {
+            runCatching { requireBackend().playbackDebugMetrics() }.getOrNull()
+        } else {
+            null
+        }
+        val metricsPart = m?.let {
+            " full_rebuild=${it.fullRebuild} transport=${it.transportReconnect} stall=${it.stallEvents}" +
+                " lost_while_buffered=${it.connectionLostWhileBuffered}" +
+                " skip_banked=${it.forceReconnectSkippedBanked}" +
+                " wait_timeout=${it.decoderWaitTimeout} coalesced=${it.rebuildCoalesced}" +
+                " stale_load=${it.staleLoadSuppressed} ring_ms=${it.ringOccupancyMs}" +
+                " pending_ms=${it.pendingOutputMs}"
+        } ?: ""
+        val extraPart = if (extra.isEmpty()) "" else " $extra"
+        android.util.Log.w(
+            "Playback",
+            "continuity: event=$event backend=$backendChoice playing=${s.isPlaying}" +
+                " reconnecting=${s.reconnecting} connected=${s.connected}" +
+                " buffering=${s.isBuffering} loading=${s.isLoading}" +
+                " buffered=$buffered session_ok=$sessionOk$extraPart$metricsPart",
+        )
     }
 
     init {
@@ -755,6 +824,7 @@ class PlaybackController private constructor(
             // cannot land in the middle of a play/skip at the FFI boundary.
             transportMutex.withLock {
                 if (engineReady) {
+                    logContinuity("debounced_force_reconnect")
                     runCatching { requireBackend().forceReconnectCheck() }
                 }
             }
@@ -774,6 +844,9 @@ class PlaybackController private constructor(
                     stalledFor > STALL_BUFFERING_MS -> {
                         // Buffer only — do NOT forceReconnectCheck here; shutting down the
                         // session mid-play drops Active and can exit(1) in librespot player.
+                        if (!s.isBuffering) {
+                            logContinuity("stall_watchdog", extra = "stalledForMs=$stalledFor")
+                        }
                         setBuffering(true)
                         streamingPolicy.onPlaybackStall()
                     }
@@ -1464,6 +1537,15 @@ class PlaybackController private constructor(
             }
         }
 
+    fun cachedSearch(query: String): SearchResults? = repository.cachedSearch(query)
+
+    fun cachedAlbumDetail(albumId: String): AlbumDetailResult? = repository.cachedAlbumDetail(albumId)
+
+    fun cachedArtistDetail(artistId: String): ArtistDetailResult? = repository.cachedArtistDetail(artistId)
+
+    fun cachedPlaylistDetail(playlistId: String): PlaylistDetailResult? =
+        repository.cachedPlaylistDetail(playlistId)
+
     suspend fun createPlaylist(name: String, isPublic: Boolean): SpotifyPlaylistSimple =
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
@@ -1796,6 +1878,7 @@ class PlaybackController private constructor(
     }
 
     override fun onLoading() {
+        logContinuity("loading")
         _state.update { it.copy(isLoading = true) }
         onStateChanged?.invoke()
     }
@@ -1825,12 +1908,14 @@ class PlaybackController private constructor(
         }
         streamingPolicy.onTrackActive()
         onStateChanged?.invoke()
+        logContinuity("playing")
     }
 
     override fun onPaused(positionMs: Long) {
         resetPlaybackPulse()
         _state.update { it.copy(isPlaying = false, positionMs = audiblePositionMs(positionMs)) }
         onStateChanged?.invoke()
+        logContinuity("paused")
     }
 
     override fun onPositionChanged(positionMs: Long) {
@@ -1862,6 +1947,7 @@ class PlaybackController private constructor(
     override fun onBuffering(stalled: Boolean) {
         _state.update { it.copy(isBuffering = stalled, isLoading = stalled) }
         onStateChanged?.invoke()
+        logContinuity("buffering", extra = "stalled=$stalled")
     }
 
     override fun onEndOfTrack() {
@@ -1870,6 +1956,7 @@ class PlaybackController private constructor(
         abandonFocus()
         refreshQueue()
         onStateChanged?.invoke()
+        logContinuity("end_of_track")
     }
 
     override fun onUnavailable(uri: String) {
@@ -1888,6 +1975,7 @@ class PlaybackController private constructor(
             )
         }
         onStateChanged?.invoke()
+        logContinuity("connection_lost")
     }
 
     override fun onConnectionRestored() {
@@ -1897,6 +1985,7 @@ class PlaybackController private constructor(
         refreshQueue()
         onSessionRestored?.invoke()
         onStateChanged?.invoke()
+        logContinuity("connection_restored")
     }
 
     override fun onError(message: String) {
