@@ -16,6 +16,9 @@ Code lives in `app/src/main/java/com/lightphone/spotify/update/`.
    `0.1.10` beats `0.1.9`. Anything unparseable is treated as "not newer".
 3. **Prompt.** `UpdateScreen` draws over the whole shell from `SpotifyApp`: centred
    "A new update is available", `IGNORE` / `APPLY` in the bottom bar corners.
+   Settings and this overlay must share the Activity-scoped `UpdateViewModel`
+   (`activityUpdateViewModel()`). A default `viewModel()` inside Settings would be
+   NavHost-scoped, so the overlay would never see the result.
 4. **IGNORE is permanent.** It sets the `ignored` flag, which suppresses every future
    automatic check. Settings → *Check for updates* clears the flag and re-checks on demand.
 5. **APPLY.** `ApkSelfInstaller` streams the release APK straight from the CDN into a

@@ -22,7 +22,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.style.TextAlign
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lightphone.spotify.BuildConfig
 import com.lightphone.spotify.data.tidal.TidalAudioQuality
 import com.lightphone.spotify.ffi.NormalizationType
@@ -34,7 +33,7 @@ import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.PhonoScreenShell
 import com.lightphone.spotify.update.UpdateUiState
-import com.lightphone.spotify.update.UpdateViewModel
+import com.lightphone.spotify.update.activityUpdateViewModel
 import com.thelightphone.sdk.ui.LightIcon
 import com.thelightphone.sdk.ui.LightIcons
 import com.thelightphone.sdk.ui.LightText
@@ -50,8 +49,9 @@ fun SettingsScreen(
     onLogout: () -> Unit,
 ) {
     val settings by vm.settings.collectAsState()
-    // Activity-scoped; the resulting prompt is drawn by SpotifyApp over the whole shell.
-    val updateVm: UpdateViewModel = viewModel()
+    // Must match SpotifyApp: a default viewModel() here would be NavHost-scoped and
+    // the overlay would never see Available / UpToDate / Failed.
+    val updateVm = activityUpdateViewModel()
     val updateState by updateVm.state.collectAsState()
     var confirm by remember { mutableStateOf<ConfirmRequest?>(null) }
     val caps = vm.capabilities
@@ -158,9 +158,10 @@ fun SettingsScreen(
                                 .padding(vertical = legacyNToGridDp(8)),
                         )
                         SettingsActionRow(
-                            text = when (updateState) {
+                            text = when (val state = updateState) {
                                 UpdateUiState.Checking -> "Checking…"
                                 UpdateUiState.UpToDate -> "No new updates"
+                                is UpdateUiState.Failed -> state.message
                                 else -> "Check for updates"
                             },
                             onClick = updateVm::checkNow,

@@ -18,7 +18,7 @@ import com.lightphone.spotify.ui.screens.LoginScreen
 import com.lightphone.spotify.ui.screens.TidalLoginScreen
 import com.lightphone.spotify.ui.screens.UpdateScreen
 import com.lightphone.spotify.ui.screens.WebApiSetupScreen
-import com.lightphone.spotify.update.UpdateViewModel
+import com.lightphone.spotify.update.activityUpdateViewModel
 import com.thelightphone.sdk.ui.LightThemeTokens
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -53,8 +53,8 @@ fun SpotifyApp(
     val onLoginBack = {
         vm.logout(onReturnToPicker)
     }
-    // Activity-scoped, so the "Check for updates" row in Settings drives this same overlay.
-    val updateVm: UpdateViewModel = viewModel()
+    // Activity-scoped so Settings (inside a NavHost) shares this overlay's ViewModel.
+    val updateVm = activityUpdateViewModel()
     val updateState by updateVm.state.collectAsState()
     LaunchedEffect(auth.loggedIn) {
         if (auth.loggedIn) updateVm.checkOnLaunch()
