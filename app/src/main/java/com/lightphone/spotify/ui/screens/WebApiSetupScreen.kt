@@ -28,6 +28,7 @@ import com.lightphone.spotify.data.webapi.WebApiSessionState
 import com.lightphone.spotify.data.webapi.parseWebApiQrPayload
 import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.configureOAuthWebView
+import com.lightphone.spotify.ui.wrapOAuthWebView
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.PhonoScreenShell
@@ -96,7 +97,7 @@ fun WebApiSetupScreen(vm: AppViewModel) {
                             }
                         }
                         loadUrl(authUrl!!)
-                    }
+                    }.let(::wrapOAuthWebView)
                 },
             )
             playback.error?.let { message ->

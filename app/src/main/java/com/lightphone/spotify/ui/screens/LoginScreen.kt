@@ -24,6 +24,8 @@ import com.lightphone.spotify.ui.AppViewModel
 import com.lightphone.spotify.ui.SpotifyOAuthLoopback
 import com.lightphone.spotify.ui.WebViewAuthCleanup
 import com.lightphone.spotify.ui.configureOAuthWebView
+import com.lightphone.spotify.ui.oauthWebViewOrNull
+import com.lightphone.spotify.ui.wrapOAuthWebView
 import com.lightphone.spotify.ui.light.PhonoSemanticColors
 import com.lightphone.spotify.ui.light.legacyNToGridDp
 import com.lightphone.spotify.ui.phono.PhonoScreenShell
@@ -101,10 +103,10 @@ fun LoginScreen(vm: AppViewModel, onBack: () -> Unit) {
                                 vm.completeLogin(code, state)
                             }
                             loadUrl(authUrl!!)
-                        }
+                        }.let(::wrapOAuthWebView)
                     },
                     update = { view ->
-                        webView = view
+                        webView = view.oauthWebViewOrNull()
                     },
                 )
             }

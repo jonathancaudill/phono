@@ -4,8 +4,12 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.net.Uri
 import android.util.Log
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -169,6 +173,35 @@ internal fun WebView.configureOAuthWebView(
         }
     }
 }
+
+/**
+ * Host [webView] in a hardware layer. AOSP WebView 113 on LP3 enables SurfaceControl
+ * overlays (`display_webview.cc`: "WebView overlays are enabled!"); those surfaces
+ * load (`pageFinished`) but never composite into Compose — black screen, empty
+ * a11y tree. A parent hardware layer makes HWUI tell WebView to draw into an FBO
+ * instead of overlaying. Do not use [View.LAYER_TYPE_SOFTWARE]: Chromium's software
+ * path is deprecated and stays blank on this WebView.
+ */
+internal fun wrapOAuthWebView(webView: WebView): View {
+    val context = webView.context
+    webView.layoutParams = FrameLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT,
+    )
+    return FrameLayout(context).apply {
+        layoutParams = ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        )
+        setBackgroundColor(Color.WHITE)
+        setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        addView(webView)
+        Log.e(TAG, "wrap hardware-layer host for overlays")
+    }
+}
+
+internal fun View.oauthWebViewOrNull(): WebView? =
+    this as? WebView ?: (this as? ViewGroup)?.getChildAt(0) as? WebView
 
 /**
  * Exact scheme+host+port+path match against [redirect] — NOT `toString().startsWith(...)`,
