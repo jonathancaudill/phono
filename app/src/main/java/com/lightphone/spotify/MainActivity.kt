@@ -8,10 +8,17 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.lightphone.spotify.data.backend.BackendPreferences
 import com.lightphone.spotify.ui.light.LightPhonoTheme
+import com.lightphone.spotify.ui.navigation.DeepLinks
 import com.lightphone.spotify.ui.navigation.SpotifyApp
 import com.lightphone.spotify.ui.screens.BackendPickerScreen
 
 class MainActivity : ComponentActivity() {
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        DeepLinks.handle(intent)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -27,6 +34,8 @@ class MainActivity : ComponentActivity() {
                 }
             }.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
+
+        DeepLinks.handle(intent)
 
         val backendPrefs = BackendPreferences(this)
 

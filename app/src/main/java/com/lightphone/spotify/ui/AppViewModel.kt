@@ -14,6 +14,7 @@ import com.lightphone.spotify.data.PlaylistDetailResult
 import com.lightphone.spotify.data.PlaylistFilter
 import com.lightphone.spotify.data.SearchFilter
 import com.lightphone.spotify.data.SearchResults
+import com.lightphone.spotify.data.SpotifyAlbumSimple
 import com.lightphone.spotify.data.SearchResultItem
 import com.lightphone.spotify.data.SpotifyAlbumDetail
 import com.lightphone.spotify.data.SpotifyArtistDetail
@@ -212,6 +213,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val controller: PlaybackController = (app as App).ensureController()
     private val themePreferences = ThemePreferences(app)
+
+    /** The album best matching [title] by [artist], or null when the search finds none. */
+    suspend fun findAlbum(artist: String, title: String): SpotifyAlbumSimple? {
+        // Right after a link launches the app the web session may not be ready, so a failed search is retried.
+        var found: SearchResults? = null
+        for (attempt in 1..4) {
+            found = runCatching { controller.search("$artist $title".trim(), 10) }
+                .onFailure { android.util.Log.w("DeepLinks", "album search failed (attempt $attempt)", it) }
+                .getOrNull()
+            if (found != null && found.albums.isNotEmpty()) break
+            kotlinx.coroutines.delay(1500)
+        }
+        android.util.Log.i("DeepLinks", "album search found ${found?.albums?.size} albums")
+        if (found == null) return null
+        fun norm(s: String) = s.lowercase().replace(Regex("[^a-z0-9]+"), " ").trim()
+        val wantTitle = norm(title)
+        val wantArtist = norm(artist)
+        val scored = found.albums.mapIndexed { index, album ->
+            var score = -index
+            val name = norm(album.name)
+            if (name == wantTitle) score += 100 else if (name.contains(wantTitle) || wantTitle.contains(name)) score += 40
+            if (wantArtist.isNotEmpty() && album.artists.any { norm(it.name).let { a -> a == wantArtist || a.contains(wantArtist) || wantArtist.contains(a) } }) score += 50
+            album to score
+        }
+        return scored.maxByOrNull { it.second }?.first
+    }
 
     /** Active backend (Spotify vs TIDAL) — drives login/setup screen selection. */
     val backendChoice = controller.backendChoice

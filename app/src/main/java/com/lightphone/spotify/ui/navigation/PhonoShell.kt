@@ -110,6 +110,25 @@ fun PhonoShell(
         }
     }
 
+    // A link from another app (phono://search?q=..., phono://album/<id> or phono://album?artist=..&title=..) opens its page.
+    val deepLink by DeepLinks.pending.collectAsState()
+    LaunchedEffect(deepLink) {
+        val destination = deepLink ?: return@LaunchedEffect
+        overlayNav.popToRoot()
+        overlayNav.navigate(destination)
+        DeepLinks.consume()
+    }
+    val albumLookup by DeepLinks.lookup.collectAsState()
+    LaunchedEffect(albumLookup, shellPlayback.loggedIn) {
+        val wanted = albumLookup ?: return@LaunchedEffect
+        if (!shellPlayback.loggedIn) return@LaunchedEffect
+        val album = vm.findAlbum(wanted.artist, wanted.title)
+        overlayNav.popToRoot()
+        if (album != null) overlayNav.navigate(OverlayDestination.Album(album.id, album.name))
+        else overlayNav.navigate(OverlayDestination.SearchResults("${wanted.artist} ${wanted.title}".trim()))
+        DeepLinks.consumeLookup()
+    }
+
     LaunchedEffect(tabs, currentTab) {
         if (currentTab !in tabs) shellVm.selectTab(PhonoTab.Liked)
     }
